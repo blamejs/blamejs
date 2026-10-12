@@ -30,9 +30,14 @@ var check = helpers.check;
 var REPO_ROOT = nodePath.join(__dirname, "..", "..");
 
 // Run one setServers candidate in a child and report how the process ended.
+// The child requires the MODULE, not the package root: setServers and its
+// validation live in lib/network-dns.js, so the assembled framework adds
+// nothing this asks. Five of these spawn per run, and in a container against
+// the bind mount the package root costs 5290ms against 469ms for the module.
 function _inChild(server) {
   var script =
-    "var d = require(" + JSON.stringify(nodePath.join(REPO_ROOT, "index.js").split("\\").join("/")) + ").network.dns;" +
+    "var d = require(" +
+      JSON.stringify(nodePath.join(REPO_ROOT, "lib", "network-dns.js").split("\\").join("/")) + ");" +
     "try { d.setServers([process.argv[1]]); console.log('ACCEPTED'); }" +
     "catch (e) { console.log('THREW ' + (e.code || e.message)); }";
   var rv = nodeChildProcess.spawnSync(process.execPath, ["-e", script, server], { encoding: "utf8" });

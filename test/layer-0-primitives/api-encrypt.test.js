@@ -459,13 +459,18 @@ async function testApiEncryptEventOnFailure() {
     req.body = { msg: "oops" };
     req.url = "/api/x";
     req.pathname = "/api/x";
+    // b.router sets routeLabel before it runs the use() chain, so a middleware
+    // reached through the server always has a resolved route to record. The
+    // record carries that rather than req.url, which would put a capability
+    // sitting in a path segment or a query parameter into the audit chain.
+    req.routeLabel = "/api/x";
     var res = _mkRes();
     var fin = _newFinish(res);
     await mw(req, res, function () {});
     await fin;
     check("event fired on failure",                captured.length === 1);
     check("event payload carries reason",          captured[0].reason === "shape");
-    check("event payload carries path",            captured[0].path === "/api/x");
+    check("event payload carries the route",       captured[0].path === "/api/x");
   } finally {
     b.events.off(b.events.EVENTS.API_ENCRYPT_FAILURE, listener);
   }
@@ -489,6 +494,7 @@ async function testApiEncryptAuditEmit() {
     req.body = call.body;
     req.url = "/api/y";
     req.pathname = "/api/y";
+    req.routeLabel = "/api/y";
     var res = _mkRes();
     var fin = _newFinish(res);
     await mw(req, res, function () {});
@@ -500,7 +506,7 @@ async function testApiEncryptAuditEmit() {
     var meta = typeof rows[0].metadata === "string"
       ? JSON.parse(rows[0].metadata) : rows[0].metadata;
     check("audit metadata carries reason=tag",     meta.reason === "tag");
-    check("audit metadata carries path",           meta.path === "/api/y");
+    check("audit metadata carries the route",      meta.path === "/api/y");
   } finally {
     await teardownTestDb(tmpDir);
   }
@@ -773,6 +779,12 @@ async function testApiEncryptEncryptedErrorReadback() {
             res.end(JSON.stringify({ error: "bad-request-plain" }));
             return;
           }
+          if (want === "html-502") {
+            res.writeHead(502, { "Content-Type": "text/html" });
+            res.end("<html><head><title>502 Bad Gateway</title></head>" +
+                    "<body><center><h1>502 Bad Gateway</h1></center></body></html>");
+            return;
+          }
           res.json({ ok: true });
         });
       });
@@ -794,9 +806,35 @@ async function testApiEncryptEncryptedErrorReadback() {
     check("passthrough: plaintext error status surfaced",   plain.statusCode === 400);
     check("passthrough: plaintext error returned verbatim", plain.body && plain.body.error === "bad-request-plain");
 
+    // A reverse proxy answers with HTML. The body was parsed as JSON before
+    // the mode was consulted, so passthrough rejected it as
+    // api-encrypt/client-response-not-json with permanent: true and
+    // statusCode: 400: the real 502 was lost, b.retry.isRetryable answered
+    // false, and a breaker did not count the failure.
+    var html = await pass.request(Object.assign({ path: "/x", body: { want: "html-502" } }, common));
+    check("passthrough: a non-JSON error body keeps its status",
+          html.statusCode === 502, String(html.statusCode));
+    check("passthrough: and reports not-ok rather than rejecting",
+          html.ok === false, String(html.ok));
+    check("passthrough: with the body handed back as text",
+          typeof html.body === "string" && /502 Bad Gateway/.test(html.body),
+          JSON.stringify(String(html.body).slice(0, 60)));
+
     var ok2xx = await pass.request(Object.assign({ path: "/x", body: { want: "ok" } }, common));
     check("passthrough: 2xx still decrypts + ok true",
           ok2xx.statusCode === 200 && ok2xx.ok === true && ok2xx.body && ok2xx.body.ok === true);
+
+    // The control: a 2xx whose body is not JSON is still a protocol error, so
+    // the relaxation is scoped to the non-2xx reply passthrough exists for.
+    var rejectMode = b.httpClient.encrypted({
+      pubkey: keypair, baseUrl: "http://127.0.0.1:" + port, method: "POST",
+    });
+    var rejErr = null;
+    try {
+      await rejectMode.request(Object.assign({ path: "/x", body: { want: "html-502" } }, common));
+    } catch (e) { rejErr = e; }
+    check("reject mode still refuses the same reply",
+          rejErr !== null, rejErr ? String(rejErr.code) : "no throw");
 
     var rej = b.httpClient.encrypted({
       pubkey: keypair, baseUrl: "http://127.0.0.1:" + port, method: "POST",

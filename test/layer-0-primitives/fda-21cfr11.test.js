@@ -179,8 +179,74 @@ function testSignatureStrippedRefusedWhenVerifierWired() {
     v.ok === false && v.reason === "signature-required");
 }
 
+// Interception wraps `b.audit.safeEmit`, which is a hot-path sink: a throw
+// there would fail the request that was only writing an audit row. So a
+// malformed GxP row is dropped and a denied event recorded, and the emitting
+// code hears nothing. The block used to say interception called
+// `assertGxpAudit`, which would have let the caller correct the row.
+function testInterceptionDropsSilentlyRatherThanRaising() {
+  // `install()` wraps the framework audit sink, which is the seam the posture
+  // interposes on; `opts.audit` only receives the posture's own events. The
+  // collector stands in for the sink so the wrap has something to call
+  // through to, and `uninstall()` puts the original back.
+  var seen = [];
+  var originalSafeEmit = b.audit.safeEmit;
+  b.audit.safeEmit = function (event) { seen.push(event); };
+  var fake = _fakeAudit();
+  var installed = b.fda21cfr11.posture({ audit: fake, interceptAudit: true }).install();
+  try {
+    var bad = {
+      action:      "subject.consent.granted",   // a modification verb
+      actorUserId: "dr.chen",
+      recordedAt:  Date.now(),
+      // no reason, and no metadata.before / metadata.after
+    };
+    var raised = null;
+    try { b.audit.safeEmit(bad); } catch (e) { raised = e; }
+    check("interception does not raise on a malformed GxP row", raised === null,
+      raised && String(raised.code));
+    var actions = seen.map(function (e) { return e && e.action; });
+    check("the malformed row is not written",
+      actions.indexOf("subject.consent.granted") === -1, JSON.stringify(actions));
+    var refused = seen.filter(function (e) {
+      return e && e.action === "fda21cfr11.audit.refused";
+    })[0];
+    check("a denied fda21cfr11.audit.refused is written in its place",
+      !!refused && refused.outcome === "denied" &&
+      refused.metadata.attempted === "subject.consent.granted" &&
+      typeof refused.metadata.reason === "string",
+      JSON.stringify(refused));
+
+    // The control: a well-formed row in the same namespace still goes through,
+    // so the drop above is about the shape and not interception blocking the
+    // namespace outright.
+    b.audit.safeEmit({
+      action:      "subject.consent.revoked",
+      actorUserId: "dr.chen",
+      recordedAt:  Date.now(),
+      reason:      "withdrawal received",
+      metadata:    { before: { consent: true }, after: { consent: false } },
+    });
+    check("a well-formed row in the same namespace is written",
+      seen.some(function (e) {
+        return e && e.action === "subject.consent.revoked";
+      }));
+
+    // assertGxpAudit is the call that does report the failure.
+    var asserted = null;
+    try { b.fda21cfr11.assertGxpAudit(bad); } catch (e) { asserted = e; }
+    check("assertGxpAudit raises on the same row",
+      !!asserted && asserted.code === "fda21cfr11/gxp-shape-violation",
+      asserted && String(asserted.code));
+  } finally {
+    installed.uninstall();
+    b.audit.safeEmit = originalSafeEmit;
+  }
+}
+
 async function run() {
   testSurface();
+  testInterceptionDropsSilentlyRatherThanRaising();
   testSignatureCreate();
   testSignatureBadMeaning();
   testSignatureMissingPredicate();

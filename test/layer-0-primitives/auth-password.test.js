@@ -366,6 +366,41 @@ async function testVerifyBoundsTheStoredCost() {
     b.auth.password.costCeiling().timeCost === 24,
     JSON.stringify(b.auth.password.costCeiling()));
 
+  // The same guards on the setter underneath. argon2-builtin is not on b.*,
+  // so only a deep import reaches it, and it accepted a ceiling below the
+  // default derivation: every vault, backup and archive passphrase then
+  // refused with argon2/cost-over-ceiling. A non-integer raised a bare
+  // TypeError and an unknown key a plain Error with no code.
+  var argon2Internal = require("../../lib/argon2-builtin");
+  var internalCases = [
+    { label: "a ceiling below the default derivation", opts: { memoryCost: 1024 } },
+    { label: "a non-integer ceiling",                  opts: { memoryCost: 1.5 } },
+    { label: "an unknown ceiling option",              opts: { bogus: 1 } },
+    { label: "a non-object",                           opts: "nope" },
+  ];
+  for (var ic = 0; ic < internalCases.length; ic++) {
+    var intRefused = null;
+    try { argon2Internal.costCeiling(internalCases[ic].opts); }
+    catch (e) { intRefused = e; }
+    check("argon2.costCeiling refuses " + internalCases[ic].label,
+      intRefused !== null && intRefused.code === "argon2/bad-ceiling",
+      "code=" + (intRefused && (intRefused.code || intRefused.name)));
+  }
+  check("and the internal ceiling is unchanged by a refused call",
+    argon2Internal.costCeiling().timeCost === 24,
+    JSON.stringify(argon2Internal.costCeiling()));
+  // The control: a legitimate raise is still accepted, so the floor did not
+  // close the setter entirely.
+  check("a ceiling above the default derivation is still accepted",
+    argon2Internal.costCeiling({ timeCost: 30 }).timeCost === 30);
+  argon2Internal.costCeiling(null);
+  // One definition of the default derivation, read by both setters.
+  check("both setters measure against the same default derivation",
+    argon2Internal.DEFAULT_PARAMS.memoryCost === 65536 &&
+    argon2Internal.DEFAULT_PARAMS.timeCost === 3 &&
+    argon2Internal.DEFAULT_PARAMS.parallelism === 4,
+    JSON.stringify(argon2Internal.DEFAULT_PARAMS));
+
   // Typed, so a caller can branch on it. These used to arrive as a bare Error
   // naming `argon2.costCeiling`, a module the caller never invoked.
   [{ memory: 1 }, [], [{ memoryCost: 1024 }], { memoryCost: 2.5 },

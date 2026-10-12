@@ -7,7 +7,7 @@
  * When the byte-level content-safety scan does not run for a finalized
  * upload, an operator reviewing the audit log must be able to tell the
  * upload bypassed scanning, and WHY. Each skip path emits exactly one
- * `fileUpload.content_safety_skipped` audit naming the reason:
+ * `fileupload.content_safety_skipped` audit naming the reason:
  *
  *   - content-safety-disabled        (contentSafety: null opt-out)
  *   - no-gate-for-extension          (no gate registered for the ext)
@@ -38,7 +38,7 @@ function _fullSha3(pieces) {
 }
 function _skipEvents(emitted) {
   return emitted.filter(function (e) {
-    return e.action === "fileUpload.content_safety_skipped";
+    return e.action === "fileupload.content_safety_skipped";
   });
 }
 

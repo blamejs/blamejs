@@ -627,29 +627,12 @@ async function runIntegrated(root) {
         }, "audit-tools/archive-digest-missing"));
     }
 
-    // ---- dual-control gate refusals + a consumed-grant success (injected apply) ----
-    var gate = function () { return { m: 2, n: 3 }; };
-    check("purge: dual control without a grant rejected",
-      await _expectCode(function () {
-        return b.auditTools.purge({ confirm: true, archive: archiveDir, passphrase: PASS, checkDualControlGate: gate });
-      }, "audit-tools/dual-control-required"));
-    check("purge: not-ready grant rejected",
-      await _expectCode(function () {
-        return b.auditTools.purge({ confirm: true, archive: archiveDir, passphrase: PASS, checkDualControlGate: gate, dualControlGrant: { ready: false, action: "auditTools.purge" } });
-      }, "audit-tools/dual-control-grant-not-ready"));
-    check("purge: grant bound to a different action rejected",
-      await _expectCode(function () {
-        return b.auditTools.purge({ confirm: true, archive: archiveDir, passphrase: PASS, checkDualControlGate: gate, dualControlGrant: { ready: true, action: "db.eraseHard" } });
-      }, "audit-tools/dual-control-grant-mismatch"));
-    var gateOk = await b.auditTools.purge({
-      confirm: true, archive: archiveDir, passphrase: PASS, checkDualControlGate: gate,
-      dualControlGrant: { ready: true, action: "auditTools.purge" },
-      readAnchor: function () { return Promise.resolve(null); },
-      apply: function () { return Promise.resolve({ rowsDeleted: realRows.length, checkpointsDeleted: 1, archiveBundleId: "gid" }); },
-    });
-    check("purge: consumed dual-control grant proceeds", gateOk.purged === true && gateOk.dualControlConsumed === true);
-
     // ---- real purge (default anchor read + apply) mutates the chain ----
+    // The dual-control refusals run after the anchor assertions below, not
+    // before them: each one records an audit.purge.denied row, and the purge
+    // deletes only what the verified archive covers, so a row written after
+    // that archive was built correctly survives it. The assertions below are
+    // about a table with no tip row to link from.
     var purged = await b.auditTools.purge({ confirm: true, archive: archiveDir, passphrase: PASS });
     check("purge: real purge deletes live rows", purged.purged === true && purged.rowsDeleted > 0);
     check("purge: reports no dual-control consumed (gate not declared)", purged.dualControlConsumed === false);
@@ -716,6 +699,38 @@ async function runIntegrated(root) {
       repairedRows.length > 0 &&
       String(repairedRows[0].prevHash) === String(liveAnchor.lastPurgedRowHash),
       String(repairedRows[0] && repairedRows[0].prevHash));
+
+    // ---- dual-control gate refusals + a consumed-grant success (injected apply) ----
+    var gate = function () { return { m: 2, n: 3 }; };
+    check("purge: dual control without a grant rejected",
+      await _expectCode(function () {
+        return b.auditTools.purge({ confirm: true, archive: archiveDir, passphrase: PASS, checkDualControlGate: gate });
+      }, "audit-tools/dual-control-required"));
+    check("purge: not-ready grant rejected",
+      await _expectCode(function () {
+        return b.auditTools.purge({ confirm: true, archive: archiveDir, passphrase: PASS, checkDualControlGate: gate, dualControlGrant: { ready: false, action: "auditTools.purge" } });
+      }, "audit-tools/dual-control-grant-not-ready"));
+    check("purge: grant bound to a different action rejected",
+      await _expectCode(function () {
+        return b.auditTools.purge({ confirm: true, archive: archiveDir, passphrase: PASS, checkDualControlGate: gate, dualControlGrant: { ready: true, action: "db.eraseHard" } });
+      }, "audit-tools/dual-control-grant-mismatch"));
+    var gateOk = await b.auditTools.purge({
+      confirm: true, archive: archiveDir, passphrase: PASS, checkDualControlGate: gate,
+      dualControlGrant: { ready: true, action: "auditTools.purge" },
+      readAnchor: function () { return Promise.resolve(null); },
+      apply: function () { return Promise.resolve({ rowsDeleted: realRows.length, checkpointsDeleted: 1, archiveBundleId: "gid" }); },
+    });
+    check("purge: consumed dual-control grant proceeds", gateOk.purged === true && gateOk.dualControlConsumed === true);
+
+    // Each refusal above records a row now that the action is one b.audit
+    // accepts, so the denial is auditable rather than silent.
+    await b.audit.flush();
+    await helpers.waitUntil(async function () {
+      var denied = await b.clusterStorage.executeAll(
+        "SELECT action FROM audit_log WHERE action = 'audit.purge.denied'");
+      return denied.length >= 3;
+    }, { timeoutMs: 5000, label: "audit-tools: each refused purge records a denial row" });
+    check("purge: a refused purge is recorded rather than dropped", true);
 
     // ---- replaying the same bundle is an idempotent retry ----
     // The anchor is written before the rows are deleted, so a deletion that

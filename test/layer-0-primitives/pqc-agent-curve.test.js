@@ -236,8 +236,42 @@ function testReloadAfterBuild() {
         res2.destroyed === false);
 }
 
+// reloadCerts is documented as writing an audit row, and wrote none. Two
+// faults stacked: the emit was written `audit.safeEmit(...)` against a
+// lazyRequire getter rather than `audit().safeEmit(...)`, which raised a
+// TypeError, and the action was spelled `pqcagent.reloadCerts`, which b.audit
+// refuses because a segment must be lowercase. Both failures land inside the
+// drop-silent catch safeEmit documents, so the call returned
+// `{ reloaded: true }` and the row was simply absent. Nothing asserted the
+// row, which is why it survived; audit-action-grammar.test.js now holds the
+// spelling half of it for every action in lib/.
+async function testReloadCertsAudit() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-pqcagent-reload-"));
+  try {
+    await setupTestDb(tmpDir);
+    var pair = require("../helpers/tls").selfSignedPair();
+    var agent = b.pqcAgent.create({ cert: pair.cert, key: pair.key });
+    var out = agent.reloadCerts({ cert: pair.cert, key: pair.key });
+    check("reloadCerts reports it reloaded", out && out.reloaded === true,
+      JSON.stringify(out));
+
+    await b.audit.flush();
+    var rows = await b.audit.query({ action: "pqcagent.reload_certs" });
+    check("reloadCerts writes the audit row its page promises",
+      rows.length >= 1, "rows=" + rows.length);
+    var meta = typeof rows[0].metadata === "string"
+      ? JSON.parse(rows[0].metadata) : rows[0].metadata;
+    check("and the row carries the duration",
+      typeof meta.durationMs === "number", JSON.stringify(meta));
+    agent.destroy();
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function run() {
   await testDefaultGroupList();
+  await testReloadCertsAudit();
   testNarrowToFrameworkSubset();
   testNarrowedSelectionSurvivesTheContextFill();
   testRefuseUnknownGroupByDefault();

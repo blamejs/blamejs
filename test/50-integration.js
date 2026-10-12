@@ -875,6 +875,106 @@ async function testCreateAppValidation() {
   try { await b.createApp({}); }
   catch (e) { threw = e; }
   check("createApp({}): missing dataDir → throws",     threw && /dataDir is required/.test(threw.message));
+
+  // A middleware key is false, true, or that middleware's options object.
+  // Anything else used to read as "not false, not an object" and take the
+  // middleware off without the app.middleware.disabled audit event, so a
+  // configuration file deserialized into the string "false" lost CSRF
+  // silently. The refusal runs before the vault, the database and the job
+  // consumers start, so a rejected boot leaves nothing running: the caller
+  // never receives the handle that would shut them down.
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "createapp-mw-"));
+  try {
+    var badValues = [
+      { label: 'the string "false"', mw: { csrf: "false" } },
+      { label: "a zero",             mw: { securityHeaders: 0 } },
+      { label: "a null",             mw: { botGuard: null } },
+      { label: "an array",           mw: { bodyParser: [] } },
+      { label: "a number",           mw: { requestId: 1 } },
+    ];
+    for (var i = 0; i < badValues.length; i++) {
+      var refused = null;
+      try {
+        await b.createApp({ dataDir: dir, middleware: badValues[i].mw });
+      } catch (e) { refused = e; }
+      check("createApp: a middleware key given " + badValues[i].label + " is refused",
+            !!refused && /must be false, true, or an options object/.test(refused.message),
+            refused && String(refused.message).slice(0, 90));
+      check("and it refused before writing anything into dataDir (" +
+            badValues[i].label + ")",
+            fs.readdirSync(dir).length === 0,
+            JSON.stringify(fs.readdirSync(dir)));
+    }
+
+    // The CONTAINER was never checked, so a malformed truthy value was indexed
+    // for the eleven known keys, every one read as undefined, and the call
+    // enabled the defaults and went on to open the vault and the database. The
+    // caller was left believing its configuration had been accepted.
+    var badContainers = [
+      { label: 'the string "false"', mw: "false" },
+      { label: "an array",           mw: [] },
+      { label: "a number",           mw: 1 },
+      { label: "a boolean",          mw: true },
+      // A Map, a Date and a Buffer are objects, so a check that asked only
+      // whether the value was an object admitted them, and indexing one for
+      // the eleven keys finds none of them: the same silent default.
+      { label: "a Map",              mw: new Map([["csrf", false]]) },
+      { label: "a Date",             mw: new Date() },
+      { label: "a Buffer",           mw: Buffer.from("csrf") },
+    ];
+    for (var c = 0; c < badContainers.length; c++) {
+      var cRefused = null;
+      try {
+        await b.createApp({ dataDir: dir, middleware: badContainers[c].mw });
+      } catch (e) { cRefused = e; }
+      check("createApp: opts.middleware given " + badContainers[c].label + " is refused",
+            !!cRefused && /opts\.middleware must be an object keyed by/.test(cRefused.message),
+            cRefused && String(cRefused.message).slice(0, 90));
+      check("and that refusal wrote nothing into dataDir (" +
+            badContainers[c].label + ")",
+            fs.readdirSync(dir).length === 0,
+            JSON.stringify(fs.readdirSync(dir)));
+    }
+
+    // opts.shutdown is the same shape of bag in the same function, and it had
+    // no container check at all: a malformed one read installSignalHandlers as
+    // absent, so a shutdown configured not to install them installed them.
+    var sdRefused = null;
+    try { await b.createApp({ dataDir: dir, shutdown: "graceMs=0" }); }
+    catch (e) { sdRefused = e; }
+    check("createApp: a malformed opts.shutdown container is refused",
+          !!sdRefused && /opts\.shutdown must be an object of/.test(sdRefused.message),
+          sdRefused && String(sdRefused.message).slice(0, 90));
+
+    // Only the container was checked, so a deserialized field still passed and
+    // was read with `!!`: `installSignalHandlers: "false"` installed the
+    // SIGTERM and SIGINT handlers the configuration said to leave alone.
+    var sdFields = [
+      { label: 'installSignalHandlers: "false"', sd: { installSignalHandlers: "false" } },
+      { label: "installSignalHandlers: 0",       sd: { installSignalHandlers: 0 } },
+      { label: 'graceMs: "5000"',                sd: { graceMs: "5000" } },
+      { label: "graceMs: -1",                    sd: { graceMs: -1 } },
+      { label: "drainTimeoutMs: 1.5",            sd: { drainTimeoutMs: 1.5 } },
+      // A zero passed the first form of this check, because it asked for a
+      // non-negative number. b.appShutdown requires a positive graceMs, so a
+      // zero opened the vault and the database and only then raised, and the
+      // other budgets read a zero as absent and took their default.
+      { label: "graceMs: 0",                     sd: { graceMs: 0 } },
+      { label: "drainTimeoutMs: 0",              sd: { drainTimeoutMs: 0 } },
+    ];
+    for (var s = 0; s < sdFields.length; s++) {
+      var fRefused = null;
+      try { await b.createApp({ dataDir: dir, shutdown: sdFields[s].sd }); }
+      catch (e) { fRefused = e; }
+      check("createApp: shutdown field " + sdFields[s].label + " is refused",
+            !!fRefused && /opts\.shutdown\./.test(fRefused.message),
+            fRefused && String(fRefused.message).slice(0, 80));
+      check("and it refused before writing into dataDir (" + sdFields[s].label + ")",
+            fs.readdirSync(dir).length === 0, JSON.stringify(fs.readdirSync(dir)));
+    }
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+  }
 }
 
 function testCreateAppSurface() {

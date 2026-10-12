@@ -893,22 +893,38 @@ async function testLookupOrderingBranches() {
 }
 
 async function testLookupDohDotNoResult() {
-  // DoH configured but pointed at a closed port: _dualStack catches both
-  // family failures → normalized empty → dns/no-result.
+  // A dead upstream is a transport failure, not a name with no addresses.
+  // _dualStack replaced each family's error with an empty list, so lookup saw
+  // nothing and raised dns/no-result, which DnsError classifies as permanent.
+  // The two cases need different answers: b.wsClient reconnects only after a
+  // transient error, and b.retry will not retry a permanent one.
   _reset();
   var closed = await _probeClosedPort();
   dnsModule.useDnsOverHttps({ url: "https://127.0.0.1:" + closed + "/dns-query" });
   dnsModule.setLookupTimeoutMs(1500);
-  check("lookup(DoH, dead upstream): both families fail → dns/no-result",
-    await _throwsAsync(function () { return dnsModule.lookup("public.example.com"); }, "dns/no-result"));
+  var dohErr = null;
+  try { await dnsModule.lookup("public.example.com"); } catch (e) { dohErr = e; }
+  check("lookup(DoH, dead upstream): the transport failure is reported as such",
+    dohErr !== null && dohErr.code !== "dns/no-result",
+    dohErr ? String(dohErr.code) : "no throw");
+  check("lookup(DoH, dead upstream): and it is transient",
+    dohErr !== null && dohErr.permanent !== true,
+    dohErr ? String(dohErr.code) + " permanent=" + String(dohErr.permanent) : "no throw");
   _reset();
 
-  // DoT configured at a closed port: handshake failure per family → empty → no-result.
+  // DoT configured at a closed port: the handshake failure per family is the
+  // same question.
   var closed2 = await _probeClosedPort();
   dnsModule.useDnsOverTls({ host: "127.0.0.1", port: closed2, servername: "localhost" });
   dnsModule.setLookupTimeoutMs(1500);
-  check("lookup(DoT, dead upstream): handshake fails → dns/no-result",
-    await _throwsAsync(function () { return dnsModule.lookup("public.example.com"); }, "dns/no-result"));
+  var dotErr = null;
+  try { await dnsModule.lookup("public.example.com"); } catch (e) { dotErr = e; }
+  check("lookup(DoT, dead upstream): the handshake failure is reported as such",
+    dotErr !== null && dotErr.code !== "dns/no-result",
+    dotErr ? String(dotErr.code) : "no throw");
+  check("lookup(DoT, dead upstream): and it is transient",
+    dotErr !== null && dotErr.permanent !== true,
+    dotErr ? String(dotErr.code) + " permanent=" + String(dotErr.permanent) : "no throw");
   _resetAll();
 }
 
@@ -3562,6 +3578,100 @@ async function _runTests() {
   await testDohDefaultPortFallback();
   await testDotPoolIdleEviction();
   testDesignatedResolversUncodedEntryFailure();
+  await testResolverFailureIsTransientNotNoResult();
+  testLocalOnlyNamesAreNotSentToTheConfiguredResolver();
+}
+
+// lookup() without family runs the A and AAAA queries through _dualStack,
+// which replaced each query's error with an empty list. With both failing,
+// lookup saw no addresses and threw dns/no-result, which DnsError classifies
+// as permanent: an unreachable resolver became indistinguishable from a name
+// that genuinely has no addresses. b.wsClient reconnects only after a
+// transient error, so a resolver failure during a reconnect ended the loop.
+async function testResolverFailureIsTransientNotNoResult() {
+  // Nothing listens on port 9, so both queries fail at the transport.
+  b.network.dns.useDnsOverHttps({ url: "https://127.0.0.1:9/dns-query" });
+  try {
+    var caught = null;
+    try { await b.network.dns.lookup("example.com"); }
+    catch (e) { caught = e; }
+    check("a resolver that cannot be reached is not reported as no-result",
+      caught !== null && caught.code !== "dns/no-result",
+      caught ? String(caught.code) : "no throw");
+    check("and the failure is transient, so a retry or reconnect can proceed",
+      caught !== null && caught.permanent !== true,
+      caught ? String(caught.code) + " permanent=" + String(caught.permanent) : "no throw");
+  } finally {
+    _resetAll();
+  }
+
+  // The first form of that fix rethrew only when BOTH families failed. An
+  // IPv6-only host whose A query answers a legitimate empty NODATA while its
+  // AAAA query times out therefore produced no address and no error, so the
+  // permanent dns/no-result went into the negative cache and a retry could
+  // not recover the address until that cache expired.
+  var dnsMod = require("../../lib/network-dns.js");
+  function _families(map) {
+    return function (host, family) {
+      var v = map[family];
+      return v instanceof Error ? Promise.reject(v) : Promise.resolve(v);
+    };
+  }
+  function _timeout(label) {
+    return Object.assign(new Error(label + " timed out"), { code: "dns/timeout" });
+  }
+  var combos = [
+    ["both families fail",           { 4: _timeout("A"), 6: _timeout("AAAA") }, "throw"],
+    ["A answers empty, AAAA fails",  { 4: [], 6: _timeout("AAAA") },            "throw"],
+    ["A fails, AAAA answers empty",  { 4: _timeout("A"), 6: [] },               "throw"],
+    ["both answer empty",            { 4: [], 6: [] },                          "empty"],
+    ["A empty, AAAA has an address", { 4: [], 6: ["::1"] },                     "addrs"],
+  ];
+  for (var ci = 0; ci < combos.length; ci++) {
+    var rv = null;
+    var cerr = null;
+    try { rv = await dnsMod._dualStackForTest(_families(combos[ci][1]), "h", 0); }
+    catch (e) { cerr = e; }
+    if (combos[ci][2] === "throw") {
+      check("dual-stack propagates the query error when " + combos[ci][0],
+        cerr !== null && cerr.code === "dns/timeout",
+        cerr ? String(cerr.code) : "returned " + JSON.stringify(rv));
+    } else if (combos[ci][2] === "empty") {
+      check("dual-stack reports a real NODATA as no addresses when " + combos[ci][0],
+        cerr === null && Array.isArray(rv) && rv.length === 0,
+        cerr ? String(cerr.code) : JSON.stringify(rv));
+    } else {
+      check("dual-stack still answers when " + combos[ci][0],
+        cerr === null && rv.length === 1,
+        cerr ? String(cerr.code) : JSON.stringify(rv));
+    }
+  }
+}
+
+// _isLocalFormHost decides whether a name is sent to the configured DoH or DoT
+// resolver. Names under home.arpa (RFC 8375) end in .arpa, so the .home suffix
+// never matched them, and localhost was the only single-label name accepted. A
+// Docker Compose service name, a container name, or a short /etc/hosts entry
+// went to the public resolver, which answers NXDOMAIN, and was disclosed to it
+// on the way.
+function testLocalOnlyNamesAreNotSentToTheConfiguredResolver() {
+  var isLocal = dnsModule._isLocalFormHostForTest;
+  var localOnly = ["nas.home.arpa", "home.arpa", "home.arpa.", "db",
+                   "redis-primary", "localhost", "printer.local", "192.0.2.7"];
+  for (var i = 0; i < localOnly.length; i++) {
+    check("'" + localOnly[i] + "' is a local form, so it is not sent out",
+      isLocal(localOnly[i]) === true, localOnly[i]);
+  }
+  // The control: a public name is still resolved through the configured
+  // transport, so the local-form test did not widen into everything.
+  // nothome.arpa is the near miss: a suffix test that forgot the label
+  // boundary would take it for the special-use zone.
+  var public_ = ["example.com", "api.partner.co.uk", "in-addr.arpa",
+                 "1.2.0.192.in-addr.arpa", "nothome.arpa"];
+  for (var j = 0; j < public_.length; j++) {
+    check("'" + public_[j] + "' is still resolved through the configured resolver",
+      isLocal(public_[j]) === false, public_[j]);
+  }
 }
 
 module.exports = { run: run };

@@ -103,15 +103,78 @@ var GROUP_HINTS = {
   contentCredentials: "AI",
 };
 
+var _indexMap = null;
+
+// index.js is where every namespace is required and exported, so it answers
+// which file backs a namespace exactly, where a filename guess cannot.
+function _indexExportMap() {
+  if (_indexMap !== null) return _indexMap;
+  _indexMap = {};
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "index.js"), "utf8"); }
+  catch (_e) { return _indexMap; }
+
+  var locals = {};
+  var reqRe = /\bvar\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*"\.\/(lib\/[^"]+)"\s*\)/g;
+  var m;
+  while ((m = reqRe.exec(src)) !== null) locals[m[1]] = m[2];
+
+  // A namespace is exported as a bare local, as `local.member`, or as an
+  // object literal holding a require, so read the whole value expression.
+  var expRe = /^\s{2}([A-Za-z_$][\w$]*):\s*(.+?),?\s*$/gm;
+  while ((m = expRe.exec(src)) !== null) {
+    var value = m[2];
+    var target = null;
+    var inlineReq = /require\(\s*"\.\/(lib\/[^"]+)"\s*\)/.exec(value);
+    if (inlineReq) target = inlineReq[1];
+    if (target === null) {
+      var idRe = /[A-Za-z_$][\w$]*/g;
+      var idm;
+      while ((idm = idRe.exec(value)) !== null) {
+        if (locals[idm[0]]) { target = locals[idm[0]]; break; }
+      }
+    }
+    if (!target) continue;
+    // A barrel re-exports its siblings, so prefer the sibling named after the
+    // namespace: b.safeEnv is parsers.env, which is lib/parsers/safe-env.js
+    // rather than lib/parsers/index.js.
+    var nsKebab = m[1].replace(/[A-Z]/g, function (c) { return "-" + c.toLowerCase(); });
+    var tried = [
+      path.join(target, nsKebab + ".js"),
+      target,
+      target + ".js",
+      path.join(target, "index.js"),
+    ];
+    for (var i = 0; i < tried.length; i++) {
+      var p = path.join(REPO_ROOT, tried[i]);
+      if (fs.existsSync(p) && fs.statSync(p).isFile()) {
+        _indexMap[m[1]] = path.relative(REPO_ROOT, p);
+        break;
+      }
+    }
+  }
+  return _indexMap;
+}
+
 function _findLibFile(ns) {
+  var fromIndex = _indexExportMap()[ns];
+  if (fromIndex) return fromIndex;
   // Convention: framework camelCase namespace → kebab-case file under
-  // lib/. Try several patterns: namespace.js, kebab-case.js, and
-  // index.js inside a directory.
+  // lib/. A namespace in a family subdirectory spells the family first:
+  // b.vaultWrap is lib/vault/wrap.js, b.objectStore is
+  // lib/object-store/index.js.
+  var kebab = ns.replace(/[A-Z]/g, function (c) { return "-" + c.toLowerCase(); });
+  var segments = kebab.split("-");
   var candidates = [
     ns + ".js",
-    ns.replace(/[A-Z]/g, function (c) { return "-" + c.toLowerCase(); }) + ".js",
+    kebab + ".js",
     path.join(ns, "index.js"),
+    path.join(kebab, "index.js"),
   ];
+  if (segments.length > 1) {
+    candidates.push(path.join(segments[0], segments.slice(1).join("-") + ".js"));
+    candidates.push(path.join(segments[0], "index.js"));
+  }
   for (var i = 0; i < candidates.length; i++) {
     var p = path.join(LIB_DIR, candidates[i]);
     if (fs.existsSync(p)) return path.relative(REPO_ROOT, p);
@@ -187,8 +250,10 @@ function find() {
     }
     if (annotated[ns] >= Math.max(primCount, 1)) return;
     if (curated[ns]) return;
+    // A namespace whose file cannot be derived is still undocumented. Dropping
+    // it here is what let 17 of them, b.createApp among them, read as
+    // documented while no block existed anywhere.
     var libFile = _findLibFile(ns);
-    if (!libFile) return;
     var group = GROUP_HINTS[ns] || "Other";
     tasks.push({
       namespace:        ns,
@@ -237,7 +302,7 @@ function _emitReport(tasks) {
       t.namespace.padEnd(22) +
       pendStr.padEnd(12) +
       t.suggestedGroup.padEnd(16) +
-      t.libFile);
+      (t.libFile || "(file not derivable from the namespace)"));
   });
   if (tasks.length > TOP) {
     console.log("");
@@ -253,4 +318,4 @@ if (require.main === module) {
   else           _emitReport(tasks);
 }
 
-module.exports = { find: find };
+module.exports = { find: find, resolveLibFile: _findLibFile };

@@ -385,7 +385,64 @@ async function _testCreateAllowlist() {
   check("createAllowlist: mixed-case/trailing-dot allow entry admits the host", allowOk === true);
 }
 
-module.exports = { run: async function () { await run(); await _testCreateAllowlist(); } };
+// checkUrl built every refusal as `new ErrorClass(message, code, ctx)`, which
+// fits SsrfError. b.wsClient passes WsClientError, built by defineClass, whose
+// constructor takes the code first, so a refused dial arrived with err.code
+// holding the human-readable text and err.message holding the code. A consumer
+// matching err.code.startsWith("ssrf-guard/") missed every refusal, including
+// the cloud-metadata block that allowInternal cannot override.
+async function _testRefusalCarriesTheCodeForAnyErrorClass() {
+  var CodeFirst = b.frameworkError.defineClass("SsrfArgOrderProbeError");
+  var cases = [
+    { url: "https://169.254.169.254/x", opts: { allowInternal: true },
+      code: "ssrf-guard/blocked-cloud-metadata", label: "the cloud-metadata block" },
+    { url: "https://10.0.0.5/x", opts: {},
+      code: "ssrf-guard/blocked-private", label: "a private-range refusal" },
+  ];
+  for (var i = 0; i < cases.length; i++) {
+    var c = cases[i];
+    var caught = null;
+    try {
+      await b.ssrfGuard.checkUrl(c.url, Object.assign({ errorClass: CodeFirst }, c.opts));
+    } catch (e) { caught = e; }
+    check(c.label + " refuses", caught !== null, "no throw for " + c.url);
+    if (!caught) continue;
+    check(c.label + " puts the code in err.code",
+      caught.code === c.code, "code=" + JSON.stringify(String(caught.code)).slice(0, 80));
+    check(c.label + " puts the text in err.message",
+      /^URL /.test(String(caught.message)),
+      "message=" + JSON.stringify(String(caught.message)).slice(0, 70));
+  }
+
+  // The control: the message-first class the guard was written around is
+  // unaffected, so the fix normalizes the order rather than inverting it.
+  var sameShape = null;
+  try { await b.ssrfGuard.checkUrl("https://10.0.0.5/x", {}); }
+  catch (e) { sameShape = e; }
+  check("the guard's own SsrfError keeps code and message as before",
+    sameShape !== null && sameShape.code === "ssrf-guard/blocked-private" &&
+    /^URL /.test(String(sameShape.message)),
+    sameShape ? sameShape.code + " | " + String(sameShape.message).slice(0, 40) : "no throw");
+
+  // The same disagreement ran the other way through b.safeUrl, which builds
+  // the class it is handed code-first. checkUrl parses through it and passes
+  // SsrfError, so a malformed URL inverted on the DEFAULT error class.
+  var malformed = null;
+  try { await b.ssrfGuard.checkUrl("ht!tp://%%%bad", {}); }
+  catch (e) { malformed = e; }
+  check("a malformed URL carries the safe-url code in err.code",
+    malformed !== null && String(malformed.code).indexOf("safe-url/") === 0,
+    malformed ? JSON.stringify(String(malformed.code)).slice(0, 70) : "no throw");
+  check("and its message is the text, not the code",
+    malformed !== null && String(malformed.message).indexOf("safe-url/") !== 0,
+    malformed ? JSON.stringify(String(malformed.message)).slice(0, 70) : "no throw");
+}
+
+module.exports = { run: async function () {
+  await run();
+  await _testCreateAllowlist();
+  await _testRefusalCarriesTheCodeForAnyErrorClass();
+} };
 
 if (require.main === module) {
   module.exports.run().then(

@@ -153,8 +153,157 @@ async function run() {
   var ndRec = await irND.open({ regime: "gdpr", detectedAt: 0 });
   check("non-object deadlines override -> regime base used",
     ndRec.dueBy.initial === 24 * H && ndRec.dueBy.final === 30 * D);
-  check("get(existing) returns the record", irND.get(ndRec.id) === ndRec);
+  // The seal walks the record, so a chain of nested containers used to exhaust
+  // the stack. The RangeError came out of the copy AFTER the stage had been
+  // assigned, and because the register copies on every read, that one filing
+  // left every later get() and list() raising it too: the whole register was
+  // unreadable for the life of the process.
+  var deepRopa = b.incident.report.create({ audit: false });
+  var deepRec = await deepRopa.open({ regime: "gdpr", detectedAt: 0 });
+  var chain = {};
+  var tip = chain;
+  for (var dd = 0; dd < 12000; dd++) { tip.next = {}; tip = tip.next; }
+  var deepErr = null;
+  try { await deepRopa.recordInitial(deepRec.id, { chain: chain }); }
+  catch (e) { deepErr = e; }
+  check("a record nested past the seal's bound is refused with a code",
+    deepErr !== null && deepErr.code === "incident-report/record-too-deep",
+    deepErr ? String(deepErr.code || deepErr.constructor.name) : "accepted");
+  var stillReadable = true;
+  try { deepRopa.list(); deepRopa.get(deepRec.id); }
+  catch (_e) { stillReadable = false; }
+  check("and the register is still readable afterwards", stillReadable);
+  var afterDeep = await deepRopa.recordInitial(deepRec.id, { note: "ok" });
+  check("and the stage it refused is still free to file",
+    afterDeep !== null && afterDeep.stages.initial.payload.note === "ok");
+
+  // The 12,000-level case above flies past the bound by so far that it cannot
+  // see the boundary, where the first fix was wrong: it measured the stage
+  // ENTRY, but a read copies the whole record, which wraps that entry under
+  // `stages` two levels deeper. A payload in the band between the two depths
+  // therefore passed the check, was stored, and poisoned every later read.
+  // Walk the band: each depth either files and stays readable, or refuses and
+  // stays readable, and neither leaves the register unreadable.
+  function _chainOf(n) {
+    var head = {};
+    var t = head;
+    for (var i = 0; i < n; i++) { t.next = {}; t = t.next; }
+    return head;
+  }
+  // open() stores the record and then sealed it for the return, so a deep
+  // `scope` poisoned the register the same way a deep stage payload did. The
+  // bound is 512, measured against a real ceiling of 5858 for this copy shape,
+  // so an ordinary deeply-nested record still files: a 70-level scope is
+  // accepted, which is what it did before the bound existed.
+  var openRep = b.incident.report.create({ audit: false });
+  var openErr = null;
+  try { await openRep.open({ regime: "gdpr", detectedAt: 0, scope: _chainOf(700) }); }
+  catch (e) { openErr = e; }
+  check("open() refuses a scope past the bound before storing it",
+    openErr !== null && openErr.code === "incident-report/record-too-deep",
+    openErr ? String(openErr.code) : "accepted");
+  var openReadable = true;
+  try { openRep.list(); } catch (_e) { openReadable = false; }
+  check("and the register is still readable after that refusal", openReadable);
+  var ordinary = await openRep.open({ regime: "gdpr", detectedAt: 0, scope: _chainOf(70) });
+  check("while an ordinary nested scope still opens", ordinary !== null && !!ordinary.id);
+
+  // open() made the copy for the depth check and then stored the original, so
+  // the register still held references reachable from the caller's spec: an
+  // incident could drift after it was opened, and a later persistence call
+  // carried the drifted values.
+  var driftRep = b.incident.report.create({ audit: false });
+  var systems = ["billing"];
+  var driftRec = await driftRep.open({
+    regime: "gdpr", detectedAt: 0, scope: { systems: systems }, impact: { subjects: 5 },
+  });
+  systems.push("injected");
+  check("a scope array passed to open cannot be grown afterwards",
+    driftRep.get(driftRec.id).scope.systems.length === 1,
+    JSON.stringify(driftRep.get(driftRec.id).scope.systems));
+
+  // The stage snapshot used structuredClone, which turns a Buffer into a
+  // Uint8Array. The two have different JSON forms, so a filing submitted once
+  // and then resubmitted from the stored payload sent `{"type":"Buffer",...}`
+  // the first time and `{"0":97,...}` the second, for the same evidence, and a
+  // persist callback saw whichever it happened to be handed.
+  var bufRep = b.incident.report.create({ audit: false });
+  var bufInc = await bufRep.open({ regime: "nis2", detectedAt: 0 });
+  var filedBuf = await bufRep.recordInitial(bufInc.id, { evidence: Buffer.from("abc") });
+  var storedBuf = bufRep.get(bufInc.id).stages.initial.payload.evidence;
+  check("a Buffer in a filing is still a Buffer when read back",
+    Buffer.isBuffer(storedBuf), Object.prototype.toString.call(storedBuf));
+  check("and its JSON form matches what the first submission sent",
+    JSON.stringify(storedBuf) === JSON.stringify(filedBuf.stages.initial.payload.evidence),
+    JSON.stringify(storedBuf).slice(0, 60));
+  check("and the bytes are intact",
+    Buffer.from(storedBuf).toString("utf8") === "abc",
+    Buffer.from(storedBuf).toString("utf8"));
+
+  // A RegExp was the one type the copy returned by reference. structuredClone
+  // had been detaching it, so taking that out left the caller holding the
+  // stored evidence: compile() rewrites the pattern the record says was filed,
+  // and an ordinary exec() moves its lastIndex.
+  var reRep = b.incident.report.create({ audit: false });
+  var reInc = await reRep.open({ regime: "gdpr", detectedAt: 0 });
+  var callerRe = /secret/g;
+  await reRep.recordInitial(reInc.id, { pattern: callerRe });
+  var storedRe = reRep.get(reInc.id).stages.initial.payload.pattern;
+  check("a RegExp in a filing comes back as a RegExp, not the caller's own",
+    storedRe instanceof RegExp && storedRe !== callerRe,
+    Object.prototype.toString.call(storedRe));
+  callerRe.compile("replaced", "i");
+  var afterCompile = reRep.get(reInc.id).stages.initial.payload.pattern;
+  check("recompiling the caller's expression does not rewrite the filing",
+    afterCompile.source === "secret" && afterCompile.flags === "g",
+    "/" + afterCompile.source + "/" + afterCompile.flags);
+  callerRe.lastIndex = 99;
+  check("and its lastIndex is not shared with the record",
+    reRep.get(reInc.id).stages.initial.payload.pattern.lastIndex !== 99,
+    String(reRep.get(reInc.id).stages.initial.payload.pattern.lastIndex));
+
+  for (var depth = 58; depth <= 66; depth++) {
+    var bRep = b.incident.report.create({ audit: false });
+    var bInc = await bRep.open({ regime: "gdpr", detectedAt: 0 });
+    var bErr = null;
+    try { await bRep.recordInitial(bInc.id, { chain: _chainOf(depth) }); }
+    catch (e) { bErr = e; }
+    check("depth " + depth + ": either filed or refused with a code, never a RangeError",
+      bErr === null || bErr.code === "incident-report/record-too-deep",
+      bErr ? String(bErr.code || bErr.constructor.name) : "filed");
+    var bReadable = true;
+    try { bRep.list(); bRep.get(bInc.id); } catch (_e) { bReadable = false; }
+    check("depth " + depth + ": the register is readable either way", bReadable);
+  }
+
+  // get() answered with the stored record, so a caller holding one could
+  // assign to any field and change the register's view of a statutory clock.
+  var fetched = irND.get(ndRec.id);
+  check("get(existing) answers with an equal record",
+    fetched !== null && fetched.id === ndRec.id &&
+    fetched.dueBy.initial === ndRec.dueBy.initial);
+  check("and it is a frozen copy rather than the stored record",
+    fetched !== ndRec && Object.isFrozen(fetched) && Object.isFrozen(fetched.dueBy),
+    "same=" + (fetched === ndRec) + " frozen=" + Object.isFrozen(fetched));
+  try { fetched.closedAt = 1; } catch (_e) { /* frozen under strict mode */ }
+  check("so editing the answer does not close the incident",
+    irND.get(ndRec.id).closedAt === null,
+    String(irND.get(ndRec.id).closedAt));
+  check("list() answers with copies too",
+    irND.list().every(function (r) { return Object.isFrozen(r); }));
   check("get(unknown) returns null", irND.get("nope") === null);
+
+  // `audit` takes false, true, or a configuration object carrying a sink. A
+  // string or a number read as "not false" and left the events on while the
+  // configuration said they were off, so those are refused. The sink-object
+  // form above is the reason this is not a plain boolean check.
+  [["a string", "false"], ["a number", 0], ["an array", []]].forEach(function (bad) {
+    var refused = null;
+    try { b.incident.report.create({ audit: bad[1] }); } catch (e) { refused = e; }
+    check("incident.report.create refuses an audit option given " + bad[0],
+      !!refused && refused.code === "incident-report/bad-opt",
+      bad[0] + " -> " + (refused ? refused.code : "accepted"));
+  });
 
   // ---- persist reject: drop-silent, emits persist_failed audit (open + stage) ----
   var pSink = makeSink();
@@ -390,6 +539,72 @@ async function run() {
     strSink.events.some(function (e) {
       return e.action === "incident.report.persist_failed" && e.metadata.error === "raw-string-error" && e.metadata.stage === "initial";
     }));
+
+  // A stage keeps a copy of the fields it was filed with. Retaining the
+  // caller's object let a report change after the filing that recorded it,
+  // and the record is what says the stage was filed with those fields.
+  var snapReg = b.incident.report.create({ audit: false });
+  var snapInc = await snapReg.open({ regime: "gdpr", detectedAt: Date.now() });
+  var fields = { summary: "as filed", affected: { rows: 10 } };
+  await snapReg.recordInitial(snapInc.id, fields);
+  fields.summary = "mutated after filing";
+  fields.affected.rows = 99;
+  var filed = snapReg.get(snapInc.id).stages.initial.payload;
+  check("a mutated top-level field does not change the filed record",
+    filed.summary === "as filed", String(filed.summary));
+  check("and neither does a mutated nested one",
+    filed.affected.rows === 10, String(filed.affected.rows));
+  // The control: the fields really were recorded, so the two checks above are
+  // not passing against an empty payload.
+  check("the filed record carries the fields it was given",
+    Object.keys(filed).length === 2, JSON.stringify(Object.keys(filed)));
+  // The copy holds the data, not the classes around it: Dates and cycles
+  // survive, and a Buffer arrives as a Uint8Array over the same bytes. A
+  // hand-rolled per-key copy was tried instead and lost an own `__proto__`
+  // key while assigning its value onto the destination's prototype, so the
+  // copy is the one structured clone the rest of the framework uses.
+  var typedFields = {
+    evidence: Buffer.from("abc"),
+    at:       new Date(1700000000000),
+    nested:   { more: Buffer.from("de") },
+  };
+  typedFields.self = typedFields;
+  var typedInc = await snapReg.open({ regime: "gdpr", detectedAt: Date.now() });
+  await snapReg.recordInitial(typedInc.id, typedFields);
+  var typedFiled = snapReg.get(typedInc.id).stages.initial.payload;
+  check("the bytes of a Buffer field survive the copy",
+    Buffer.from(typedFiled.evidence).toString("utf8") === "abc" &&
+    Buffer.from(typedFiled.nested.more).toString("utf8") === "de");
+  check("a Date stays a Date", typedFiled.at instanceof Date &&
+    typedFiled.at.getTime() === 1700000000000);
+  check("a cyclic payload is filed with the cycle intact",
+    typedFiled.self === typedFiled);
+  typedFields.evidence.write("zz");
+  check("and it is a copy, so writing into the caller's Buffer does not reach it",
+    Buffer.from(typedFiled.evidence).toString("utf8") === "abc",
+    Buffer.from(typedFiled.evidence).toString("utf8"));
+
+  // An own `__proto__` key, which a JSON-parsed report can carry, is kept as
+  // an own key and its value does not become inherited state.
+  var protoFields = JSON.parse('{"__proto__": {"injected": true}, "keep": 1}');
+  var protoInc = await snapReg.open({ regime: "gdpr", detectedAt: Date.now() });
+  await snapReg.recordInitial(protoInc.id, protoFields);
+  var protoFiled = snapReg.get(protoInc.id).stages.initial.payload;
+  check("an own __proto__ key survives the copy",
+    Object.prototype.hasOwnProperty.call(protoFiled, "__proto__") &&
+    protoFiled.keep === 1,
+    JSON.stringify(protoFiled));
+  check("and its value is not read back as an inherited field",
+    protoFiled.injected === undefined);
+
+  // A payload holding something that cannot be copied is kept by reference
+  // rather than emptied, since losing a filing's contents is worse.
+  var fnFields = { summary: "with a function", hook: function () {} };
+  var fnInc = await snapReg.open({ regime: "gdpr", detectedAt: Date.now() });
+  await snapReg.recordInitial(fnInc.id, fnFields);
+  check("a payload carrying a function still files with its contents",
+    snapReg.get(fnInc.id).stages.initial.payload.summary === "with a function" &&
+    typeof snapReg.get(fnInc.id).stages.initial.payload.hook === "function");
 
   console.log("OK — incident.report " + helpers.getChecks() + " checks passed");
 }

@@ -420,7 +420,7 @@ function testGateContractUnmappedPostureWarns() {
     b.audit.safeEmit = origAudit;
   }
   var warns = captured.filter(function (e) {
-    return e.action === "gateContract.posture.unmapped";
+    return e.action === "gatecontract.posture.unmapped";
   });
   check("unmapped global posture emits exactly one warning (deduped)",
         warns.length === 1 && warns[0].metadata.posture === "fedramp-rev5-moderate");
@@ -444,7 +444,7 @@ function testGateContractMappedPostureNoWarn() {
     b.audit.safeEmit = origAudit;
   }
   var warns = captured.filter(function (e) {
-    return e.action === "gateContract.posture.unmapped";
+    return e.action === "gatecontract.posture.unmapped";
   });
   check("mapped global posture does not warn", warns.length === 0);
   check("mapped global posture applies overlay", resolved.piiPolicy === "redact");
@@ -465,7 +465,7 @@ function testGateContractUnpinnedNoWarn() {
     b.audit.safeEmit = origAudit;
   }
   var warns = captured.filter(function (e) {
-    return e.action === "gateContract.posture.unmapped";
+    return e.action === "gatecontract.posture.unmapped";
   });
   check("unpinned deployment does not warn", warns.length === 0);
   check("unpinned deployment keeps default", resolved.piiPolicy === "serve");

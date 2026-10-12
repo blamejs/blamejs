@@ -346,6 +346,56 @@ async function run() {
   await testMessageRedactionScrubsEmbeddedSecrets();
   await testMessageRedactionMatchesMetaSecretSet();
   await testAFailedInitClosesTheSinksItAlreadyOpened();
+  await testTwoRotationsInOneSecondKeepBothArchives();
+}
+
+// The archive name came from a timestamp with one-second resolution, so a
+// second rotation inside the same second renamed the active file onto the name
+// the first had taken, and the gzip write replaced its .gz. The records in the
+// first archive were gone, with nothing reporting it.
+async function testTwoRotationsInOneSecondKeepBothArchives() {
+  var fs = require("node:fs");
+  var os = require("node:os");
+  var path = require("node:path");
+  var zlib = require("node:zlib");
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "logrot-"));
+  try {
+    var sink = require("../../lib/log-stream-local").create({
+      dir: dir, fileNamePrefix: "app", maxFileBytes: 256,
+      keepRotations: 10, compressRotations: true,
+    });
+    // Each record is well over maxFileBytes, so every emit after the first
+    // rotates, and they all land inside the same second.
+    var payload = "y".repeat(400);
+    for (var i = 0; i < 4; i++) {
+      await sink.emit({ level: "info", message: payload, seq: i });
+    }
+    await sink.close();
+
+    var archives = fs.readdirSync(dir).filter(function (f) {
+      return f !== "app.log" && f.indexOf("app-") === 0;
+    });
+    check("each rotation keeps its own archive", archives.length >= 2,
+      JSON.stringify(fs.readdirSync(dir)));
+
+    // The records themselves survive: every seq written is readable across
+    // the archives plus the active file.
+    var seen = {};
+    fs.readdirSync(dir).forEach(function (f) {
+      var full = path.join(dir, f);
+      var text = f.endsWith(".gz")
+        ? zlib.gunzipSync(fs.readFileSync(full)).toString("utf8")
+        : fs.readFileSync(full, "utf8");
+      text.split("\n").forEach(function (line) {
+        var m = /"seq":(\d+)/.exec(line);
+        if (m) seen[m[1]] = true;
+      });
+    });
+    check("and no record is lost to a name collision",
+      Object.keys(seen).length === 4, JSON.stringify(Object.keys(seen).sort()));
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
 }
 
 module.exports = { run: run };

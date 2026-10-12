@@ -656,8 +656,129 @@ async function _runTests() {
   await _testPostCloseSocketErrorSwallowed();
   await _testWssDialReachesTlsHandshake();
   await _testWssDialIpv6LiteralOmitsSni();
+  await _testPeerClosingTcpWithoutACloseFrameIsReported();
+  await _testHandshakeFollowsThePerAttemptUrl();
+  await _testCloseStillCompletesAfterCancelReconnect();
 
   console.log("OK — ws-client tests");
+}
+
+// The client attached error, connect and data listeners to its socket and none
+// for end or close. When the peer process exits, or a proxy drops the TCP
+// connection without sending a Close frame, readyState stayed "open", send()
+// returned normally while dropping the frame, and nothing fired until the pong
+// deadline passed, up to 90 seconds on the defaults.
+async function _testPeerClosingTcpWithoutACloseFrameIsReported() {
+  var server = await _makeFrameServer(function (socket) {
+    setTimeout(function () { try { socket.end(); } catch (_e) { /* fixture */ } }, 30);
+  });
+  var port = server.address().port;
+  var events = [];
+  var conn = b.wsClient.connect("ws://127.0.0.1:" + port + "/", {
+    reconnect: false, audit: false, allowInternal: true,
+  });
+  conn.on("open",  function () { events.push("open"); });
+  conn.on("close", function (ev) { events.push("close:" + (ev && ev.code)); });
+  conn.on("error", function (e) { events.push("error:" + (e && e.code)); });
+
+  await helpers.waitUntil(function () {
+    return events.some(function (e) { return e.indexOf("close:") === 0; });
+  }, { timeoutMs: 5000,
+       label: "ws-client: a peer that ends TCP without a Close frame is reported" });
+
+  check("the lost connection is reported as a close",
+    events.some(function (e) { return e.indexOf("close:") === 0; }),
+    JSON.stringify(events));
+  check("and readyState follows it rather than staying open",
+    conn.readyState === "closed", conn.readyState);
+  try { conn.close(); } catch (_e) { /* already closed */ }
+
+  // An ordinary drop is what reconnect exists for. Reported as a new code, it
+  // was classified permanent by default, which stopped a reconnecting client
+  // dead on the first lost connection where the pong timeout had reconnected.
+  var server2 = await _makeFrameServer(function (socket) {
+    setTimeout(function () { try { socket.end(); } catch (_e) { /* fixture */ } }, 30);
+  });
+  var port2 = server2.address().port;
+  var reconnecting = false;
+  var conn2 = b.wsClient.connect("ws://127.0.0.1:" + port2 + "/", {
+    reconnect: { baseMs: 20, maxMs: 40 }, audit: false, allowInternal: true,
+  });
+  conn2.on("error", function () { /* drop-silent */ });
+  conn2.on("reconnecting", function () { reconnecting = true; });
+  try {
+    await helpers.waitUntil(function () { return reconnecting; },
+      { timeoutMs: 5000, label: "ws-client: a lost connection still reconnects" });
+    check("a connection lost without a Close frame still reconnects", reconnecting === true);
+  } finally {
+    try { conn2.cancelReconnect(); } catch (_e) { /* best-effort */ }
+    try { conn2.close(); } catch (_e) { /* best-effort */ }
+  }
+}
+
+// connect() documents urlFor as called per attempt "so a reconnect can pick up
+// a rotated token or a new endpoint". _sendHandshake built the request line and
+// the Host header from the URL passed to connect(), so every attempt sent the
+// first URL's path, query and Host to whichever server it dialed: urlFor moved
+// the TCP target and nothing else.
+async function _testHandshakeFollowsThePerAttemptUrl() {
+  var seen = [];
+  var server = await _makeFrameServer(function (socket, req) {
+    seen.push({ url: req.url, host: req.headers.host });
+    setTimeout(function () { try { socket.end(); } catch (_e) { /* fixture */ } }, 20);
+  });
+  var port = server.address().port;
+  var dialUrl = "ws://127.0.0.1:" + port + "/second?token=rotated";
+  var conn = b.wsClient.connect("ws://127.0.0.1:" + port + "/first?token=stale", {
+    reconnect: false, audit: false, allowInternal: true,
+    urlFor: function () { return dialUrl; },
+  });
+  conn.on("error", function () { /* the fixture drops the socket */ });
+
+  await helpers.waitUntil(function () { return seen.length >= 1; },
+    { timeoutMs: 5000, label: "ws-client: the fixture saw the upgrade request" });
+
+  check("the request line comes from the url urlFor returned",
+    seen[0].url === "/second?token=rotated", JSON.stringify(seen[0]));
+  check("and so does the Host header",
+    seen[0].host === "127.0.0.1:" + port, JSON.stringify(seen[0]));
+  try { conn.close(); } catch (_e) { /* best-effort */ }
+}
+
+// close() sends a Close frame and schedules _teardown a second later.
+// cancelReconnect(), and a second close(), both set _closed, and _teardown
+// returned at its first check when _closed was already true. The client never
+// emitted close, readyState stayed "closing", and the ping interval kept
+// running; with a peer that never answers the Close frame the socket stayed
+// open too.
+async function _testCloseStillCompletesAfterCancelReconnect() {
+  var cases = [
+    { label: "cancelReconnect after close", act: function (c) { c.close(); c.cancelReconnect(); } },
+    { label: "a second close",              act: function (c) { c.close(); c.close(); } },
+    { label: "cancelReconnect before close", act: function (c) { c.cancelReconnect(); c.close(); } },
+  ];
+  for (var i = 0; i < cases.length; i++) {
+    // A server that never answers the Close frame, which is the case where the
+    // client's own teardown is the only thing that can end the connection.
+    var server = await _makeFrameServer(function () { /* never answers */ });
+    var port = server.address().port;
+    var closes = [];
+    var conn = b.wsClient.connect("ws://127.0.0.1:" + port + "/", {
+      reconnect: false, audit: false, allowInternal: true,
+    });
+    conn.on("close", function (ev) { closes.push(ev && ev.code); });
+    conn.on("error", function () { /* drop-silent */ });
+    await helpers.waitUntil(function () { return conn.readyState === "open"; },
+      { timeoutMs: 5000, label: "ws-client: the connection opened (" + cases[i].label + ")" });
+
+    cases[i].act(conn);
+    await helpers.waitUntil(function () { return closes.length >= 1; },
+      { timeoutMs: 5000, label: "ws-client: close completes after " + cases[i].label });
+    check(cases[i].label + " still emits close", closes.length >= 1,
+      JSON.stringify(closes));
+    check(cases[i].label + " leaves readyState closed",
+      conn.readyState === "closed", conn.readyState);
+  }
 }
 
 // urlFor / tlsOptsFor must be functions when present — rejected at config time.

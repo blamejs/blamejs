@@ -9616,8 +9616,8 @@ async function testNoDuplicateCodeBlocks() {
       // Three unrelated one-job functions whose shingle is the shape of a
       // short body next to an export run, not shared behaviour:
       // idempotency-key's resealMigrate re-seals stored replay records under a
-      // rotated key, http-request's promiseToStream adapts a promise to the
-      // Readable an object-store caller expects, and validate-opts's
+      // rotated key, http-request's responseToStream adapts a response body
+      // into a readable, and validate-opts's
       // checkOrThrow rethrows an unknown-option error as the caller's own
       // class. Nothing is extractable across them -- a key rotation, a stream
       // adapter and an error wrapper have no common operation, and collapsing
@@ -9631,7 +9631,7 @@ async function testNoDuplicateCodeBlocks() {
       mode:  "family-subset",
       files: [
         "lib/middleware/idempotency-key.js:resealMigrate",
-        "lib/object-store/http-request.js:promiseToStream",
+        "lib/object-store/http-request.js:responseToStream",
         "lib/validate-opts.js:checkOrThrow",
       ],
     },
@@ -10961,7 +10961,7 @@ async function testNoDuplicateCodeBlocks() {
     { mode: "family-subset", files: ["lib/ai-dp.js:mechanism", "lib/dora.js:_validateReportInput", "lib/guard-snapshot-envelope.js:validate"] },                        // fp:b0dceb3bd2fe
     { mode: "family-subset", files: ["lib/auth/sd-jwt-vc-issuer.js:create", "lib/fsm.js:define", "lib/mail.js:_validateMessage"] },                                      // fp:dff4eab2b4e0
     { mode: "family-subset", files: ["lib/csp.js:_parsePermissionsPolicyString", "lib/http-message-signature.js:_parseSignatureInput", "lib/network-tls.js:_parseSanString"] }, // fp:c998d327f9c0
-    { mode: "family-subset", files: ["lib/middleware/idempotency-key.js:resealMigrate", "lib/object-store/http-request.js:promiseToStream", "lib/validate-opts.js:observabilityShape"] }, // fp:824f10cf9f10 (was notModifiedGetResult/fp:711a58281dd7 before promiseToStream landed adjacent — coincidental object-literal/return shingle across 3 unrelated fns)
+    { mode: "family-subset", files: ["lib/middleware/idempotency-key.js:resealMigrate", "lib/object-store/http-request.js:responseToStream", "lib/validate-opts.js:observabilityShape"] }, // fp:824f10cf9f10 (was notModifiedGetResult/fp:711a58281dd7 before the stream adapter landed adjacent — coincidental object-literal/return shingle across 3 unrelated fns)
     { mode: "family-subset", files: ["lib/auth/sd-jwt-vc-issuer.js:create", "lib/guard-saga-config.js:validate", "lib/network-heartbeat.js:_validateTarget"] },          // fp:c8f43d4d1941
     { mode: "family-subset", files: ["lib/auth/oauth.js:deviceAuthorization", "lib/auth/oauth.js:parseCallback", "lib/ddl-change-control.js:_hashSql", "lib/mail-rbl.js:query"] }, // fp:882fd32d8e11
     { mode: "family-subset", files: ["lib/auth/oid4vp.js:matchDcql", "lib/gate-contract.js:_ctxValueForKind", "lib/http-message-signature.js:_parseUrl"] },              // fp:726ed545b065
@@ -13109,7 +13109,7 @@ var KNOWN_ANTIPATTERNS = [
     // A suppression scope whose body reaches its own closing `})` without a
     // storage call in it. The tempered token cannot cross that boundary, so a
     // match stays inside one wrapper.
-    regex: /runAsAuditChainWrite\(function \(\) \{(?:(?!clusterStorage\.|_chainWriter\.append|_externalStore\.record|db\(\)\.purgeAuditChain|\}\))[\s\S]){0,400}\}\)/,
+    regex: /runAsAuditChainWrite\(function \(\) \{(?:(?!clusterStorage\.|_chainWriter\.append|_externalStore\.record|db\(\)\.purgeAuditChain|externalDb\.query|\}\))[\s\S]){0,400}\}\)/,
     allowlist: [],
     fixtures: {
       fires: [
@@ -13122,6 +13122,11 @@ var KNOWN_ANTIPATTERNS = [
         "var appended = await dbRoleContext.runAsAuditChainWrite(function () {\n        return _chainWriter.append(logical);\n      })",
         "return dbRoleContext.runAsAuditChainWrite(function () {\n    return safeAsync.withTimeout(\n      clusterStorage.execute(built.sql, built.params),\n      MS, { name: \"x\" });\n  })",
         "del = await dbRoleContext.runAsAuditChainWrite(function () {\n      return db().purgeAuditChain({ lastPurgedCounter: deleteThrough });\n    })",
+        // The cluster lease provider's one query helper. Every lease read and
+        // write goes through it, and each emitted a system.externaldb.query
+        // row into the chain that lives in the same backend, so an idle
+        // leader grew the chain on its own heartbeat.
+        "return dbRoleContext.runAsAuditChainWrite(function () {\n      return externalDb.query(sql, params || [], { backend: backendName });\n    })",
       ],
     },
     reason: "The scope that stops the audit chain recording its own writes suppresses EVERY audit emission made inside it, so it has to cover audit's own storage I/O and nothing else. Wrapping whole operations instead swallowed security events that have nothing to do with the chain: `b.audit.query` ends by calling `cryptoField.unsealRow` on the rows it returns, so a row whose sealed cell would not open recorded no `system.crypto.unseal_failed`, and the `denied`-outcome `system.crypto.unseal_rate_exceeded` fired twice inside one query and landed zero rows where the same denial outside landed three. A read that cannot unseal what it returns is exactly what an auditor is looking for, and the suppression hid it. Measured on this branch, before the narrowing. The wrappers now sit on the `clusterStorage` call and on `_chainWriter.append`, which are the calls that raise the `system.externaldb.query` events the cascade fed on; everything else an operation does, including unsealing, signing and the external-store mirror, runs outside and keeps its own audit.",
@@ -13316,13 +13321,25 @@ var KNOWN_ANTIPATTERNS = [
     // A record field named for the request target and assigned from req.url.
     // `_canonicalRequestTarget(req.url)` and `new URL(req.url, ...)` both lack
     // the `field:` anchor, so only a field that carries the raw URL matches.
-    regex: /\b(?:url|originalUrl|requestUrl|fullUrl)\s*:\s*(?:req(?:uest)?\s*&&\s*)?req(?:uest)?\s*\.\s*(?:url|originalUrl)\b/,
+    //
+    // `path` and `route` name the target as surely as `url` does, and twenty-two
+    // sites carried req.url under one of those two names while this rule listed
+    // only the four url spellings. `req.pathname || req.url` is the same record
+    // with the query sometimes stripped, and a capability in a path segment
+    // survives that, so the fallback form matches too.
+    regex: /\b(?:url|originalUrl|requestUrl|fullUrl|path|route)\s*:\s*(?:req(?:uest)?\s*\.\s*pathname\s*\|\|\s*)?\(?\s*(?:req(?:uest)?\s*&&\s*)?req(?:uest)?\s*\.\s*(?:url|originalUrl)\b/,
     allowlist: [],
     fixtures: {
       fires: [
         "        metadata: { reason: \"posture-refuse\", method: req.method, url: req.url },",
         "      url:       req && req.url,",
         "  var fields = { originalUrl: request.originalUrl, status: 500 };",
+        // The two names the rule used to miss, and the query-stripped form,
+        // which still carries a capability sitting in a path segment.
+        "          route:  req.url,",
+        "        _emitAudit(\"refused\", \"denied\", { method: method, path: req.url });",
+        "        metadata: { method: req.method, path: req.pathname || req.url },",
+        "      path:      req.pathname || (req.url || \"/\").split(\"?\")[0],",
       ],
       quiet: [
         // The route-resolving helper, which is the fix.
@@ -15317,6 +15334,21 @@ var KNOWN_ANTIPATTERNS = [
     skipCommentLines: true,
     allowlist: [],
     reason: "11 framework primitives (outbox, compliance-sanctions, compliance-sanctions-fetcher, tenant-quota ×2, auth/sd-jwt-vc-holder, auth/sd-jwt-vc-issuer, ai-capability, ai-dp, ai-quota, cert, mail-send-deliver) each hand-rolled the SAME gated drop-silent audit emitter — a factory closure `function <name>(action, outcome, metadata) { if (!<gateVar>) return; try { audit().safeEmit({ action: action, outcome: outcome, metadata: metadata || {} }); } catch {} }` — varying only in the gate var name (auditOn / auditEnabled) and the closure name (_emitAudit / _auditEmit). The 6-file STRONG-DUP cluster was a SAMPLE; the framework-wide sweep found the other 5 by the safeEmit-passthrough signature. They differ from the PREFIXED siblings (audit-namespaced-emit-hand-rolled) only in passing a verbatim, already-qualified action — so b.audit.namespaced gained a falsy-prefix mode (action passes through unprefixed) and each routes to `var <name> = audit().namespaced(null, { audit: <gateVar> })` (built at factory-init, byte-equivalent: verbatim action, metadata default, gate honored — functionally proven). The genuinely-different emitters were NOT folded in: operator-supplied-sink (ai-disclosure `opts.audit`, bot-challenge `safeEmit` param), per-call gate param (keychain), and no-gate / extra-logic (redact, worker-pool, webhook-dispatcher) — each a distinct contract. ZERO allowlist — a re-introduced gated verbatim emitter trips this; use b.audit.namespaced(null, …).",
+  },
+  {
+    id: "audit-action-namespace-not-lowercase",
+    primitive: "b.audit.namespaced(prefix) / safeEmit({ action }) (lib/audit.js) — an audit action must be `namespace.verb[.qualifier]` with every segment lowercase and the namespace registered in FRAMEWORK_NAMESPACES, or safeEmit refuses it and writes no row.",
+    // Anchors on an audit (not observability) namespace literal carrying an
+    // uppercase letter. `audit()` / `b.audit` qualifies the call, so the
+    // camelCase METRIC prefixes (observability().namespaced("auth.sdJwtVc.holder"),
+    // "middleware.tusUpload") are untouched: a metric name has no namespace
+    // grammar and no registry. The verb argument is not matched here because it
+    // is usually a conditional expression rather than a literal; the refusal
+    // register (b.audit.refusedActions) is what reports one of those.
+    regex: /(?:audit\(\)|b\.audit)\.namespaced\(\s*"[a-z0-9_.]*[A-Z]/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "guard-sql emitted its gate decisions under `guardSql.gate`, and the action grammar safeEmit enforces is lowercase `namespace.verb[.qualifier]` with a registered namespace, so every served / audited / refused row a SQL gate produced was refused and no row was written. The register now spells it `guardsql.gate` and `guardsql` is registered, matching the `guardfilename` namespace the filename guard already used. A lexical sweep for camelCase namespaces over-reported: the other three hits are observability().namespaced metric prefixes, where camelCase is harmless because a metric name has no grammar and no registry, which is why this detector is anchored on the audit call. ZERO allowlist — a new camelCase audit namespace trips this; lowercase the namespace and register it.",
   },
   {
     id: "mail-server-listen-hand-rolled",

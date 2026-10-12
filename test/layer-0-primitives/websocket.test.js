@@ -1102,6 +1102,39 @@ function testHandleUpgradeHeadPrefeed() {
   teardown(conn, socket);
 }
 
+// A socket that has been through an `upgrade` event belongs to the
+// application: Node has removed its own error handling from it by then. The
+// refusal wrote a response and destroyed the socket without attaching an
+// `error` listener, so a reset while that write was in flight emitted `error`
+// on a socket nobody was listening to, which Node raises at the top level and
+// the process dies. The wiki's own end-to-end run died this way after
+// app-shutdown had reported every phase complete.
+function testARefusedUpgradeSocketSwallowsItsErrors() {
+  var socket = makeSocket();
+  var conn = ws.handleUpgrade(upgradeReq({ "sec-websocket-version": "8" }), socket, null, {});
+  check("a wrong-version upgrade is refused", conn === null);
+  var threw = null;
+  try {
+    socket.emit("error", Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }));
+  } catch (e) { threw = e; }
+  check("and a reset on that socket does not reach the top level",
+    threw === null, threw && threw.message);
+
+  // The same guard, applied by the router to every upgraded socket before it
+  // decides what to do with one.
+  var bare = makeSocket();
+  ws._swallowSocketErrors(bare);
+  var bareThrew = null;
+  try { bare.emit("error", new Error("read ECONNRESET")); }
+  catch (e) { bareThrew = e; }
+  check("an upgraded socket the router keeps also swallows a reset",
+    bareThrew === null, bareThrew && bareThrew.message);
+  check("and the swallow destroys it rather than leaving it half-open",
+    bare.destroyed === true);
+  check("the guard tolerates a value that is not a socket",
+    ws._swallowSocketErrors(null) === null);
+}
+
 function testHandleUpgradeWriteThrows() {
   var socket = makeSocket({ writeThrows: true });
   var conn = ws.handleUpgrade(upgradeReq(), socket, null, {});
@@ -1423,6 +1456,7 @@ async function run() {
   testHandleUpgradeDeflateDefaultsAndNameSkip();
   testHandleUpgradeHeadPrefeed();
   testHandleUpgradeWriteThrows();
+  testARefusedUpgradeSocketSwallowsItsErrors();
   testHandleExtendedConnectRefusals();
   testHandleExtendedConnectSuccess();
   testHandleExtendedConnectRespondThrows();

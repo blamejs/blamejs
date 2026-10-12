@@ -550,6 +550,148 @@ async function run() {
   await testBreakerGetStateAndReset();
   testBreakerValidatesOpts();
   await testBreakerWrapValidatesFn();
+  await testHalfOpenAdmitsOneProbe();
+  await testResetReleasesAnInFlightProbePermit();
+  await testCircuitOpenErrorSurface();
+}
+
+// Both descriptions of the half-open state say one probe runs. wrap() tested
+// only for the open state, so the first call after the cooldown moved the
+// breaker to half-open and every call arriving while that probe was still in
+// flight saw half-open and ran as well. Against b.objectStore, which runs put,
+// get, head, delete, list and listVersions through its breaker, that sends the
+// whole queue back to the store whose failures opened it, and concurrent
+// successes each counted toward successThreshold so they could close it
+// together.
+async function testHalfOpenAdmitsOneProbe() {
+  var down = function () {
+    return Object.assign(new Error("down"), { code: "ECONNREFUSED" });
+  };
+  var cb = b.circuitBreaker.create({
+    name: "half-open-probe", failureThreshold: 2, cooldownMs: 20,
+    successThreshold: 2,
+  });
+  await cb.wrap(async function () { throw down(); }).catch(function () {});
+  await cb.wrap(async function () { throw down(); }).catch(function () {});
+  check("breaker opens after failureThreshold failures",
+    cb.getState() === "open", cb.getState());
+
+  // Wait out the 20ms cooldown, then arrive with a burst held open by a gate
+  // so every call is in flight at once. The breaker only changes state when
+  // wrap() is called, so there is no condition to poll: this is the window
+  // passiveObserve exists for.
+  await helpers.passiveObserve(60, "breaker: the cooldown elapses before the burst");
+
+  var released;
+  var gate = new Promise(function (resolve) { released = resolve; });
+  var ran = 0;
+  var fastFailed = 0;
+  var calls = [];
+  for (var i = 0; i < 12; i++) {
+    calls.push(cb.wrap(async function () {
+      ran += 1;
+      await gate;
+      throw down();
+    }).catch(function (e) {
+      if (e && e.code === "CIRCUIT_OPEN") fastFailed += 1;
+    }));
+  }
+  await helpers.waitUntil(function () { return ran >= 1 || fastFailed >= 12; },
+    { timeoutMs: 2000, label: "breaker: the half-open probe started" });
+  released();
+  await Promise.all(calls);
+
+  check("half-open admits exactly one probe", ran === 1, "ran=" + ran);
+  check("and the rest fast-fail as CIRCUIT_OPEN", fastFailed === 11,
+    "fastFailed=" + fastFailed);
+  check("a failing probe re-opens the breaker", cb.getState() === "open",
+    cb.getState());
+}
+
+// reset() closed the breaker but left halfOpenInFlight set, so a call that was
+// in flight when the reset ran kept the only probe permit. Once the breaker
+// opened again, every recovery probe fast-failed as CIRCUIT_OPEN for as long as
+// that call stayed pending, which a hung call makes permanent. The pre-reset
+// call then decremented a counter it no longer owned, taking it to -1, and the
+// `> 0` admission guard lets two concurrent probes through at -1.
+async function testResetReleasesAnInFlightProbePermit() {
+  var down = function () {
+    return Object.assign(new Error("down"), { code: "ECONNREFUSED" });
+  };
+  var cb = b.circuitBreaker.create({
+    name: "reset-probe-permit", failureThreshold: 1, cooldownMs: 20,
+    successThreshold: 1,
+  });
+  await cb.wrap(async function () { throw down(); }).catch(function () {});
+  check("breaker opens on the first failure", cb.getState() === "open", cb.getState());
+
+  await helpers.passiveObserve(60, "breaker: the cooldown elapses before the pre-reset probe");
+
+  var releaseStale;
+  var staleGate = new Promise(function (resolve) { releaseStale = resolve; });
+  var staleStarted = false;
+  var stale = cb.wrap(async function () {
+    staleStarted = true;
+    await staleGate;
+    throw down();
+  }).catch(function () {});
+  await helpers.waitUntil(function () { return staleStarted; },
+    { timeoutMs: 2000, label: "breaker: the pre-reset probe started" });
+
+  cb.reset();
+  check("reset closes the breaker", cb.getState() === "closed", cb.getState());
+  await cb.wrap(async function () { throw down(); }).catch(function () {});
+  check("the breaker re-opens after the reset", cb.getState() === "open", cb.getState());
+  await helpers.passiveObserve(60, "breaker: the cooldown elapses after the reset");
+
+  var recoveryRan = 0;
+  var recovery = null;
+  try { recovery = await cb.wrap(async function () { recoveryRan += 1; return "up"; }); }
+  catch (e) { recovery = e; }
+  check("a recovery probe is admitted after a reset", recoveryRan === 1,
+    "recoveryRan=" + recoveryRan + " recovery=" + (recovery && recovery.code));
+  check("and the admitted probe closes the breaker", cb.getState() === "closed",
+    cb.getState());
+
+  releaseStale();
+  await stale;
+  check("the pre-reset call did not decrement a counter it no longer owns",
+    cb.halfOpenInFlight === 0, "halfOpenInFlight=" + cb.halfOpenInFlight);
+}
+
+// b.circuitBreaker exported RetryError, a class lib/retry.js never defined, so
+// the property was undefined and `err instanceof b.circuitBreaker.RetryError`
+// raised a TypeError instead of answering. The open-breaker error was also a
+// plain Error, and _onFailure recognized it by isObjectStoreError, a flag every
+// breaker set whether or not it fronted an object store.
+async function testCircuitOpenErrorSurface() {
+  check("CircuitOpenError is a constructor",
+    typeof b.circuitBreaker.CircuitOpenError === "function",
+    typeof b.circuitBreaker.CircuitOpenError);
+  check("the export that named a class nothing defined is gone",
+    !("RetryError" in b.circuitBreaker),
+    JSON.stringify(Object.keys(b.circuitBreaker)));
+
+  var cb = b.circuitBreaker.create({
+    name: "surface", failureThreshold: 1, cooldownMs: 60000,
+  });
+  await cb.wrap(async function () {
+    throw Object.assign(new Error("down"), { code: "ECONNREFUSED" });
+  }).catch(function () {});
+
+  var caught = null;
+  try { await cb.wrap(async function () { return "ok"; }); }
+  catch (e) { caught = e; }
+  check("the open breaker refused the call", caught !== null, "it did not throw");
+  if (!caught) return;
+  check("an open breaker answers with CircuitOpenError",
+    caught instanceof b.circuitBreaker.CircuitOpenError,
+    caught.constructor && caught.constructor.name);
+  check("and keeps the documented code and permanence",
+    caught.code === "CIRCUIT_OPEN" && caught.permanent === false,
+    JSON.stringify({ code: caught.code, permanent: caught.permanent }));
+  check("and carries the flag the breaker itself keys on",
+    caught.isCircuitOpenError === true, String(caught.isCircuitOpenError));
 }
 
 module.exports = { run: run };

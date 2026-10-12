@@ -633,10 +633,10 @@ async function testFileUploadOptOutEmitAudit() {
     onFinalize: async function () { return { ok: true }; },
   });
   var contentDisabledRow = capA.rows.filter(function (r) {
-    return (r.action || r.event) === "fileUpload.contentSafety.disabled";
+    return (r.action || r.event) === "fileupload.content_safety.disabled";
   })[0];
   var filenameDisabledRow = capA.rows.filter(function (r) {
-    return (r.action || r.event) === "fileUpload.filenameSafety.disabled";
+    return (r.action || r.event) === "fileupload.filename_safety.disabled";
   })[0];
   check("opt-out: fileUpload contentSafety: null → audit row emitted",
         !!contentDisabledRow);
@@ -692,7 +692,7 @@ async function testStaticServeOptOutEmitAudit() {
     contentSafetyDisabledReason:   "integration-test: verifying staticServe opt-out audit",
   });
   var disabledRow = capA.rows.filter(function (r) {
-    return (r.action || r.event) === "staticServe.contentSafety.disabled";
+    return (r.action || r.event) === "staticserve.content_safety.disabled";
   })[0];
   check("opt-out: staticServe contentSafety: null → audit row emitted",
         !!disabledRow);

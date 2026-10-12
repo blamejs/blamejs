@@ -1049,15 +1049,24 @@ async function testHttpJsonDefaultClientUsed() {
   var threw = false;
   var isNotify = false;
   var msg = "";
+  var code = "";
   try {
     await n.send({ channel: "hook", message: { x: 1 } });
   } catch (e) {
     threw = true;
     isNotify = !!(e && e.isNotifyError);
     msg = (e && e.message) || "";
+    code = (e && e.code) || "";
   }
+  // The code is read from err.code. checkUrl built the class it was handed
+  // message-first, so this refusal used to arrive with the code in err.message
+  // and the text in err.code, and matching the message was matching the
+  // inversion.
   check("httpJson without injected client binds real b.httpClient at send (SSRF gate refuses loopback)",
-        threw && isNotify && /ssrf-guard\/blocked-loopback/.test(msg));
+        threw && isNotify && code === "ssrf-guard/blocked-loopback",
+        "code=" + JSON.stringify(code));
+  check("and the refusal message is the human-readable text",
+        /^URL /.test(msg), JSON.stringify(msg.slice(0, 70)));
 }
 
 // ---- transport(name) accessor ----

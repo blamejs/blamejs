@@ -425,7 +425,7 @@ async function testExtractEntriesYieldsFileBytes() {
   check("extractEntries yields the file bytes", out[0].bytes.toString("utf8") === "hello");
   check("extractEntries reports size", out[0].size === 5);
   var completed = sink.events.filter(function (e) {
-    return e.action === "archive.read.tar.extractEntries.completed";
+    return e.action === "archive.read.tar.extract_entries.completed";
   });
   check("extractEntries emits a completion audit event", completed.length === 1);
 }
@@ -510,7 +510,7 @@ async function testGuardRefusesTraversalEntry() {
   check("read.tar refuses a traversal entry via the guard cascade",
     code === "archive-tar/guard-refused");
   var refused = sink.events.filter(function (e) {
-    return e.action === "archive.read.tar.extractEntries.refused" && e.outcome === "refused";
+    return e.action === "archive.read.tar.extract_entries.refused" && e.outcome === "refused";
   });
   check("guard refusal emits a refused audit event", refused.length === 1);
 }

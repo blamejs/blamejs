@@ -116,13 +116,39 @@ async function testEncryptDecryptInputGuards() {
     function () { return b.backupCrypto.decryptWithPassphrase("not-a-buffer", PASSPHRASE, VALID_SALT); },
     "backup-crypto/bad-input");
 
-  // Anything at or below the nonce length cannot also carry a tag.
-  await _refusesAsync("decryptWithPassphrase: a nonce-length buffer is refused as too short",
-    function () { return b.backupCrypto.decryptWithPassphrase(Buffer.alloc(24), PASSPHRASE, VALID_SALT); },
-    "backup-crypto/bad-input");
-  await _refusesAsync("decryptWithPassphrase: an empty buffer is refused as too short",
-    function () { return b.backupCrypto.decryptWithPassphrase(Buffer.alloc(0), PASSPHRASE, VALID_SALT); },
-    "backup-crypto/bad-input");
+  // The gate used to refuse only lengths at or below the 24-byte nonce, so a
+  // buffer of 25 to 39 bytes passed it, paid a full Argon2id derivation, and
+  // failed as decrypt-failed. A sealed value needs the nonce AND the 16-byte
+  // Poly1305 tag.
+  check("MIN_SEALED_BYTES is the nonce plus the tag",
+    b.backupCrypto.MIN_SEALED_BYTES === b.backupCrypto.NONCE_BYTES + b.backupCrypto.TAG_BYTES &&
+    b.backupCrypto.MIN_SEALED_BYTES === 40,
+    String(b.backupCrypto.MIN_SEALED_BYTES));
+  var tooShort = [0, 1, 24, 25, 32, 39];
+  for (var i = 0; i < tooShort.length; i++) {
+    await _refusesAsync("decryptWithPassphrase: a " + tooShort[i] +
+      "-byte buffer is refused before the derivation",
+      (function (len) {
+        return function () {
+          return b.backupCrypto.decryptWithPassphrase(Buffer.alloc(len), PASSPHRASE, VALID_SALT);
+        };
+      })(tooShort[i]),
+      "backup-crypto/bad-input");
+    await _refusesAsync("decryptWithKey: a " + tooShort[i] +
+      "-byte buffer is refused before the key is touched",
+      (function (len) {
+        return function () {
+          return b.backupCrypto.decryptWithKey(Buffer.alloc(len), Buffer.alloc(32, 0x11));
+        };
+      })(tooShort[i]),
+      "backup-crypto/bad-input");
+  }
+  // The control: a 40-byte buffer clears the length gate and fails on the
+  // AEAD instead, which is what proves this is a length check and not a
+  // blanket refusal.
+  await _refusesAsync("decryptWithKey: a 40-byte buffer reaches the AEAD and fails there",
+    function () { return b.backupCrypto.decryptWithKey(Buffer.alloc(40), Buffer.alloc(32, 0x11)); },
+    "backup-crypto/decrypt-failed");
 }
 
 async function testAssociatedDataBinding() {

@@ -67,9 +67,23 @@ async function testEngineDirectCrl() {
     check(crlArgCases[i][0], threw);
   }
 
-  // Non-array revocations → treated as empty; still a valid CRL.
-  var emptyCrl = await engine.generateCrl({ caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem, revocations: "not-an-array", crlNumber: 1 });
-  check("a non-array revocations list produces a valid empty CRL",
+  // This check used to assert the opposite, that a non-array `revocations`
+  // was "treated as empty; still a valid CRL". That is the defect: the call
+  // returned a correctly signed, correctly numbered CRL asserting that nothing
+  // is revoked, and a relying party caches it until nextUpdate and keeps
+  // accepting every revoked certificate for as long as it does.
+  var badRevErr = null;
+  try {
+    await engine.generateCrl({ caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem,
+      revocations: "not-an-array", crlNumber: 1 });
+  } catch (e) { badRevErr = e; }
+  check("a non-array revocations list is refused rather than signed as empty",
+    !!badRevErr && badRevErr.code === "mtls-engine/bad-revocations",
+    "got " + (badRevErr ? badRevErr.code : "a signed CRL"));
+
+  // Omitted is still the fresh-issuer case: a CRL saying nothing is revoked.
+  var emptyCrl = await engine.generateCrl({ caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem, crlNumber: 1 });
+  check("an omitted revocations list produces a valid empty CRL",
     typeof emptyCrl === "string" && /-----BEGIN (?:X509 )?CRL-----/.test(emptyCrl));
 
   // A revocation with no revokedAt (default revocation date) + a hex serial.

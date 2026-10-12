@@ -71,6 +71,27 @@ function run() {
     function () { safeJsonPath.validateExpression("$.users[?(@.role)]"); }, /filter/);
   _throws("validateExpression refuses recursive descent",
     function () { safeJsonPath.validateExpression("$..email"); }, /deep-scan/);
+  // Both refusals above were anchored too narrowly, so the documented
+  // guarantee held only for the shape the test happened to use. Deep scan was
+  // detected only as a `$` followed by two dots, so recursive descent below
+  // the root passed; and a filter only as `?(` or `?{`, so the standard
+  // parenthesis-free selector of RFC 9535 passed. Either one reaching an
+  // evaluator is what the refusal exists to prevent.
+  ["$.users..password", "$[\"a\"]..b", "$.a.b..c"].forEach(function (e) {
+    _throws("validateExpression refuses recursive descent in " + e,
+      function () { safeJsonPath.validateExpression(e); }, /deep-scan/);
+  });
+  ["$[?@.enabled]", "$[?@.a>1]", "$.a[?@.b]", "$[?!@.x]", "$[? (@.x)]"].forEach(function (e) {
+    _throws("validateExpression refuses the filter selector " + e,
+      function () { safeJsonPath.validateExpression(e); }, /filter/);
+  });
+  // And neither refusal reaches a quoted member name, which may carry either
+  // construct as data rather than as a selector.
+  check("validateExpression accepts a quoted name holding two dots",
+    safeJsonPath.validateExpression("$[\"a..b\"]") === "$[\"a..b\"]");
+  check("validateExpression accepts a quoted name holding a question mark",
+    safeJsonPath.validateExpression("$[\"a?b\"]") === "$[\"a?b\"]");
+
   _throws("validateExpression refuses script-shape",
     function () { safeJsonPath.validateExpression("$.x(@.y.z)"); }, /script/);
   _throws("validateExpression refuses JS-source hint (semicolon)",
