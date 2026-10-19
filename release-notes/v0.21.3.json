@@ -207,7 +207,7 @@
         },
         {
           "title": "Other refusals",
-          "body": "`b.wsClient` `send(data)` throws `ws-client/bad-opt` for a second argument. `b.backup.create` requires `flushBeforeBackup` to be `false`, a function, or omitted. `b.network.tls.preferredGroups.set` refuses `auto`, `DEFAULT` and groups the runtime cannot set. IMAP `SELECT` with unrecognized trailing text is answered BAD. A `servername` that is an IP address other than the host is refused by the SMTP transport, the Redis client, `b.wsClient` and the syslog sink. `b.middleware.bodyParser` and `b.storage` refuse options they do not read."
+          "body": "`b.wsClient` `send(data)` throws `ws-client/bad-opt` for a second argument. `close(code)` on a `b.websocket` connection or a `b.wsClient` sends 1000 only when `code` is omitted; an explicit `0`, `null`, a numeric string or a fraction throws `TypeError`. `b.backup.create` requires `flushBeforeBackup` to be `false`, a function, or omitted. `b.network.tls.preferredGroups.set` refuses `auto`, `DEFAULT` and groups the runtime cannot set. IMAP `SELECT` with unrecognized trailing text is answered BAD. A `servername` that is an IP address other than the host is refused by the SMTP transport, the Redis client, `b.wsClient` and the syslog sink. `b.middleware.bodyParser` and `b.storage` refuse options they do not read."
         }
       ]
     }

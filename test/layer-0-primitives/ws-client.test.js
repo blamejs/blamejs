@@ -769,12 +769,12 @@ async function _testCloseCodesFromTheWire() {
 function _testCloseRefusesForbiddenCodes() {
   var c = b.wsClient.connect("ws://127.0.0.1:1", { reconnect: false, audit: false, allowInternal: true });
   c.on("error", function () {});
-  [999, 1005, 1006, 1015, 5000].forEach(function (bad) {
+  [999, 1005, 1006, 1015, 5000, 0, null, "1000", 1000.5, NaN].forEach(function (bad) {
     var thrown = null;
     try { c.close(bad, "x"); } catch (e) { thrown = e; }
-    check("wsClient close(" + bad + ") throws TypeError", thrown instanceof TypeError);
+    check("wsClient close(" + JSON.stringify(bad) + ") throws TypeError", thrown instanceof TypeError);
   });
-  c.close(1000);
+  c.close();
 }
 
 // The client attached error, connect and data listeners to its socket and none

@@ -832,13 +832,13 @@ function testConnectionCloseHandshake() {
   });
 
   // close() refuses a code RFC 6455 7.4.1 forbids on the wire.
-  [999, 1004, 1005, 1006, 1015, 1016, 2999, 5000].forEach(function (bad) {
+  [999, 1004, 1005, 1006, 1015, 1016, 2999, 5000, 0, null, "1000", 1000.5, NaN].forEach(function (bad) {
     var sb = makeSocket();
     var cb = new ws.WebSocketConnection(sb, { closeGraceMs: 10 });
     var thrown = null;
     try { cb.close(bad, "x"); } catch (e) { thrown = e; }
     var wrote = serverFrames(sb).filter(function (f) { return f.opcode === ws.OPCODE_CLOSE; });
-    check("conn: close(" + bad + ") throws TypeError and writes no close frame",
+    check("conn: close(" + JSON.stringify(bad) + ") throws TypeError and writes no close frame",
           thrown instanceof TypeError && wrote.length === 0 && cb.readyState === "open");
     teardown(cb, sb);
   });
