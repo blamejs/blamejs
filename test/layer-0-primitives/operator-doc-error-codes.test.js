@@ -458,8 +458,8 @@ function comparedCodesIn(text, ownNamespaces) {
 
 // The codes a body compares inside a catch that then re-raises what it caught.
 // Those reach the caller THROUGH this primitive even though nothing here builds
-// them — they are raised by whatever this body called, recognised here, and
-// passed on — so they belong in the contract rather than merely being left out
+// them: they are raised by whatever this body called, recognized here, and
+// passed on, so they belong in the contract rather than merely being left out
 // of the handled set.
 function rethrownComparedCodesIn(text, ownNamespaces) {
   var out = {};
@@ -678,8 +678,43 @@ function bodyAfter(code, blockEnd, prim) {
     if (relocated !== null) { relocatedBodies += 1; return relocated; }
     if (!adjacent) return null;
   }
+  var matched = functionBodyFrom(code, maskedOf(code), blockEnd);
+  if (matched !== null) return matched;
   var end = after.search(/\n\}/);
   return end === -1 ? after : after.slice(0, end);
+}
+
+// The text of the function declared at `declAt`, from the declaration up to
+// (not including) the brace that closes its body, found by matching braces
+// over the masked text. The first closing brace at column 0 is the end of a
+// function only when the function spans several lines: for a one-line
+// `function wgSeal(opts) { return _seal(WG, opts); }` it is the end of
+// whatever follows, so the body read ran into the next declarations and the
+// block was held back as unreadable. Null when the braces do not balance.
+function functionBodyFrom(code, masked, declAt) {
+  var paren = masked.indexOf("(", declAt);
+  if (paren === -1) return null;
+  var depth = 0;
+  var close = -1;
+  for (var i = paren; i < masked.length; i += 1) {
+    if (masked[i] === "(") depth += 1;
+    else if (masked[i] === ")") { depth -= 1; if (depth === 0) { close = i; break; } }
+  }
+  if (close === -1) return null;
+  var open = masked.indexOf("{", close);
+  if (open === -1) return null;
+  var inner = bracedBodyAt(masked, open);
+  if (inner === null) return null;
+  return code.slice(declAt, open + 1 + inner.length);
+}
+
+// One masked copy per source text: every block in a file reads the same one.
+var _maskedCache = { text: null, masked: null };
+function maskedOf(text) {
+  if (_maskedCache.text !== text) {
+    _maskedCache = { text: text, masked: maskLiteralsAndComments(text) };
+  }
+  return _maskedCache.masked;
 }
 
 // The body of `function <name>(` wherever it sits and at whatever indentation,
@@ -731,6 +766,19 @@ function maskLiteralsAndComments(text) {
       i = stop;
       continue;
     }
+    // A regular-expression literal. Its `//` is not a comment and a brace or
+    // quote inside it is not code: `/^https?:\/\//.test(x)) {` read as a
+    // comment hid the `{` that follows and left the whole body unbalanced.
+    if (ch === "/") {
+      var reEnd = regexLiteralEnd(text, out, i);
+      if (reEnd !== -1) {
+        for (var r = i + 1; r < reEnd; r += 1) out[r] = "x";
+        i = reEnd + 1;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
     if (ch !== '"' && ch !== "'" && ch !== "`") { i += 1; continue; }
     var quote = ch;
     var j = i + 1;
@@ -744,6 +792,31 @@ function maskLiteralsAndComments(text) {
     i = j + 1;
   }
   return out.join("");
+}
+
+// The index of the closing `/` of a regular-expression literal opening at `at`,
+// or -1 when the slash there is division. A slash opens a literal where an
+// operand is expected: at the start, after an operator or opening punctuation,
+// or after a keyword such as `return`. `out` is the masking buffer so far, in
+// which a string before `at` still ends in its quote character.
+var REGEX_AFTER_PUNCT = /[(,=:[!&|?{};+\-*%<>~^]/;
+var REGEX_AFTER_WORD = /\b(?:return|typeof|case|in|of|void|delete|throw|new|yield|await)$/;
+function regexLiteralEnd(text, out, at) {
+  var p = at - 1;
+  while (p >= 0 && /\s/.test(out[p])) p -= 1;
+  var operandExpected = p < 0 || REGEX_AFTER_PUNCT.test(out[p]) ||
+    REGEX_AFTER_WORD.test(text.slice(Math.max(0, p - 7), p + 1));
+  if (!operandExpected) return -1;
+  var inClass = false;
+  for (var j = at + 1; j < out.length; j += 1) {
+    var c = out[j];
+    if (c === "\n") return -1;
+    if (c === "\\") { j += 1; continue; }
+    if (c === "[") inClass = true;
+    else if (c === "]") inClass = false;
+    else if (c === "/" && !inClass) return j;
+  }
+  return -1;
 }
 
 // The keywords whose parenthesized head is followed by a BLOCK rather than a
@@ -834,7 +907,19 @@ function isSynchronousCallback(masked, at, fileMasked) {
   var i = skipBackWhitespace(masked, at - 1);
   if (i < 0) return false;
   if (masked[i] === ">" && masked[i - 1] === "=") {
+    // Step back over the arrow's parameters, `(item)` or a bare `item`, so the
+    // call the arrow sits in is read the same way as for a function expression.
     i = skipBackWhitespace(masked, i - 2);
+    if (i < 0) return false;
+    if (masked[i] === ")") {
+      var paramsOpen = matchingOpenParen(masked, i);
+      if (paramsOpen === -1) return false;
+      i = skipBackWhitespace(masked, paramsOpen - 1);
+    } else {
+      var paramStart = identifierStartAt(masked, i);
+      if (paramStart === i + 1) return false;
+      i = skipBackWhitespace(masked, paramStart - 1);
+    }
   } else if (masked[i] === ")") {
     var depth = 0;
     while (i >= 0) {
@@ -1086,9 +1171,69 @@ function nestedFunctionSpans(body, fileSource) {
   nested.forEach(function (n) {
     if (n.name && keep[n.name]) return;
     if (isSynchronousCallback(masked, n.brace, fileMasked)) return;
-    spans.push([n.brace, n.end]);
+    spans.push([declarationHeadStart(masked, n.brace), n.end]);
   });
   return spans;
+}
+
+// Where the head of the function whose body opens at `brace` starts: the
+// `async` / `function` keywords, the name and the parameter list, or the
+// parameters and arrow. A removed body has to take its head with it, because
+// `function sign(body)` and the shorthand method `sign(body)` left behind read
+// as a call to whatever top-level `sign` the module declares, and the
+// primitive is then charged with that function's codes. `var x =` and a
+// property key stay, since neither reads as a call.
+function declarationHeadStart(masked, brace) {
+  var i = skipBackWhitespace(masked, brace - 1);
+  var start;
+  if (i >= 1 && masked[i] === ">" && masked[i - 1] === "=") {
+    i = skipBackWhitespace(masked, i - 2);
+    if (i < 0) return brace;
+    if (masked[i] === ")") {
+      start = matchingOpenParen(masked, i);
+      if (start === -1) return brace;
+    } else {
+      start = identifierStartAt(masked, i);
+      if (start === i + 1) return brace;
+    }
+    return keywordBefore(masked, start, "async");
+  }
+  if (i < 0 || masked[i] !== ")") return brace;
+  start = matchingOpenParen(masked, i);
+  if (start === -1) return brace;
+  var nameEnd = skipBackWhitespace(masked, start - 1);
+  var nameStart = identifierStartAt(masked, nameEnd);
+  if (nameStart <= nameEnd) start = nameStart;
+  if (masked.slice(start, nameEnd + 1) !== "function") {
+    start = keywordBefore(masked, start, "function");
+  }
+  return keywordBefore(masked, start, "async");
+}
+
+function matchingOpenParen(masked, close) {
+  var depth = 0;
+  for (var i = close; i >= 0; i -= 1) {
+    if (masked[i] === ")") depth += 1;
+    else if (masked[i] === "(") { depth -= 1; if (depth === 0) return i; }
+  }
+  return -1;
+}
+
+// The first character of the identifier ending at `end`; `end + 1` when the
+// character at `end` is not part of one.
+function identifierStartAt(masked, end) {
+  var j = end;
+  while (j >= 0 && /[A-Za-z0-9_$]/.test(masked[j])) j -= 1;
+  return j + 1;
+}
+
+// `at`, moved back over `keyword` (and a generator `*` before a name) when that
+// keyword is the word in front of it.
+function keywordBefore(masked, at, keyword) {
+  var j = skipBackWhitespace(masked, at - 1);
+  if (j >= 0 && masked[j] === "*") j = skipBackWhitespace(masked, j - 1);
+  var s = identifierStartAt(masked, j);
+  return masked.slice(s, j + 1) === keyword ? s : at;
 }
 
 function withoutSpans(body, spans) {
@@ -1116,14 +1261,20 @@ var unreadableHelpers = 0;
 function localHelpers(code) {
   var out = {};
   var re = /^(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/gm;
+  var masked = maskedOf(code);
+  var asyncNames = asyncNamesIn(masked);
   var m;
   while ((m = re.exec(code)) !== null) {
-    var rest = code.slice(m.index);
-    var end = rest.search(/\n\}/);
-    var body = end === -1 ? rest : rest.slice(0, end);
+    var body = functionBodyFrom(code, masked, m.index);
+    if (body === null) {
+      var rest = code.slice(m.index);
+      var end = rest.search(/\n\}/);
+      body = end === -1 ? rest : rest.slice(0, end);
+    }
     var spans = nestedFunctionSpans(body, code);
     if (spans === null) { unreadableHelpers += 1; continue; }
-    out[m[1]] = spans.length ? withoutSpans(body, spans) : body;
+    out[m[1]] = withoutConsumedTries(spans.length ? withoutSpans(body, spans) : body,
+      asyncNames);
   }
   return out;
 }
@@ -1132,17 +1283,26 @@ function localHelpers(code) {
 // that, `_requireInit`'s message "db.init() must be awaited" matches `init(` and
 // drags the whole init function in, which demanded `db/bad-at-rest` of
 // `b.db.stream` — a code that primitive does not throw.
-function bodiesReachedFrom(startBody, helpers) {
+//
+// A name a body declares for itself (a parameter, or a function or variable at
+// its own top level) is that binding inside the body, so a call to it there
+// does not reach the top-level helper of the same name. `shadowed` gives the
+// start body's names, read from its text before nested bodies were removed;
+// every helper reached is read for its own.
+function bodiesReachedFrom(startBody, helpers, shadowed) {
   var names = Object.keys(helpers);
   var seen = {};
   var reached = [startBody];
   var frontier = [startBody];
+  var first = true;
   while (frontier.length) {
     var next = [];
     frontier.forEach(function (body) {
       var callable = maskLiteralsAndComments(body);
+      var own = first && shadowed ? shadowed : namesDeclaredIn(callable);
+      first = false;
       names.forEach(function (nm) {
-        if (seen[nm]) return;
+        if (seen[nm] || own[nm]) return;
         // A MEMBER call is somebody else's function. `\b` is satisfied between
         // the dot and the name, so a bare word boundary let `JSON.parse(` match a
         // local helper called `parse` and drag its codes in.
@@ -1155,6 +1315,104 @@ function bodiesReachedFrom(startBody, helpers) {
     frontier = next;
   }
   return reached;
+}
+
+// The names a function's masked text binds for itself: its parameters, and the
+// `function` declarations and `var` / `let` / `const` names written directly
+// in its body rather than inside a nested block or function.
+function namesDeclaredIn(masked) {
+  var out = {};
+  var brace = masked.indexOf("{");
+  if (brace === -1) return out;
+  var open = masked.indexOf("(");
+  if (open !== -1 && open < brace) {
+    var depth = 0;
+    var close = -1;
+    for (var p = open; p < masked.length; p += 1) {
+      if (masked[p] === "(") depth += 1;
+      else if (masked[p] === ")") { depth -= 1; if (depth === 0) { close = p; break; } }
+    }
+    if (close !== -1) {
+      brace = masked.indexOf("{", close);
+      if (brace === -1) return out;
+      masked.slice(open + 1, close).split(",").forEach(function (piece) {
+        var pm = /^\s*(?:\.\.\.)?([A-Za-z_$][\w$]*)/.exec(piece);
+        if (pm) out[pm[1]] = true;
+      });
+    }
+  }
+  var flat = masked.split("");
+  var level = 0;
+  for (var i = brace; i < flat.length; i += 1) {
+    var c = masked[i];
+    if (c === "{") { level += 1; if (level > 1) flat[i] = " "; continue; }
+    if (c === "}") { if (level > 1) flat[i] = " "; level -= 1; continue; }
+    if (level !== 1 && c !== "\n") flat[i] = " ";
+  }
+  var text = flat.slice(brace).join("");
+  var re = /\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(|\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)/g;
+  var m;
+  while ((m = re.exec(text)) !== null) out[m[1] || m[2]] = true;
+  return out;
+}
+
+// The `try { ... }` blocks, as [start, end) spans over the masked text, whose
+// catch never reads the error it caught. Such a catch cannot pass the error's
+// code to anyone, so nothing raised inside the try block reaches the caller.
+// A try block is left in place when it holds a function, an arrow, a promise
+// or a `yield`, when it returns anything other than an `await`, or when it
+// calls one of `asyncNames` without awaiting it: a rejection in any of those
+// can escape the catch.
+function consumedTrySpans(masked, asyncNames) {
+  var spans = [];
+  var re = /\btry\s*\{/g;
+  var m;
+  while ((m = re.exec(masked)) !== null) {
+    var open = m.index + m[0].length - 1;
+    var tryBody = bracedBodyAt(masked, open);
+    if (tryBody === null) continue;
+    var after = open + tryBody.length + 2;
+    var cm = /^\s*catch\s*(?:\(\s*([A-Za-z_$][\w$]*)\s*\))?\s*\{/.exec(masked.slice(after));
+    if (!cm) continue;
+    var catchBody = bracedBodyAt(masked, after + cm[0].length - 1);
+    if (catchBody === null) continue;
+    if (cm[1] && new RegExp("(?<![.\\w$])" + escapeRegExp(cm[1]) + "(?![\\w$])")
+        .test(catchBody)) continue;
+    if (/\bfunction\b|=>|\bPromise\b|\.then\s*\(|\byield\b/.test(tryBody)) continue;
+    if (/\breturn\b(?!\s+await\b)/.test(tryBody)) continue;
+    var escapes = Object.keys(asyncNames || {}).some(function (nm) {
+      return new RegExp("(?<!\\bawait\\s+)(?<![.\\w$])" + escapeRegExp(nm) + "\\s*\\(")
+        .test(tryBody);
+    });
+    if (escapes) continue;
+    spans.push([m.index, after]);
+  }
+  return spans;
+}
+
+// Every name the source binds to an async function: `async function name`,
+// `name = async ...` and `name: async ...`.
+function asyncNamesIn(masked) {
+  var out = {};
+  var re = /\basync\s+function\s*\*?\s*([A-Za-z_$][\w$]*)|([A-Za-z_$][\w$]*)\s*[:=]\s*async\b/g;
+  var m;
+  while ((m = re.exec(masked)) !== null) out[m[1] || m[2]] = true;
+  return out;
+}
+
+// One async-name set per source text: every block in a file reads the same one.
+var _asyncCache = { text: null, names: null };
+function asyncNamesOf(text) {
+  if (_asyncCache.text !== text) {
+    _asyncCache = { text: text, names: asyncNamesIn(maskLiteralsAndComments(text)) };
+  }
+  return _asyncCache.names;
+}
+
+// `text` with every consumed try block blanked.
+function withoutConsumedTries(text, asyncNames) {
+  var spans = consumedTrySpans(maskLiteralsAndComments(text), asyncNames);
+  return spans.length ? withoutSpans(text, spans) : text;
 }
 
 // ---- The vocabulary: namespaces the tree really builds errors in. ----
@@ -1180,6 +1438,64 @@ FILES.forEach(function (full) {
     });
   });
 });
+
+// The codes a primitive's body raises into its caller: its own throws, those of
+// every helper it reaches, the builder codes it composes, and the codes it
+// re-raises from a catch. Returns null when the brace scan cannot read the body.
+// The walk below and the fixtures both run this, so a fixture exercises the
+// same reading the gate applies to lib/.
+function codesThrownByBody(body, fileSrc, ownNamespaces, fileHelpers, composedByAlias) {
+  // A code built inside a callback belongs to that callback, not to the
+  // primitive the block describes, so only the nested BODIES are removed.
+  // Holding the whole primitive back instead would discard the throws the
+  // outer function makes itself, which is most of what there is to check:
+  // `b.deprecate.warn` throws `deprecate/used-in-error-mode` from its own
+  // body and merely passes a callback to a map.
+  var spans = nestedFunctionSpans(body, fileSrc);
+  if (spans === null) return null;
+  var own = spans.length ? withoutSpans(body, spans) : body;
+  // A try block whose catch never reads the error raises nothing into the
+  // caller, so it is removed before anything is read from the body.
+  own = withoutConsumedTries(own, asyncNamesOf(fileSrc));
+  // The names this body binds itself, read before nested bodies were removed,
+  // so a call to a nested `check` is not read as a call to a top-level one.
+  var shadowed = namesDeclaredIn(maskLiteralsAndComments(body));
+  // A code the primitive's own body COMPARES against is one it handles, so a
+  // helper raising it does not raise it into the caller:
+  // `b.network.dns.discoverEncrypted` catches `dns/no-result` from the SVCB
+  // query and throws `dns/ddr-not-discovered` instead, and demanding the
+  // caught code would put a failure in the documentation that an operator can
+  // never receive. Only PROPAGATION is suppressed, not construction: a
+  // primitive that compares a code and also builds it still documents it.
+  var handled = comparedCodesIn(own, ownNamespaces);
+
+  // The codes of every body this one reaches, not only its own. A helper the
+  // primitive calls synchronously raises into the caller, so its codes are
+  // part of the primitive's contract.
+  var allHelpers = Object.assign({}, fileHelpers, nestedHelperBodies(body));
+  var raisers = raisingHelperNames(allHelpers);
+  var deferrers = deferringHelperNames(allHelpers);
+  var thrown = codesRaisedIn(own, ownNamespaces, raisers, deferrers);
+  var reached = bodiesReachedFrom(own, fileHelpers, shadowed);
+  reached.forEach(function (b, idx) {
+    if (idx > 0) {
+      Object.keys(codesRaisedIn(b, ownNamespaces, raisers, deferrers)).forEach(function (c) {
+        if (!handled[c]) thrown[c] = true;
+      });
+    }
+    Object.keys(composedByAlias).forEach(function (alias) {
+      if (!new RegExp("\\b" + alias + "\\s*\\(").test(b)) return;
+      composedByAlias[alias].forEach(function (c) {
+        if (idx === 0 || !handled[c]) thrown[c] = true;
+      });
+    });
+  });
+  // A code this body recognized in a catch and then re-raised reaches the
+  // caller through it, so it is demanded even though nothing here builds it.
+  Object.keys(rethrownComparedCodesIn(own, ownNamespaces))
+    .forEach(function (c) { thrown[c] = true; });
+  return { thrown: thrown, narrowed: spans.length > 0 };
+}
 
 // ---- Walk every @primitive block. ----
 function collect() {
@@ -1238,53 +1554,11 @@ function collect() {
         prim:       prim,
         documented: Object.keys(documented).sort(),
       };
-      // A code built inside a callback belongs to that callback, not to the
-      // primitive the block describes, so only the nested BODIES are removed.
-      // Holding the whole primitive back instead would discard the throws the
-      // outer function makes itself, which is most of what there is to check:
-      // `b.deprecate.warn` throws `deprecate/used-in-error-mode` from its own
-      // body and merely passes a callback to a map.
-      var spans = nestedFunctionSpans(body, src);
-      if (spans === null) { heldBack.push(entry); continue; }
-      var own = body;
-      if (spans.length) {
-        own = withoutSpans(body, spans);
-        narrowed += 1;
-      }
-      // A code the primitive's own body COMPARES against is one it handles, so a
-      // helper raising it does not raise it into the caller:
-      // `b.network.dns.discoverEncrypted` catches `dns/no-result` from the SVCB
-      // query and throws `dns/ddr-not-discovered` instead, and demanding the
-      // caught code would put a failure in the documentation that an operator can
-      // never receive. Only PROPAGATION is suppressed, not construction: a
-      // primitive that compares a code and also builds it still documents it.
-      var handled = comparedCodesIn(own, OWN_NAMESPACES[rel]);
-
-      // The codes of every body this one reaches, not only its own. A helper the
-      // primitive calls synchronously raises into the caller, so its codes are
-      // part of the primitive's contract.
-      var allHelpers = Object.assign({}, LOCAL_HELPERS[rel], nestedHelperBodies(body));
-      var raisers = raisingHelperNames(allHelpers);
-      var deferrers = deferringHelperNames(allHelpers);
-      var thrown = codesRaisedIn(own, OWN_NAMESPACES[rel], raisers, deferrers);
-      var reached = bodiesReachedFrom(own, LOCAL_HELPERS[rel]);
-      reached.forEach(function (b, idx) {
-        if (idx > 0) {
-          Object.keys(codesRaisedIn(b, OWN_NAMESPACES[rel], raisers, deferrers)).forEach(function (c) {
-            if (!handled[c]) thrown[c] = true;
-          });
-        }
-        Object.keys(COMPOSED_BY_ALIAS[rel]).forEach(function (alias) {
-          if (!new RegExp("\\b" + alias + "\\s*\\(").test(b)) return;
-          COMPOSED_BY_ALIAS[rel][alias].forEach(function (c) {
-            if (idx === 0 || !handled[c]) thrown[c] = true;
-          });
-        });
-      });
-      // A code this body recognised in a catch and then re-raised reaches the
-      // caller through it, so it is demanded even though nothing here builds it.
-      Object.keys(rethrownComparedCodesIn(own, OWN_NAMESPACES[rel]))
-        .forEach(function (c) { thrown[c] = true; });
+      var read = codesThrownByBody(body, src, OWN_NAMESPACES[rel], LOCAL_HELPERS[rel],
+        COMPOSED_BY_ALIAS[rel]);
+      if (read === null) { heldBack.push(entry); continue; }
+      if (read.narrowed) narrowed += 1;
+      var thrown = read.thrown;
 
       entry.missing = Object.keys(thrown)
         .filter(isWholeCode)
@@ -1720,8 +1994,308 @@ function testTheGateCanFail() {
         (inProse === null ? "no prose match" : inProse[1]));
 }
 
+function testANestedDeclarationHeaderIsNotACall() {
+  // A factory declares the methods of the handle it returns. Removing only a
+  // nested function's BODY left its header behind, and `function sign(body)`
+  // then read as a call to the module's top-level `sign`, so the factory was
+  // charged with every code that unrelated function throws. The shorthand
+  // method `verify(body) { ... }` in the returned object is the same shape
+  // without the keyword. A helper the factory really calls must still count.
+  var fixtureSrc = [
+    "function sign(input) {",
+    "  if (!input) throw new FixtureError(\"fixture/top-level-sign\", \"no input\");",
+    "  return input;",
+    "}",
+    "function verify(input) {",
+    "  if (!input) throw new FixtureError(\"fixture/top-level-verify\", \"no input\");",
+    "  return input;",
+    "}",
+    "function _validate(opts) {",
+    "  if (!opts.keys) throw new FixtureError(\"fixture/via-helper\", \"no keys\");",
+    "}",
+    "function signer(opts) {",
+    "  if (!opts) throw new FixtureError(\"fixture/signer-opts\", \"no opts\");",
+    "  _validate(opts);",
+    "  function sign(body, callOpts) {",
+    "    return body + String(callOpts);",
+    "  }",
+    "  var send = async function send(input) {",
+    "    return sign(input.body);",
+    "  };",
+    "  return {",
+    "    sign: sign,",
+    "    send: send,",
+    "    verify(body) { return body; },",
+    "  };",
+    "}",
+    "",
+  ].join("\n");
+  var code = stripBlocks(fixtureSrc);
+  var helpersOfFixture = localHelpers(code);
+  var at = code.indexOf("function signer");
+  var body = bodyAfter(code, at, "b.fixture.signer");
+  var read = body === null ? null :
+    codesThrownByBody(body, fixtureSrc, { fixture: true }, helpersOfFixture, {});
+  var got = read === null ? ["<unreadable>"] : Object.keys(read.thrown).sort();
+  check("a nested declaration's header is not read as a call to a top-level " +
+        "function of the same name, while a helper the factory calls still counts",
+        got.join(",") === "fixture/signer-opts,fixture/via-helper", got.join(","));
+}
+
+function testARegexLiteralAndAOneLineFunctionAreRead() {
+  // Two shapes the brace scan misread, each of which held a block back whole.
+  // A regular-expression literal holding `//` was masked as a line comment,
+  // hiding the `{` after it; a division on the same footing must stay code.
+  var regexBody = [
+    "function outer(u, a, b) {",
+    "  var ratio = a / b / 2;",
+    "  if (!/^https?:\\/\\//.test(u)) {",
+    "    throw new FixtureError(\"fixture/bad-url\", \"not absolute\");",
+    "  }",
+    "  if (ratio > 1) { throw new FixtureError(\"fixture/after-division\", \"x\"); }",
+    "  return u;",
+  ].join("\n");
+  var regexSpans = nestedFunctionSpans(regexBody);
+  var regexCodes = regexSpans === null ? ["<unreadable>"] :
+    Object.keys(codesIn(regexBody, { fixture: true })).sort();
+  check("a regex literal holding `//` does not hide the braces after it, and a " +
+        "division is still read as code",
+        regexSpans !== null &&
+          regexCodes.join(",") === "fixture/after-division,fixture/bad-url",
+        regexCodes.join(","));
+
+  // A one-line function closes on its own line, so the first closing brace at
+  // column 0 belongs to the next declaration. Reading to it charged the block
+  // with that function's codes, or left the braces unbalanced.
+  var oneLineSrc = [
+    "function _presign(kind, key) {",
+    "  if (!key) throw new FixtureError(\"fixture/no-key\", \"no key\");",
+    "  return kind + key;",
+    "}",
+    "/**",
+    " * @primitive b.fixture.presign",
+    " */",
+    "function presign(key) { return _presign(\"Upload\", key); }",
+    "",
+    "function other(x) {",
+    "  if (!x) throw new FixtureError(\"fixture/from-other\", \"no x\");",
+    "  return x;",
+    "}",
+    "",
+  ].join("\n");
+  var code = stripBlocks(oneLineSrc);
+  var body = bodyAfter(code, oneLineSrc.indexOf("*/") + 2, "b.fixture.presign");
+  var read = body === null ? null :
+    codesThrownByBody(body, oneLineSrc, { fixture: true }, localHelpers(code), {});
+  var got = read === null ? ["<unreadable>"] : Object.keys(read.thrown).sort();
+  check("a one-line function's body ends at its own closing brace, and the " +
+        "helper it calls is followed",
+        got.join(",") === "fixture/no-key", got.join(","));
+}
+
+function testAHelperThrowCaughtAndReturnedStaysInTheContract() {
+  // A primitive that catches a helper's throw and RETURNS its code as a
+  // verdict hands that code to its caller as a value, so the block still has
+  // to name it. `b.contentCredentials.verifyCose` returns
+  // `reason: e.code` from `_resolveTstHashAlg` this way.
+  var fixtureSrc = [
+    "function _resolve(name) {",
+    "  if (!name) throw new FixtureError(\"fixture/bad-name\", \"no name\");",
+    "  return name;",
+    "}",
+    "function verifyThing(opts) {",
+    "  var name;",
+    "  try { name = _resolve(opts.name); }",
+    "  catch (e) { return { valid: false, reason: e.code }; }",
+    "  return { valid: true, reason: null, name: name };",
+    "}",
+    "",
+  ].join("\n");
+  var code = stripBlocks(fixtureSrc);
+  var body = bodyAfter(code, code.indexOf("function verifyThing"), "b.fixture.verifyThing");
+  var read = body === null ? null :
+    codesThrownByBody(body, fixtureSrc, { fixture: true }, localHelpers(code), {});
+  var got = read === null ? ["<unreadable>"] : Object.keys(read.thrown).sort();
+  check("a helper code the primitive catches and returns as its reason is demanded",
+        got.join(",") === "fixture/bad-name", got.join(","));
+}
+
+// Reads one fixture primitive the way the walk reads lib/.
+function fixtureThrown(fixtureSrc, fnName) {
+  var code = stripBlocks(fixtureSrc);
+  var body = bodyAfter(code, code.indexOf("function " + fnName + "("), "b.fixture." + fnName);
+  var read = body === null ? null :
+    codesThrownByBody(body, fixtureSrc, { fixture: true }, localHelpers(code), {});
+  return read === null ? "<unreadable>" : Object.keys(read.thrown).sort().join(",");
+}
+
+function testANestedNameShadowsTheTopLevelFunction() {
+  // A name the primitive declares itself (a nested function, a `var`, or a
+  // parameter) is not the module's top-level function of that name, so a call
+  // to it does not charge the primitive with the top-level function's codes.
+  // A top-level helper the primitive reaches still calls the top-level one.
+  var fixtureSrc = [
+    "function check(o) {",
+    "  if (!o) throw new FixtureError(\"fixture/top-level-check\", \"x\");",
+    "}",
+    "function _helper(o) { check(o); }",
+    "function nestedDecl(opts) {",
+    "  function check(o) {",
+    "    if (!o.name) throw new FixtureError(\"fixture/nested-check\", \"x\");",
+    "  }",
+    "  check(opts);",
+    "  return opts;",
+    "}",
+    "function nestedVar(opts) {",
+    "  var check = function (o) {",
+    "    if (!o.name) throw new FixtureError(\"fixture/nested-check\", \"x\");",
+    "  };",
+    "  check(opts);",
+    "  return opts;",
+    "}",
+    "function viaParam(opts, check) {",
+    "  check(opts);",
+    "  return opts;",
+    "}",
+    "function shadowAndHelper(opts) {",
+    "  function check(o) {",
+    "    if (!o.name) throw new FixtureError(\"fixture/nested-check\", \"x\");",
+    "  }",
+    "  check(opts);",
+    "  _helper(opts);",
+    "  return opts;",
+    "}",
+    "",
+  ].join("\n");
+  var got = {
+    nestedDecl:      fixtureThrown(fixtureSrc, "nestedDecl"),
+    nestedVar:       fixtureThrown(fixtureSrc, "nestedVar"),
+    viaParam:        fixtureThrown(fixtureSrc, "viaParam"),
+    shadowAndHelper: fixtureThrown(fixtureSrc, "shadowAndHelper"),
+  };
+  check("a nested function, a var or a parameter that shadows a top-level " +
+        "function is not read as a call to it, and a reached helper's call is",
+        got.nestedDecl === "fixture/nested-check" &&
+          got.nestedVar === "fixture/nested-check" &&
+          got.viaParam === "" &&
+          got.shadowAndHelper === "fixture/nested-check,fixture/top-level-check",
+        JSON.stringify(got));
+}
+
+function testAnArrowCallbackRunsLikeAFunctionExpression() {
+  // An arrow handed to a synchronous call runs during that call, exactly as a
+  // `function` expression does, so its throws reach the caller. One handed to
+  // a timer runs later, and one stored in a variable runs when called.
+  var fixtureSrc = [
+    "function _v(item) {",
+    "  if (!item) throw new FixtureError(\"fixture/via-v\", \"x\");",
+    "}",
+    "function eachParen(list) {",
+    "  list.forEach((item) => { _v(item); });",
+    "}",
+    "function eachBare(list) {",
+    "  list.forEach(item => { _v(item); });",
+    "}",
+    "function eachFunction(list) {",
+    "  list.forEach(function (item) { _v(item); });",
+    "}",
+    "function later(list) {",
+    "  setTimeout(() => { _v(list); }, 1);",
+    "  var run = () => { _v(list); };",
+    "  return run;",
+    "}",
+    "",
+  ].join("\n");
+  var got = {
+    eachParen:    fixtureThrown(fixtureSrc, "eachParen"),
+    eachBare:     fixtureThrown(fixtureSrc, "eachBare"),
+    eachFunction: fixtureThrown(fixtureSrc, "eachFunction"),
+    later:        fixtureThrown(fixtureSrc, "later"),
+  };
+  check("an arrow callback handed to a synchronous call is read like a function " +
+        "expression, and one handed to a timer or stored is not",
+        got.eachParen === "fixture/via-v" && got.eachBare === "fixture/via-v" &&
+          got.eachFunction === "fixture/via-v" && got.later === "",
+        JSON.stringify(got));
+}
+
+function testACatchThatNeverReadsTheErrorConsumesIt() {
+  // A catch that never reads the error it caught cannot pass that error's
+  // code on, so a helper code raised inside its try block is not demanded. A
+  // catch that throws a code of its own still has that code demanded. A catch
+  // that reads the error (re-raises it, returns its code, or wraps it) keeps
+  // the helper code in the contract, and so does a try block that returns
+  // without awaiting, since a returned promise rejects past the catch.
+  var fixtureSrc = [
+    "function _resolve(name) {",
+    "  if (!name) throw new FixtureError(\"fixture/bad-name\", \"no name\");",
+    "  return name;",
+    "}",
+    "async function _resolveLater(name) { return _resolve(name); }",
+    "function swallowed(opts) {",
+    "  var name;",
+    "  try { name = _resolve(opts.name); } catch (_e) { return null; }",
+    "  return name;",
+    "}",
+    "function noBinding(opts) {",
+    "  var name = null;",
+    "  try { name = _resolve(opts.name); } catch { name = \"\"; }",
+    "  return name;",
+    "}",
+    "function replaced(opts) {",
+    "  var name;",
+    "  try { name = _resolve(opts.name); }",
+    "  catch (_e) { throw new FixtureError(\"fixture/replaced\", \"x\"); }",
+    "  return name;",
+    "}",
+    "function rethrown(opts) {",
+    "  try { return _resolve(opts.name); }",
+    "  catch (e) { opts.failed = true; throw e; }",
+    "}",
+    "async function unawaited(opts) {",
+    "  try { return _resolveLater(opts.name); } catch (_e) { return null; }",
+    "}",
+    "async function assigned(opts) {",
+    "  var p;",
+    "  try { p = _resolveLater(opts.name); } catch (_e) { p = null; }",
+    "  return p;",
+    "}",
+    "async function awaited(opts) {",
+    "  var name;",
+    "  try { name = await _resolveLater(opts.name); } catch (_e) { name = null; }",
+    "  return name;",
+    "}",
+    "",
+  ].join("\n");
+  var got = {
+    swallowed: fixtureThrown(fixtureSrc, "swallowed"),
+    noBinding: fixtureThrown(fixtureSrc, "noBinding"),
+    replaced:  fixtureThrown(fixtureSrc, "replaced"),
+    rethrown:  fixtureThrown(fixtureSrc, "rethrown"),
+    unawaited: fixtureThrown(fixtureSrc, "unawaited"),
+    assigned:  fixtureThrown(fixtureSrc, "assigned"),
+    awaited:   fixtureThrown(fixtureSrc, "awaited"),
+  };
+  check("a catch that never reads the error consumes the codes raised in its " +
+        "try block, and a catch that reads it, or an unawaited return or call " +
+        "of an async helper, does not",
+        got.swallowed === "" && got.noBinding === "" &&
+          got.replaced === "fixture/replaced" &&
+          got.rethrown === "fixture/bad-name" &&
+          got.unawaited === "fixture/bad-name" &&
+          got.assigned === "fixture/bad-name" &&
+          got.awaited === "",
+        JSON.stringify(got));
+}
+
 async function run() {
   testTheWalkReadTheTree();
+  testANestedDeclarationHeaderIsNotACall();
+  testARegexLiteralAndAOneLineFunctionAreRead();
+  testAHelperThrowCaughtAndReturnedStaysInTheContract();
+  testANestedNameShadowsTheTopLevelFunction();
+  testAnArrowCallbackRunsLikeAFunctionExpression();
+  testACatchThatNeverReadsTheErrorConsumesIt();
   testEveryDocumentedCodeListIsComplete();
   testBuilderSuffixesFollowDelegation();
   testTheScopeBoundaryIsNotSwallowingTheWork();

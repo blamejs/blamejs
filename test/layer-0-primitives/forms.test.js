@@ -654,6 +654,58 @@ function testValidatePattern() {
   check("pattern: a substring match no longer passes (trailing payload → invalid)", inject.valid === false);
   var ci = b.forms.validate({ fields: [{ type: "text", name: "code", pattern: /[a-z]{3}/i }] }, { code: "ABC" });
   check("pattern: the i flag is preserved when anchoring (ABC vs /[a-z]{3}/i → valid)", ci.valid === true);
+
+  // validate runs the pattern as ^(?:…)$ over a value the submitter chose.
+  // `\s+(.+)\s*` splits a run of spaces three ways, and "a" + 4,096 spaces +
+  // "x\n!" held the event loop for 6.5s before the screen refused it.
+  var cubic = /a\s+(.+)\s*/;
+  check("pattern: a pattern that is cubic on a whitespace run is refused at spec time",
+        _throws(function () {
+          return b.forms.validate({ fields: [{ type: "text", name: "q", pattern: cubic }] },
+            { q: "a" + " ".repeat(64) + "x\n!" });
+        }));
+  check("pattern: render refuses the same pattern",
+        _throws(function () {
+          return b.forms.render({ action: "/x", fields: [{ type: "text", name: "q", pattern: cubic }] });
+        }));
+  // The v flag changes how a class is written, not how the engine backtracks,
+  // so the same pattern with v is refused the same way. Unscreened, it held
+  // validate for 6.4s on "a" + 4,000 spaces + "x\n!".
+  var cubicV = /a\s+(.+)\s*/v;
+  check("pattern: the cubic pattern with the v flag is refused at spec time",
+        _throws(function () {
+          return b.forms.validate({ fields: [{ type: "text", name: "q", pattern: cubicV }] },
+            { q: "a" + " ".repeat(64) + "x\n!" });
+        }));
+  check("pattern: render refuses the cubic pattern with the v flag",
+        _throws(function () {
+          return b.forms.render({ action: "/x", fields: [{ type: "text", name: "q", pattern: cubicV }] });
+        }));
+  check("pattern: a linear pattern with the v flag is accepted and matches",
+        b.forms.validate({ fields: [{ type: "text", name: "q", pattern: /[\p{L}\d]+/v }] }, { q: "abc1" }).valid === true);
+  var linearSpec = { fields: [{ type: "text", name: "q", pattern: /a\s+\S.*/ }] };
+  check("pattern: the linear spelling is accepted and matches",
+        b.forms.validate(linearSpec, { q: "a  hello" }).valid === true);
+  check("pattern: the linear spelling refuses the hostile value",
+        b.forms.validate(linearSpec, { q: "a" + " ".repeat(64) + "x\n!" }).valid === false);
+
+  // A lookbehind body runs right to left, so the `a` to the left of the
+  // whitespace pair is what can fail after it. A `[\s\S]*` outside the
+  // lookbehind does not stop that: 3,000 spaces + "!" cost 5.3s.
+  check("pattern: a pair inside a lookbehind is refused at spec time",
+        _throws(function () {
+          return b.forms.validate({ fields: [{ type: "textarea", name: "q",
+            pattern: /^[\s\S]*(?<=a\s*\s*)[\s\S]*$/, maxLength: 100000 }] },
+            { q: " ".repeat(64) + "!" });
+        }));
+  // A lazy `[\s\S]*?` first gives the run to the `\s*` after it, so every
+  // split is tried when the end fails: 64,000 spaces + "!" cost 1.6s.
+  check("pattern: a lazy term followed by a nullable pair is refused at spec time",
+        _throws(function () {
+          return b.forms.validate({ fields: [{ type: "textarea", name: "q",
+            pattern: /\s*([\s\S]*?)\s*/, maxLength: 100000 }] },
+            { q: "x" + " ".repeat(64) + "!" });
+        }));
 }
 
 function testValidateEnum() {

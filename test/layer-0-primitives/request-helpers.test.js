@@ -722,7 +722,98 @@ function testTrustedProxyMappedPeerNormalized() {
   var forgedMapped = { socket: { remoteAddress: "::ffff:198.51.100.66" },
     headers: { "x-forwarded-for": "203.0.113.7" } };
   check("trustedClientIp still ignores forged XFF from an untrusted mapped peer",
-    pg.resolve(forgedMapped) === "::ffff:198.51.100.66");
+    pg.resolve(forgedMapped) === "198.51.100.66");
+}
+
+// One client has one address however the listener or a proxy spelled it, so
+// every consumer that compares or keys on it (rate-limit buckets, IP-bound
+// grants, session fingerprints) sees one value.
+function testClientIpReturnsTheCanonicalAddress() {
+  var ci = b.requestHelpers.clientIp;
+  check("clientIp folds a dual-stack peer ::ffff:10.0.0.1 to 10.0.0.1",
+    ci({ socket: { remoteAddress: "::ffff:10.0.0.1" }, headers: {} }) === "10.0.0.1");
+  check("clientIp folds the hex-mapped spelling ::ffff:a00:1 to 10.0.0.1",
+    ci({ socket: { remoteAddress: "::ffff:a00:1" }, headers: {} }) === "10.0.0.1");
+  check("clientIp writes an IPv6 peer in its compressed lower-case form",
+    ci({ socket: { remoteAddress: "2001:DB8:0:0:0:0:0:1" }, headers: {} }) === "2001:db8::1");
+  var fromTrusted = function (a) { return a === "10.0.0.9"; };
+  check("clientIp folds a mapped forwarded hop",
+    ci({ socket: { remoteAddress: "10.0.0.9" }, headers: { "x-forwarded-for": "::ffff:203.0.113.7" } },
+      { trustProxy: fromTrusted }) === "203.0.113.7");
+  check("clientIp leaves a forwarded value that is not an address as it was",
+    ci({ socket: { remoteAddress: "10.0.0.9" }, headers: { "x-forwarded-for": "Unknown" } },
+      { trustProxy: fromTrusted }) === "Unknown");
+  var pg = b.requestHelpers.trustedClientIp({ trustedProxies: ["10.0.0.0/8"] });
+  check("trustedClientIp resolves a mapped direct peer to its IPv4 form",
+    pg.resolve({ socket: { remoteAddress: "::ffff:198.51.100.66" }, headers: {} }) === "198.51.100.66");
+  var own = b.requestHelpers.trustedClientIp({ clientIpResolver: function (req) { return req.headers["x-client"]; } });
+  var ownMapped = own.resolve({ socket: { remoteAddress: "10.0.0.9" }, headers: { "x-client": "::ffff:10.0.0.1" } });
+  check("trustedClientIp folds a mapped clientIpResolver result to its IPv4 form",
+    ownMapped === "10.0.0.1", ownMapped);
+  var ownV6 = own.resolve({ socket: { remoteAddress: "10.0.0.9" }, headers: { "x-client": "2001:DB8::0:1" } });
+  check("trustedClientIp writes an IPv6 clientIpResolver result in compressed lower-case form",
+    ownV6 === "2001:db8::1", ownV6);
+  check("trustedClientIp returns a clientIpResolver result that is not an address as it was",
+    own.resolve({ socket: { remoteAddress: "10.0.0.9" }, headers: { "x-client": "edge-7" } }) === "edge-7");
+  check("trustedClientIp returns a null clientIpResolver result as null",
+    b.requestHelpers.trustedClientIp({ clientIpResolver: function () { return null; } })
+      .resolve({ headers: {} }) === null);
+}
+
+// The actor IP keys per-IP static bandwidth and concurrency counters and
+// fills the audit WHERE column, so a dual-stack peer is recorded and counted
+// as the IPv4 address it is.
+function testActorContextCarriesTheCanonicalAddress() {
+  var ea = b.requestHelpers.extractActorContext;
+  check("extractActorContext folds the socket peer ::ffff:10.0.0.1",
+    ea({ socket: { remoteAddress: "::ffff:10.0.0.1" }, headers: {} }).ip === "10.0.0.1");
+  check("extractActorContext folds req.ip ::ffff:a00:1",
+    ea({ ip: "::ffff:a00:1", headers: {} }).ip === "10.0.0.1");
+  check("extractActorContext folds an override ip",
+    ea({ headers: {} }, { ip: "::FFFF:10.0.0.1" }).ip === "10.0.0.1");
+  check("extractActorContext leaves a non-address ip as it was",
+    ea({ ip: "unknown", headers: {} }).ip === "unknown");
+}
+
+function testTrustedProxiesEntriesAreCanonicalAndWellFormed() {
+  var viaV4Peer = { socket: { remoteAddress: "10.0.0.9" }, headers: { "x-forwarded-for": "203.0.113.7" } };
+  var mappedEntry = b.requestHelpers.trustedClientIp({ trustedProxies: ["::ffff:10.0.0.0/104"] });
+  check("trustedProxies ::ffff:10.0.0.0/104 trusts the IPv4 proxy peer 10.0.0.9",
+    mappedEntry.resolve(viaV4Peer) === "203.0.113.7");
+  var hexEntry = b.requestHelpers.trustedClientIp({ trustedProxies: ["::ffff:a00:0/104"] });
+  check("trustedProxies ::ffff:a00:0/104 trusts the IPv4 proxy peer 10.0.0.9",
+    hexEntry.resolve(viaV4Peer) === "203.0.113.7");
+  var nat64Peer = { socket: { remoteAddress: "64:ff9b::a00:9" }, headers: { "x-forwarded-for": "203.0.113.7" } };
+  var v4Entry = b.requestHelpers.trustedClientIp({ trustedProxies: ["10.0.0.0/8"] });
+  check("trustedProxies 10.0.0.0/8 does not trust a NAT64 peer",
+    v4Entry.resolve(nat64Peer) === "64:ff9b::a00:9");
+
+  ["10.0.0.0/8x", "10.0.0.0/08", "10.0.0/8", "010.0.0.0/8", "10.0.0.0/33", "::/129", "10.0.0.1"].forEach(function (cidr) {
+    var threw = null;
+    try { b.requestHelpers.trustedClientIp({ trustedProxies: [cidr] }); } catch (e) { threw = e; }
+    check("trustedProxies " + JSON.stringify(cidr) + " is refused", threw instanceof TypeError, String(threw));
+  });
+}
+
+function testIpKeyAndPrefixFoldEveryMappedSpelling() {
+  check("ipKey folds the hex-mapped spelling ::ffff:a00:1 to 10.0.0.1",
+    b.requestHelpers.ipKey("::ffff:a00:1") === "10.0.0.1");
+  check("ipKey gives two hex-mapped clients two keys",
+    b.requestHelpers.ipKey("::ffff:a00:1") !== b.requestHelpers.ipKey("::ffff:b00:1"));
+  check("ipKey folds 0:0:0:0:0:ffff:a00:1",
+    b.requestHelpers.ipKey("0:0:0:0:0:ffff:a00:1") === "10.0.0.1");
+  check("ipPrefix folds the hex-mapped spelling to the IPv4 /24",
+    b.requestHelpers.ipPrefix("::ffff:a00:1") === "10.0.0.0/24");
+  check("ipPrefix folds ::FFFF:10.0.0.1",
+    b.requestHelpers.ipPrefix("::FFFF:10.0.0.1") === "10.0.0.0/24");
+  // 64:ff9b::/96 spans every IPv4 address in one /64, so a /64 key would put
+  // every IPv4 client of a NAT64 front in one bucket.
+  check("ipKey keys a NAT64 client on the IPv4 address it carries",
+    b.requestHelpers.ipKey("64:ff9b::a00:1") === "10.0.0.1");
+  check("ipKey gives two NAT64 clients two keys",
+    b.requestHelpers.ipKey("64:ff9b::a00:1") !== b.requestHelpers.ipKey("64:ff9b::b00:1"));
+  check("ipPrefix buckets a NAT64 client on the IPv4 /24 it carries",
+    b.requestHelpers.ipPrefix("64:ff9b::a00:1") === "10.0.0.0/24");
 }
 
 function testTrustedProtocol() {
@@ -1170,6 +1261,10 @@ async function run() {
   testClientIpToleratesMalformedForwardedHeaders();
   testTrustedIdentityHeaders();
   testTrustedProxyMappedPeerNormalized();
+  testClientIpReturnsTheCanonicalAddress();
+  testActorContextCarriesTheCanonicalAddress();
+  testTrustedProxiesEntriesAreCanonicalAndWellFormed();
+  testIpKeyAndPrefixFoldEveryMappedSpelling();
   testTrustedProtocol();
   testRequestProtocolNoProxy();
   testRequestProtocolPeerGatedTrustedProxy();

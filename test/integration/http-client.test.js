@@ -41,6 +41,30 @@ async function run() {
   });
   check("direct HTTPS: status 200",       respTls.statusCode === 200);
 
+  // ---- HTTPS to an IPv6 literal URL host: the stack certificate carries
+  //      IP:::1, and the dial checks it against the address rather than
+  //      the bracketed URL text. Default transport (ALPN, HTTP/2 when the
+  //      peer offers it) and an HTTP/1.1 agent. ----
+  var ifaces = require("node:os").networkInterfaces();
+  var hasV6Loopback = Object.keys(ifaces).some(function (n) {
+    return (ifaces[n] || []).some(function (a) { return (a.family === "IPv6" || a.family === 6) && a.address === "::1"; });
+  });
+  if (!hasV6Loopback) {
+    helpers.unavailable("direct HTTPS to https://[::1]", "no ::1 loopback on this host");
+  } else {
+    var respV6 = await b.httpClient.request({
+      method: "GET", url: "https://[::1]:8444/healthz", allowInternal: true,
+    });
+    check("direct HTTPS to https://[::1]: status 200", respV6.statusCode === 200);
+    var h1Agent = new (require("node:https").Agent)();
+    try {
+      var respV6h1 = await b.httpClient.request({
+        method: "GET", url: "https://[::1]:8444/healthz", allowInternal: true, agent: h1Agent,
+      });
+      check("direct HTTPS/1.1 to https://[::1]: status 200", respV6h1.statusCode === 200);
+    } finally { h1Agent.destroy(); }
+  }
+
   // ---- through Squid forward proxy ----
   // The squid container can't reach the host's 127.0.0.1 — its own
   // loopback is itself. From inside the docker network, caddy is

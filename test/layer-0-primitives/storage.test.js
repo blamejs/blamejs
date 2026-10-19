@@ -290,6 +290,45 @@ async function testRawDeleteExists() {
   }
 }
 
+// ---- a misspelled per-call option is refused, never ignored ----
+
+async function testPerCallUnknownOptionRefused() {
+  var uploadDir = _mkTmp("unknownopt");
+  b.storage._resetForTest();
+  try {
+    b.storage.init({ backend: "local", uploadDir: uploadDir });
+    var buf = Buffer.from("x");
+    var saved = await b.storage.saveFile(buf, "u/a.bin");
+    await b.storage.saveRaw(buf, "u/r.bin");
+    var typo = { classfication: "personal" };
+    await expectThrow("saveFile misspelled classification", "storage/bad-opts",
+      function () { return b.storage.saveFile(buf, "u/b.bin", typo); });
+    await expectThrow("saveRaw misspelled classification", "storage/bad-opts",
+      function () { return b.storage.saveRaw(buf, "u/c.bin", typo); });
+    await expectThrow("getFileBuffer misspelled classification", "storage/bad-opts",
+      function () { return b.storage.getFileBuffer("u/a.bin", saved.encryptionKey, typo); });
+    await expectThrow("getFileStream misspelled classification", "storage/bad-opts",
+      function () { return b.storage.getFileStream("u/a.bin", saved.encryptionKey, typo); });
+    await expectThrow("getRawBuffer misspelled classification", "storage/bad-opts",
+      function () { return b.storage.getRawBuffer("u/r.bin", typo); });
+    await expectThrow("exists misspelled classification", "storage/bad-opts",
+      function () { return b.storage.exists("u/r.bin", typo); });
+    await expectThrow("deleteFile misspelled versionId", "storage/bad-opts",
+      function () { return b.storage.deleteFile("u/r.bin", { versionID: "v1" }); });
+    await expectThrow("listVersions misspelled maxResults", "storage/bad-opts",
+      function () { return b.storage.listVersions("u/", { maxResult: 5 }); });
+    await expectThrow("saveRaw opts that is not an object", "storage/bad-opts",
+      function () { return b.storage.saveRaw(buf, "u/d.bin", "personal"); });
+    check("saveRaw accepts contentType, which the object-store backends read",
+      (await b.storage.saveRaw(buf, "u/e.bin", { contentType: "image/png" })).backend === "default");
+    check("deleteFile left the object in place after refusing the misspelled option",
+      (await b.storage.exists("u/r.bin")) === true);
+  } finally {
+    try { b.storage._resetForTest(); } catch (_e) { /* best-effort */ }
+    _cleanupTmp();
+  }
+}
+
 // ---- listVersions unsupported (local) + presign paths (sigv4 = offline signing) ----
 
 async function testListVersionsAndPresign() {
@@ -330,22 +369,26 @@ async function testListVersionsAndPresign() {
     await expectThrow("presignedUploadPolicy empty key", "storage/invalid-key",
       function () { b.storage.presignedUploadPolicy("", { backend: "us-ops" }); });
 
-    var up = b.storage.presignedUploadUrl("incoming/x.bin", { backend: "us-ops", expiresInSec: 300 });
+    var up = b.storage.presignedUploadUrl("incoming/x.bin", { backend: "us-ops", expiresIn: 300 });
     check("presignedUploadUrl returns a PUT URL", up.method === "PUT" && typeof up.url === "string" && up.url.indexOf("X-Amz-Signature") !== -1);
     check("presignedUploadUrl carries an expiresAt", typeof up.expiresAt === "number");
+    check("presignedUploadUrl signs the expiresIn it was given",
+      new URL(up.url).searchParams.get("X-Amz-Expires") === "300");
 
     var down = b.storage.presignedDownloadUrl("public/logo.png", {
-      backend:      "us-ops",
-      expiresInSec: 60,
+      backend:   "us-ops",
+      expiresIn: 60,
       responseHeaders: { contentDisposition: 'attachment; filename="logo.png"' },
     });
     check("presignedDownloadUrl returns a GET URL", down.method === "GET");
+    check("presignedDownloadUrl signs the expiresIn it was given",
+      new URL(down.url).searchParams.get("X-Amz-Expires") === "60");
 
     var policy = b.storage.presignedUploadPolicy("user/avatar.png", {
-      backend:      "us-ops",
-      maxBytes:     C.BYTES.mib(5),
-      expiresInSec: 300,
-      contentType:  "image/png",
+      backend:     "us-ops",
+      maxBytes:    C.BYTES.mib(5),
+      expiresIn:   300,
+      contentType: "image/png",
     });
     check("presignedUploadPolicy returns a POST policy", policy.method === "POST");
     check("presignedUploadPolicy bakes in the maxBytes cap", policy.maxBytes === C.BYTES.mib(5));
@@ -602,6 +645,7 @@ async function run() {
     await testBackendDispatchErrors();
     await testEncryptionRoundTripAndBodyValidation();
     await testRawDeleteExists();
+    await testPerCallUnknownOptionRefused();
     await testListVersionsAndPresign();
     await testChunkScratchValidation();
     await testChunkScratchRoundTrip();

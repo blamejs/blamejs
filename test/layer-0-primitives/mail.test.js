@@ -1298,6 +1298,98 @@ async function testSmtpDkimSignFailureRejectsPreConnect() {
 // smtpTransport — full state machine over loopback TLS
 // ---------------------------------------------------------------------------
 
+// The server name an SMTP dial sends comes from b.network.tls.sniFor: a host
+// name is sent as SNI, and an IP-literal host, or an IP-literal `servername`,
+// sends none (RFC 6066 section 3; Node 26 throws ERR_INVALID_ARG_VALUE from
+// tls.connect for an address in SNI). The certificate carries both a
+// localhost SAN and an IP SAN, so every case delivers with verification on.
+async function testSmtpSniFollowsTheHost(certPair) {
+  var cases = [
+    { label: "IPv4 host",                     host: "127.0.0.1", sni: null },
+    { label: "IPv4 servername",               host: "127.0.0.1", servername: "127.0.0.1", sni: null },
+    { label: "host name",                     host: "localhost", sni: "localhost" },
+    { label: "explicit name on an IPv4 host", host: "127.0.0.1", servername: "localhost", sni: "localhost" },
+  ];
+  for (var i = 0; i < cases.length; i += 1) {
+    var tc = cases[i];
+    var st = startTlsSmtp(certPair, { ext: ["8BITMIME"] });
+    var seen = [];
+    st.server.on("secureConnection", function (s) { seen.push(s.servername || null); });
+    await listen(st);
+    try {
+      var opts = {
+        host: tc.host, port: st.port, implicitTls: true, ca: certPair.caCertPem,
+        preferFamily: 4, timeoutMs: C.TIME.seconds(4),
+      };
+      if (tc.servername !== undefined) opts.servername = tc.servername;
+      var r = null, err = null;
+      try {
+        r = await b.mail.transports.smtp(opts).send({ from: "s@a.test", to: "r@b.test", subject: "hi", text: "hello" });
+      } catch (e) { err = e; }
+      check("smtp-sni: " + tc.label + " delivers", r && r.code === 250,
+        err && ((err.code || "") + " " + err.message));
+      check("smtp-sni: " + tc.label + " sends SNI " + JSON.stringify(tc.sni),
+        seen.length === 1 && seen[0] === tc.sni, JSON.stringify(seen));
+    } finally { await closeServer(st); }
+  }
+}
+
+// An IP-literal `servername` cannot be sent as SNI, and Node then checks the
+// certificate against `host`. A `servername` naming an address other than
+// `host` is refused when the transport is built, so the certificate is never
+// checked against an identity the operator did not name. The server below
+// presents a certificate valid only for the DNS name `localhost`.
+async function testSmtpIpServernameMustNameTheHost() {
+  var ca = await b.mtlsEngine.generateCa({ generation: 1 });
+  var leaf = await b.mtlsEngine.signClientCert({
+    cn: "localhost", caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem,
+    usage: "server", sans: ["localhost"],
+  });
+  var dnsOnly = { key: leaf.key, cert: leaf.cert, caCertPem: ca.caCertPem };
+  var refused = [
+    { label: "IPv4 servername on a host name",   host: "localhost", servername: "127.0.0.1" },
+    { label: "bracketed IPv6 servername on IPv4", host: "127.0.0.1", servername: "[::1]" },
+    { label: "different IPv4 servername",        host: "127.0.0.1", servername: "127.0.0.2" },
+  ];
+  for (var i = 0; i < refused.length; i += 1) {
+    var tc = refused[i];
+    var st = startTlsSmtp(dnsOnly, { ext: ["8BITMIME"] });
+    var handshakes = 0;
+    st.server.on("secureConnection", function () { handshakes += 1; });
+    await listen(st);
+    try {
+      var err = null, r = null;
+      try {
+        r = await b.mail.transports.smtp({
+          host: tc.host, servername: tc.servername, port: st.port, implicitTls: true,
+          ca: dnsOnly.caCertPem, preferFamily: 4, timeoutMs: C.TIME.seconds(4),
+        }).send({ from: "s@a.test", to: "r@b.test", subject: "hi", text: "hello" });
+      } catch (e) { err = e; }
+      check("smtp-ip-servername: " + tc.label + " is refused",
+        r === null && err && err.code === "mail/smtp-misconfigured" &&
+        /servername/.test(err.message),
+        err ? ((err.code || "") + " " + err.message) : JSON.stringify(r && r.code));
+      check("smtp-ip-servername: " + tc.label + " completes no handshake", handshakes === 0,
+        String(handshakes));
+    } finally { await closeServer(st); }
+  }
+  check("smtp-ip-servername: the host's own IPv6 address in brackets is accepted",
+    typeof b.mail.transports.smtp({ host: "::1", servername: "[::1]" }).send === "function");
+  // The comparison is by address, not by spelling.
+  var sameAddr = null;
+  try { sameAddr = b.mail.transports.smtp({ host: "::1", servername: "0:0:0:0:0:0:0:1" }); }
+  catch (e) { sameAddr = e; }
+  check("smtp-ip-servername: the host's own IPv6 address written out in full is accepted",
+    sameAddr && typeof sameAddr.send === "function",
+    sameAddr && sameAddr.message);
+  var permanent = null;
+  try { b.mail.transports.smtp({ host: "127.0.0.1", servername: "127.0.0.2" }); }
+  catch (e) { permanent = e; }
+  check("smtp-ip-servername: the refusal is a permanent mail/smtp-misconfigured",
+    permanent && permanent.code === "mail/smtp-misconfigured" && permanent.permanent === true,
+    permanent && (permanent.code + " permanent=" + permanent.permanent));
+}
+
 async function testSmtpHappyPathData(certPair) {
   var st = startTlsSmtp(certPair, { ext: ["8BITMIME"] });
   await listen(st);
@@ -3440,6 +3532,8 @@ async function run() {
   await testDaneMismatchedRecordRefusesTheSend(certPair);
   await testDaneVerifiesOnTheStarttlsPathToo(certPair);
   await testSmtpHappyPathData(certPair);
+  await testSmtpSniFollowsTheHost(certPair);
+  await testSmtpIpServernameMustNameTheHost();
   await testSmtpAuthLogin(certPair);
   await testSmtpBdatChunking(certPair);
   await testSmtpBinaryMimeBdat(certPair);

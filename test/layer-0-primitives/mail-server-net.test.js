@@ -607,7 +607,26 @@ function testEveryListenerRefusesANonBooleanForABooleanOption() {
         refusedGood.length === 0);
 }
 
+// Every mail listener takes its peer address from admitConnection. A
+// dual-stack listener reports an IPv4 client as ::ffff:a.b.c.d; the limiter,
+// the audit events and the gates all receive the IPv4 address it names, so
+// one client has one connection count however the listener spelled it.
+function testAdmitConnectionReturnsTheCanonicalPeerAddress() {
+  var seen = [];
+  var limiter = { admitConnection: function (ip) { seen.push(ip); return { ok: true }; } };
+  var spellings = [["::ffff:203.0.113.7", "203.0.113.7"], ["::ffff:cb00:7107", "203.0.113.7"],
+                   ["203.0.113.7", "203.0.113.7"], ["2001:DB8::1", "2001:db8::1"]];
+  for (var i = 0; i < spellings.length; i++) {
+    var got = mailServerNet.admitConnection({ remoteAddress: spellings[i][0] }, limiter, function () {}, {});
+    check("admitConnection returns " + spellings[i][1] + " for the peer " + spellings[i][0],
+      got === spellings[i][1], got);
+    check("admitConnection counts the peer " + spellings[i][0] + " as " + spellings[i][1],
+      seen[seen.length - 1] === spellings[i][1], seen[seen.length - 1]);
+  }
+}
+
 async function run() {
+  testAdmitConnectionReturnsTheCanonicalPeerAddress();
   testEveryListenerRefusesANonBooleanForABooleanOption();
   testFoldSubaddress();
   testTheGuardAndTheListenersReadOneAddress();

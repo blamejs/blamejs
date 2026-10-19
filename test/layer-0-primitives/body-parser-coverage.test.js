@@ -293,20 +293,16 @@ async function testMultipartStreamErrorRefused() {
 
 async function testMultipartInternalThrowRedacted500() {
   var bd = "getterbd";
-  // A per-field rule lookup keyed by the request-controlled field name throws
-  // synchronously (operator opts.fields carrying a throwing accessor). The
-  // parser must convert this unexpected internal throw into a redacted 500,
-  // not crash the request — the thrown detail is never echoed to the client.
-  var throwingFields = {};
-  Object.defineProperty(throwingFields, "f", {
-    enumerable: true,
-    get: function () { throw new Error("perfield-accessor-boom-9f3a"); },
-  });
+  // The fileFilter verdict's `reject` accessor throws while the state machine
+  // reads it. The parser must convert this unexpected internal throw into a
+  // redacted 500, not crash the request; the thrown detail is never echoed to
+  // the client.
   var body = _mpBody(bd, [
     _mpFilePartRawDisposition(bd, "name=\"f\"; filename=\"a.txt\"", "text/plain", "data"),
   ]);
-  var rv = await _drive({ multipart: { storage: "memory", fields: throwingFields } }, "POST",
-    _mpHeaders(bd, body), body, "internal-throw");
+  var rv = await _drive({ multipart: { storage: "memory", fileFilter: function () {
+    return { get reject() { throw new Error("perfield-accessor-boom-9f3a"); } };
+  } } }, "POST", _mpHeaders(bd, body), body, "internal-throw");
   check("multipart: an unexpected internal throw -> 500 (no next), request not crashed",
         rv.next === false && rv.status === 500);
   check("multipart: the internal throw's detail is redacted, not echoed to the client",

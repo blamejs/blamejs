@@ -279,6 +279,30 @@ async function testScanIcapCleanVerdictViaInjectedSocket() {
     seen.indexOf("mail.scan.clean") !== -1);
 }
 
+// The ICAP request line and Host header name the scanner in authority form,
+// so an IPv6 host is written in brackets (RFC 3507 section 4.2 uses the URI
+// syntax of RFC 3986 section 3.2.2). Written either way in opts.host, the
+// request reads `icap://[::1]:1344/...` and `Host: [::1]`.
+async function testScanIcapIpv6Authority() {
+  var icapClean = Buffer.from("ICAP/1.0 204 No Content\r\nISTag: \"clean\"\r\n\r\n", "ascii");
+  var hosts = ["::1", "[::1]"];
+  for (var i = 0; i < hosts.length; i++) {
+    var h = mailScan.create({ host: hosts[i], port: 1344, audit: _fakeAudit() });
+    var sock = _fakeSocket(icapClean);
+    await h.scan(Buffer.from("body"), { _socket: sock });
+    var head = Buffer.concat(sock._writes).toString("latin1").split("\r\n");
+    check("ICAP request line brackets the IPv6 host " + hosts[i],
+          head[0] === "RESPMOD icap://[::1]:1344/srv_clamav ICAP/1.0",
+          JSON.stringify(head[0]));
+    check("ICAP Host header brackets the IPv6 host " + hosts[i], head[1] === "Host: [::1]", JSON.stringify(head[1]));
+  }
+  var named = mailScan.create({ host: "av.example.test", port: 1344, audit: _fakeAudit() });
+  var nsock = _fakeSocket(icapClean);
+  await named.scan(Buffer.from("body"), { _socket: nsock });
+  var nhead = Buffer.concat(nsock._writes).toString("latin1").split("\r\n");
+  check("ICAP Host header for a host name is the name", nhead[1] === "Host: av.example.test", JSON.stringify(nhead[1]));
+}
+
 // A reset ICAP scan is a transport failure, and deliberately not the recovery
 // the clamav transport does.
 //
@@ -948,6 +972,7 @@ function run(cb) {
 
   return Promise.resolve()
     .then(testScanIcapCleanVerdictViaInjectedSocket)
+    .then(testScanIcapIpv6Authority)
     .then(testScanIcapInfectedVerdict)
     .then(testScanIcapResetIsATransportFailureNotACleanVerdict)
     .then(testEveryErrorVerdictNamesItsError)

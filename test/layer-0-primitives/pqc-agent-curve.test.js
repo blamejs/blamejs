@@ -103,9 +103,10 @@ function testRefuseUnknownGroupByDefault() {
     b.pqcAgent.create({ ecdhCurve: "NotARealGroup", allowOperatorGroups: true });
   } catch (e) {
     threwUnknown = e instanceof TypeError &&
-                   e.message.indexOf("not a known IANA TLS Supported Group") !== -1;
+                   e.message.indexOf("is not in the list of TLS groups pqc-agent accepts") !== -1 &&
+                   e.message.indexOf("MLKEM1024") !== -1;
   }
-  check("allowOperatorGroups still refuses unknown group names", threwUnknown);
+  check("allowOperatorGroups still refuses unknown group names, listing the accepted ones", threwUnknown);
 
   var threwBadShape = false;
   try {
@@ -215,6 +216,54 @@ function testKnownTlsGroupsExposed() {
         b.pqcAgent.KNOWN_TLS_GROUPS.indexOf("X25519") !== -1);
 }
 
+// MLKEM768 (0x0201) and MLKEM1024 (0x0202) are IANA TLS Supported Groups
+// (draft-ietf-tls-mlkem). An operator who opts into one is not refused, and
+// the agent negotiates it with a peer that offers only that group.
+async function testPureMlKemOperatorGroup() {
+  var threw = null;
+  var agent = null;
+  try { agent = b.pqcAgent.create({ ecdhCurve: "MLKEM1024", allowOperatorGroups: true }); }
+  catch (e) { threw = e; }
+  check("allowOperatorGroups accepts MLKEM1024", threw === null && agent &&
+        agent.options.ecdhCurve === "MLKEM1024", threw && threw.message);
+  if (agent) agent.destroy();
+  var threw768 = null;
+  try { b.pqcAgent.create({ ecdhCurve: "MLKEM768", allowOperatorGroups: true }).destroy(); }
+  catch (e2) { threw768 = e2; }
+  check("allowOperatorGroups accepts MLKEM768", threw768 === null, threw768 && threw768.message);
+  if (threw !== null) return;
+
+  var tls = require("node:tls");
+  var https = require("node:https");
+  var pair = require("../helpers/tls").selfSignedPair();
+  var server = tls.createServer({ key: pair.key, cert: pair.cert, ecdhCurve: "MLKEM1024",
+    minVersion: "TLSv1.3" }, function (sock) {
+    sock.on("error", function () { /* client hang-up */ });
+    sock.end("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+  });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  var ag = b.pqcAgent.create({ ecdhCurve: "MLKEM1024", allowOperatorGroups: true, ca: pair.cert });
+  var info = null;
+  var reqErr = null;
+  try {
+    await new Promise(function (resolve) {
+      var req = https.request({ host: "127.0.0.1", port: server.address().port, path: "/",
+        servername: "localhost", agent: ag }, function (res) { res.resume(); res.on("end", resolve); });
+      req.on("socket", function (s) {
+        s.once("secureConnect", function () { info = s.getEphemeralKeyInfo(); });
+      });
+      req.on("error", function (e) { reqErr = e; resolve(); });
+      req.end();
+    });
+  } finally {
+    ag.destroy();
+    server.close();
+  }
+  check("an MLKEM1024-only agent negotiates MLKEM1024 with an MLKEM1024 peer",
+        reqErr === null && info && info.name === "MLKEM1024",
+        (reqErr && reqErr.message) || JSON.stringify(info));
+}
+
 function testReloadSurface() {
   check("b.pqcAgent.reload is fn", typeof b.pqcAgent.reload === "function");
 }
@@ -278,6 +327,7 @@ async function run() {
   await testAllowOperatorGroupsAuditEmit();
   await testKeyExchangeObservation();
   testKnownTlsGroupsExposed();
+  await testPureMlKemOperatorGroup();
   testReloadSurface();
   testReloadAfterBuild();
 }

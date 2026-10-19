@@ -84,6 +84,10 @@ function testDkimCanonicalization() {
   check("relaxed header: trims value",            rh("From", "   a@b.com   ").indexOf("from:a@b.com\r\n") === 0);
   check("relaxed header: collapses internal WSP", rh("Subject", "hello   world") === "subject:hello world\r\n");
   check("relaxed header: unfolds continuation",   rh("Subject", "line1\r\n  line2") === "subject:line1 line2\r\n");
+  check("relaxed header: trims tabs and mixed WSP", rh("Subject", "\t \thello \t world\t  ") === "subject:hello world\r\n");
+  check("relaxed header: an all-WSP value is empty", rh("Subject", " \t  \t") === "subject:\r\n");
+  check("relaxed header: a single space is empty", rh("Subject", " ") === "subject:\r\n");
+  check("relaxed header: one leading and one trailing space go", rh("Subject", " a ") === "subject:a\r\n");
 
   check("relaxed body: empty → CRLF",             rb("") === "\r\n");
   check("relaxed body: trims trailing WSP",       rb("hello   \r\n") === "hello\r\n");

@@ -53,6 +53,44 @@ function testSyncCommitAndRollback() {
   check("runInTransaction honours opts.lockMode", lockDb._calls[0] === "BEGIN IMMEDIATE");
 }
 
+async function testSyncRefusesPromiseBody() {
+  var asyncDb = _fakeDb();
+  var unhandled = [];
+  function onUnhandled(e) { unhandled.push((e && e.message) || String(e)); }
+  process.on("unhandledRejection", onUnhandled);
+  var thenDb = _fakeDb();
+  var threw = null;
+  var thenThrew = null;
+  try {
+    try {
+      dbSchema.runInTransaction(asyncDb, async function () {
+        asyncDb.exec("WORK");
+        await null;
+        asyncDb.exec("LATE-WORK");
+        throw new Error("late-boom");
+      });
+    } catch (e) { threw = e; }
+    try {
+      dbSchema.runInTransaction(thenDb, function () {
+        thenDb.exec("WORK");
+        return Promise.reject(new Error("late-boom"));
+      });
+    } catch (e) { thenThrew = e; }
+    await helpers.passiveObserve(30, "runInTransaction promise body: a rejection would surface in this window");
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
+  check("runInTransaction refuses an async function body",
+    threw !== null && /synchronous/.test(threw.message));
+  check("runInTransaction does not call an async function body or open a transaction for it",
+    asyncDb._calls.length === 0);
+  check("runInTransaction refuses a plain body that returns a promise",
+    thenThrew !== null && /synchronous/.test(thenThrew.message));
+  check("runInTransaction rolls back a plain body that returns a promise (BEGIN, WORK, ROLLBACK)",
+    thenDb._calls.join(",") === "BEGIN,WORK,ROLLBACK");
+  check("runInTransaction leaves no unhandled rejection from a promise body", unhandled.length === 0);
+}
+
 async function testAsyncCommitWaitsForBody() {
   var okDb = _fakeDb();
   var ret = await dbSchema.runInTransactionAsync(okDb, async function () {
@@ -98,6 +136,7 @@ async function testAsyncRollbackOnReject() {
 
 async function run() {
   testSyncCommitAndRollback();
+  await testSyncRefusesPromiseBody();
   await testAsyncCommitWaitsForBody();
   await testAsyncRollbackOnReject();
 }

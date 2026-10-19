@@ -129,8 +129,12 @@ async function main() {
   var pem = kp.privateKey.export({ type: "pkcs8", format: "pem" });
   check("content-credentials: non-Buffer certChain entry typed-rejected",
     threwCode(function () {
-      b.contentCredentials.signCose(m, { privateKeyPem: pem, timestamp: false, timestampOptOutReason: "x", certChain: ["nope"] });
+      b.contentCredentials.signCose(m, { privateKeyPem: pem, alg: "ed25519", timestamp: false, timestampOptOutReason: "x", certChain: ["nope"] });
     }) === "content-credentials/bad-cert-chain");
+  check("content-credentials: an Ed25519 key under the default ml-dsa-87 header is refused",
+    threwCode(function () {
+      b.contentCredentials.signCose(m, { privateKeyPem: pem, timestamp: false, timestampOptOutReason: "x" });
+    }) === "content-credentials/alg-key-mismatch");
 }
 
 if (require.main === module) {

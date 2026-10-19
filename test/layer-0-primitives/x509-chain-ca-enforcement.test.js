@@ -95,14 +95,23 @@ async function _mintChain(opts) {
 
   // The leaf is signed with the intermediate's raw key so a cA:FALSE
   // intermediate genuinely issues + signs it (the forged chain under test).
+  // The leaf also carries what a Mark Certificate needs past the chain check
+  // (MC Requirements 7.1.2.3 and 7.1.4): the general policy OID
+  // 1.3.6.1.4.1.53087.1.1 and one subject:markType.
+  var leafName = Buffer.from(pki.asn1.build.sequence([
+    pki.asn1.build.set([pki.asn1.build.sequence([pki.asn1.build.oid("2.5.4.3"), pki.asn1.build.utf8(leafSan)])]),
+    pki.asn1.build.set([pki.asn1.build.sequence([pki.asn1.build.oid("1.3.6.1.4.1.53087.1.13"),
+      pki.asn1.build.utf8("Registered Mark")])]),
+  ]));
   var leafPem = await pki.x509.sign({
-    subject: leafSan, subjectPublicKey: leafSpki,
+    subject: leafName, subjectPublicKey: leafSpki,
     serialNumber: "03", notBefore: now, notAfter: notAfter,
     extensions: {
       basicConstraints: { cA: false, critical: true },
       keyUsage: ["digitalSignature"], keyUsageCritical: true,
       subjectAltName: _sanEntries(leafSanEntries),
       extendedKeyUsage: [BIMI_EKU_OID], extendedKeyUsageCritical: false,
+      certificatePolicies: ["1.3.6.1.4.1.53087.1.1"],
     },
   }, { name: "Test Intermediate", publicKey: interSpki, key: interKeys.privateKey }, { pem: true });
 

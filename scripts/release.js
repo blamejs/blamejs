@@ -571,7 +571,7 @@ var BACKEND_LIVE_MAP = [
   {
     backend:  "ntp",
     match:    ["lib/ntp-check", "lib/network-nts"],
-    services: ["ntp"],
+    services: ["ntp", "nts", "nts-gcmsiv", "nts-unsynced"],
     tests:    ["ntp-check"],
   },
   {
@@ -613,7 +613,7 @@ var BACKEND_LIVE_MAP = [
     backend:  "otel-telemetry",
     match:    ["lib/log-stream-otlp", "lib/observability"],
     services: ["otel-collector"],
-    tests:    ["log-stream-cloudwatch"],
+    tests:    ["log-stream-cloudwatch", "observability-otlp-traces"],
   },
   {
     // Live tests that need nothing from docker-compose: each spawns its own

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.21.2",
-  "createdAt": "2026-10-12T12:11:15.650Z",
+  "frameworkVersion": "0.21.3",
+  "createdAt": "2026-10-19T14:07:30.361Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -14758,6 +14758,18 @@
         "PQC_GROUPS": {
           "type": "object",
           "members": {
+            "MLKEM1024": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "MLKEM512": {
+              "type": "primitive",
+              "valueType": "number"
+            },
+            "MLKEM768": {
+              "type": "primitive",
+              "valueType": "number"
+            },
             "SecP256r1MLKEM768": {
               "type": "primitive",
               "valueType": "number"
@@ -14858,14 +14870,6 @@
               "valueType": "number"
             },
             "ml-dsa-87": {
-              "type": "primitive",
-              "valueType": "number"
-            },
-            "slh-dsa-sha2-128s": {
-              "type": "primitive",
-              "valueType": "number"
-            },
-            "slh-dsa-shake-256f": {
               "type": "primitive",
               "valueType": "number"
             }
@@ -15200,9 +15204,17 @@
     "crypto": {
       "type": "object",
       "members": {
+        "CryptoKeyError": {
+          "type": "function",
+          "arity": 4
+        },
         "SUPPORTED_KEM_ALGORITHMS": {
           "type": "instance",
           "ctorName": "Array"
+        },
+        "assertKeyType": {
+          "type": "function",
+          "arity": 3
         },
         "decrypt": {
           "type": "function",
@@ -15322,6 +15334,44 @@
                 "connolly": {
                   "type": "object",
                   "members": {
+                    "DEFAULT_SUITE": {
+                      "type": "object",
+                      "members": {
+                        "aead": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "kdf": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "kem": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        }
+                      }
+                    },
+                    "SUPPORTED_SUITES": {
+                      "type": "object",
+                      "members": {
+                        "aead": {
+                          "type": "instance",
+                          "ctorName": "Array"
+                        },
+                        "kdf": {
+                          "type": "instance",
+                          "ctorName": "Array"
+                        },
+                        "kem": {
+                          "type": "instance",
+                          "ctorName": "Array"
+                        }
+                      }
+                    },
+                    "generateKeyPair": {
+                      "type": "function",
+                      "arity": 0
+                    },
                     "label": {
                       "type": "primitive",
                       "valueType": "string"
@@ -15331,6 +15381,14 @@
                       "arity": 1
                     },
                     "seal": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "setupRecipient": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "setupSender": {
                       "type": "function",
                       "arity": 1
                     }
@@ -15339,6 +15397,44 @@
                 "wg": {
                   "type": "object",
                   "members": {
+                    "DEFAULT_SUITE": {
+                      "type": "object",
+                      "members": {
+                        "aead": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "kdf": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        },
+                        "kem": {
+                          "type": "primitive",
+                          "valueType": "string"
+                        }
+                      }
+                    },
+                    "SUPPORTED_SUITES": {
+                      "type": "object",
+                      "members": {
+                        "aead": {
+                          "type": "instance",
+                          "ctorName": "Array"
+                        },
+                        "kdf": {
+                          "type": "instance",
+                          "ctorName": "Array"
+                        },
+                        "kem": {
+                          "type": "instance",
+                          "ctorName": "Array"
+                        }
+                      }
+                    },
+                    "generateKeyPair": {
+                      "type": "function",
+                      "arity": 1
+                    },
                     "label": {
                       "type": "primitive",
                       "valueType": "string"
@@ -15348,6 +15444,14 @@
                       "arity": 1
                     },
                     "seal": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "setupRecipient": {
+                      "type": "function",
+                      "arity": 1
+                    },
+                    "setupSender": {
                       "type": "function",
                       "arity": 1
                     }
@@ -17523,6 +17627,10 @@
           "arity": 4
         },
         "ComplianceError": {
+          "type": "function",
+          "arity": 4
+        },
+        "CryptoKeyError": {
           "type": "function",
           "arity": 4
         },
@@ -44852,7 +44960,11 @@
               "type": "function",
               "arity": 4
             },
-            "CMC_POLICY_OID": {
+            "MARK_TYPE_OID": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "MC_GENERAL_POLICY_OID": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -44863,10 +44975,6 @@
             "TINY_PS_MAX_BYTES": {
               "type": "primitive",
               "valueType": "number"
-            },
-            "VMC_POLICY_OID": {
-              "type": "primitive",
-              "valueType": "string"
             },
             "fetchAndVerifyMark": {
               "type": "function",
@@ -47821,6 +47929,23 @@
             "DNSKEY_ALGORITHMS": {
               "type": "object",
               "members": {
+                "0": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
                 "1": {
                   "type": "object",
                   "members": {
@@ -48077,6 +48202,57 @@
                   }
                 },
                 "16": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "17": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "18": {
+                  "type": "object",
+                  "members": {
+                    "deprecated": {
+                      "type": "primitive",
+                      "valueType": "boolean"
+                    },
+                    "name": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    },
+                    "reason": {
+                      "type": "primitive",
+                      "valueType": "string"
+                    }
+                  }
+                },
+                "23": {
                   "type": "object",
                   "members": {
                     "deprecated": {
@@ -49112,6 +49288,10 @@
               "type": "function",
               "arity": 0
             },
+            "identityFor": {
+              "type": "function",
+              "arity": 3
+            },
             "isSystemTrustEnabled": {
               "type": "function",
               "arity": 0
@@ -49238,6 +49418,10 @@
             "serverKeyAgreementGroups": {
               "type": "function",
               "arity": 2
+            },
+            "sniFor": {
+              "type": "function",
+              "arity": 1
             },
             "useSystemTrust": {
               "type": "function",
@@ -50387,9 +50571,13 @@
           "type": "instance",
           "ctorName": "Buffer"
         },
-        "clientHelloHasPQC": {
+        "acceptedGroupIds": {
           "type": "function",
           "arity": 1
+        },
+        "clientHelloHasPQC": {
+          "type": "function",
+          "arity": 2
         },
         "create": {
           "type": "function",
@@ -57654,6 +57842,10 @@
         "isOriginAllowed": {
           "type": "function",
           "arity": 3
+        },
+        "isValidCloseCode": {
+          "type": "function",
+          "arity": 1
         },
         "negotiateSubprotocol": {
           "type": "function",

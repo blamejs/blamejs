@@ -65,6 +65,10 @@ var SECRETS = {
   ssn:        "123-45-6789",
   // PEM private-key block.
   pem:        "-----BEGIN PRIVATE KEY-----\nMIIBVgIBADANBgkqhkiG9w0BAQ\n-----END PRIVATE KEY-----",
+  // Luhn-valid test card numbers and an SSN, each used as a member name.
+  cardKeyA:   "4111111111111111",
+  cardKeyB:   "5555555555554444",
+  ssnKey:     "987-65-4321",
 };
 
 // A non-secret value that MUST survive verbatim — proves redaction is
@@ -114,6 +118,9 @@ async function testSafeEmitRedactsSecretsInSignedChain() {
         signingPem:  SECRETS.pem,
         // field-name pass: `secret` substring.
         awsSecretAccessKey: SECRETS.awsSecretKey,
+        // Secrets used as member names: the value detectors run on names too.
+        byCard:      JSON.parse('{"' + SECRETS.cardKeyA + '":"order-a","' + SECRETS.cardKeyB + '":"order-b"}'),
+        byPerson:    JSON.parse('{"' + SECRETS.ssnKey + '":"person-c"}'),
         // The survivor — a plain operational breadcrumb.
         orderRef:    SURVIVOR,
       },
@@ -150,6 +157,16 @@ async function testSafeEmitRedactsSecretsInSignedChain() {
     check("PEM BEGIN header absent from stored chain row",
           text.indexOf("-----BEGIN PRIVATE KEY-----") === -1);
 
+    check("card numbers used as member names are absent from stored chain row",
+          text.indexOf(SECRETS.cardKeyA) === -1 && text.indexOf(SECRETS.cardKeyB) === -1, text);
+    check("SSN used as a member name is absent from stored chain row",
+          text.indexOf(SECRETS.ssnKey) === -1, text);
+    var storedMeta = typeof row.metadata === "string" ? JSON.parse(row.metadata) : row.metadata;
+    check("members with redacted names keep their values under numbered markers",
+          storedMeta && storedMeta.byCard && storedMeta.byCard["[REDACTED]"] === "order-a" &&
+          storedMeta.byCard["[REDACTED:2]"] === "order-b" && storedMeta.byPerson["[REDACTED]"] === "person-c",
+          JSON.stringify(storedMeta));
+
     // ---- Markers must be PRESENT (redaction happened, value wasn't just
     //      dropped/blanked into ambiguity). ----
     check("connection-string redact marker present",
@@ -176,6 +193,67 @@ async function testSafeEmitRedactsSecretsInSignedChain() {
     //      boundary didn't corrupt the chain). ----
     var v = await b.audit.verify();
     check("audit chain verifies after the redacted append", v && v.ok === true);
+
+    // A registered value detector that throws on one input counts as a
+    // match, so the redactor does not throw and safeEmit does not write
+    // the original actor, reason and metadata.
+    var THROW_ACTION = "system.error.detector";
+    b.redact.registerValueDetector("throws-on-boom", function (s) {
+      if (s === "boom") throw new Error("detector threw");
+      return false;
+    }, "[REDACTED-X]");
+    try {
+      b.audit.safeEmit({
+        action:   THROW_ACTION,
+        outcome:  "failure",
+        reason:   "lookup failed",
+        metadata: {
+          boom:     1,
+          cardNote: SECRETS.cardKeyA,
+          byCard:   JSON.parse('{"' + SECRETS.cardKeyB + '":"order-d"}'),
+          orderRef: SURVIVOR,
+        },
+      });
+      await b.audit.flush();
+      await waitUntil(async function () {
+        return (await _storedRows(THROW_ACTION)).length >= 1;
+      }, { timeoutMs: 5000, label: "safeEmit: row with a throwing detector reaches audit_log" });
+    } finally {
+      b.redact._resetForTest();
+    }
+    var throwRows = await _storedRows(THROW_ACTION);
+    var throwText = throwRows.length === 1 ? _rowText(throwRows[0]) : "";
+    check("a throwing registered detector does not let card numbers into the stored chain row",
+          throwRows.length === 1 && throwText.indexOf(SECRETS.cardKeyA) === -1 &&
+          throwText.indexOf(SECRETS.cardKeyB) === -1 && throwText.indexOf(SURVIVOR) !== -1, throwText);
+
+    // When the redactor itself throws (here on a getter that throws on its
+    // first read and answers afterwards), the row is still written, and it
+    // carries neither the original reason nor the original metadata.
+    var FAIL_ACTION = "system.error.redaction";
+    var hostile = { dbDsn: SECRETS.connString };
+    var reads = 0;
+    Object.defineProperty(hostile, "explodes", {
+      enumerable: true,
+      get: function () { reads += 1; if (reads === 1) throw new Error("getter threw"); return "later"; },
+    });
+    b.audit.safeEmit({
+      action:   FAIL_ACTION,
+      outcome:  "failure",
+      actor:    { userId: "u-78", ip: "10.0.0.6" },
+      reason:   "db connect failed: " + SECRETS.connString,
+      metadata: hostile,
+    });
+    await b.audit.flush();
+    await waitUntil(async function () {
+      return (await _storedRows(FAIL_ACTION)).length >= 1;
+    }, { timeoutMs: 5000, label: "safeEmit: row whose redaction threw reaches audit_log" });
+    var failRows = await _storedRows(FAIL_ACTION);
+    var failText = failRows.length === 1 ? _rowText(failRows[0]) : "";
+    check("a redaction that throws does not write the original reason or metadata",
+          failRows.length === 1 && failText.indexOf(SECRETS.connPw) === -1, failText);
+    var v2 = await b.audit.verify();
+    check("audit chain verifies after the redaction-failure append", v2 && v2.ok === true);
   } finally {
     await teardownTestDb(tmpDir);
   }

@@ -355,6 +355,100 @@ async function testOtlpExporterQueueAndFlush() {
   await exporter.shutdown();
 }
 
+// The length-delimited fields of one protobuf message: [{ field, bytes }].
+function _protoMessages(buf) {
+  var out = [];
+  var i = 0;
+  function readVarint() {
+    var shift = 0, result = 0;
+    while (i < buf.length) {
+      var byte = buf[i++];
+      result += (byte & 0x7f) * Math.pow(2, shift);
+      if ((byte & 0x80) === 0) break;
+      shift += 7;
+    }
+    return result;
+  }
+  while (i < buf.length) {
+    var tag = readVarint();
+    var wire = tag & 7;
+    if (wire === 0) { readVarint(); continue; }
+    if (wire === 1) { i += 8; continue; }
+    if (wire === 5) { i += 4; continue; }
+    if (wire !== 2) break;
+    var len = readVarint();
+    out.push({ field: Math.floor(tag / 8), bytes: buf.slice(i, i + len) });
+    i += len;
+  }
+  return out;
+}
+
+// Two tracers can share one resource (the same service) with different
+// instrumentation scopes and feed one exporter. Each span is reported under
+// the scope of the tracer that made it.
+async function testOtlpExporterKeepsEachSpansScope() {
+  var encodings = ["json", "protobuf"];
+  for (var ei = 0; ei < encodings.length; ei++) {
+    var posts = [];
+    var exporter = b.observability.otlpExporter.create({
+      endpoint:         "http://localhost:4318/v1/traces",
+      allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+      fetchImpl:        function (url, opts) {
+        posts.push(opts.body);
+        return Promise.resolve({ ok: true, status: 200 });
+      },
+      batchSize:        100,
+      flushIntervalMs:  0,
+      encoding:         encodings[ei],
+    });
+    var httpTracer = b.observability.tracer.create({
+      service: "svc", scope: { name: "scope-http", version: "1" }, onEnd: exporter.queue,
+    });
+    var dbTracer = b.observability.tracer.create({
+      service: "svc", scope: { name: "scope-db", version: "2" }, onEnd: exporter.queue,
+    });
+    httpTracer.start("span-http-1").end();
+    dbTracer.start("span-db-1").end();
+    httpTracer.start("span-http-2").end();
+    await exporter.flush();
+    var label = "otlp.exporter (" + encodings[ei] + "): ";
+    check(label + "one request posted", posts.length === 1);
+    var groups = [];
+    if (encodings[ei] === "json") {
+      var body = JSON.parse(posts[0]);
+      body.resourceSpans.forEach(function (rs) {
+        rs.scopeSpans.forEach(function (ss) {
+          groups.push({ scope: ss.scope.name, spans: ss.spans.map(function (sp) { return sp.name; }) });
+        });
+      });
+      check(label + "one resource for one service", body.resourceSpans.length === 1);
+    } else {
+      var resourceSpans = _protoMessages(posts[0]).filter(function (m) { return m.field === 1; });
+      check(label + "one resource for one service", resourceSpans.length === 1);
+      resourceSpans.forEach(function (rs) {
+        _protoMessages(rs.bytes).filter(function (m) { return m.field === 2; }).forEach(function (ss) {
+          var parts = _protoMessages(ss.bytes);
+          var scopeMsg = parts.filter(function (m) { return m.field === 1; })[0];
+          var scopeName = _protoMessages(scopeMsg.bytes).filter(function (m) { return m.field === 1; })[0];
+          groups.push({
+            scope: scopeName ? scopeName.bytes.toString("utf8") : null,
+            spans: parts.filter(function (m) { return m.field === 2; }).map(function (sp) {
+              var nameField = _protoMessages(sp.bytes).filter(function (m) { return m.field === 5; })[0];
+              return nameField ? nameField.bytes.toString("utf8") : null;
+            }),
+          });
+        });
+      });
+    }
+    var byScope = {};
+    groups.forEach(function (g) { byScope[g.scope] = g.spans.slice().sort().join(","); });
+    check(label + "spans of two scopes are reported under two scopes",
+      groups.length === 2 && byScope["scope-http"] === "span-http-1,span-http-2" &&
+      byScope["scope-db"] === "span-db-1", JSON.stringify(groups));
+    await exporter.shutdown();
+  }
+}
+
 async function testOtlpExporterProtobufNegativeAnyValue() {
   // Regression for the v0.12.6 Codex P1 finding: a negative integer
   // AnyValue (e.g. retry-after offset, signed metric delta) under the
@@ -1051,6 +1145,7 @@ async function run() {
   testTracerSpanToTraceparent();
   testOtlpBundleShape();
   await testOtlpExporterQueueAndFlush();
+  await testOtlpExporterKeepsEachSpansScope();
   await testOtlpExporterProtobufNegativeAnyValue();
   testOtlpExporterValidation();
   testTracePropagateExtractsTracestate();

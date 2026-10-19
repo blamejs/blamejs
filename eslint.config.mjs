@@ -609,6 +609,20 @@ export default [
     rules: { "blamejs/no-shadowed-module-binding": "off" },
   },
   {
+    // A function created inside a loop that reads a `var` declared in the loop
+    // body sees that variable's value when the function RUNS, not when it was
+    // created. `var` gives every iteration one shared binding, so a callback
+    // that runs after the loop has moved on reads the last iteration's value: a
+    // default transaction hook sent BEGIN through the last backend's query
+    // function, and a middleware's late `next()` set the verdict for the
+    // middleware after it. Build the function through a factory that takes the
+    // per-iteration value as an argument. A closure that provably runs before
+    // the iteration ends carries a line-level disable naming why.
+    files: ["lib/**/*.js"],
+    ignores: ["lib/vendor/**"],
+    rules: { "no-loop-func": "error" },
+  },
+  {
     // Only the listeners: they are what STARTTLS replaces a socket under. A
     // client holding one socket for its lifetime captures it legitimately.
     files: ["lib/mail-server-*.js"],

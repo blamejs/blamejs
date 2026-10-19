@@ -347,6 +347,24 @@ function testPkixSurface() {
         typeof b.network.tls.checkServerIdentity9525 === "function");
 }
 
+// The documented outcome for a subjectaltname with an unterminated quoted
+// entry: a returned tls/pkix-hostname-mismatch, never a throw, for a name
+// host and an IP host alike.
+function testPkixMalformedQuotedSanReturnsHostnameMismatch() {
+  var cases = [
+    ["victim.com", 'DNS:"victim.com, DNS:victim.com'],
+    ["198.51.100.1", 'IP Address:"198.51.100.1, IP Address:198.51.100.1'],
+  ];
+  for (var i = 0; i < cases.length; i++) {
+    var got = null, threw = null;
+    try { got = b.network.tls.checkServerIdentity9525(cases[i][0], _cert(cases[i][1], "attacker")); }
+    catch (e) { threw = e; }
+    check("a malformed quoted SAN refuses " + cases[i][0] + " with a returned tls/pkix-hostname-mismatch",
+          threw === null && got && got.code === "tls/pkix-hostname-mismatch",
+          threw ? "threw " + threw.code : (got && got.code));
+  }
+}
+
 function testPkixQuotedSanNoBypass() {
   // Node renders a SAN value containing separators as a JSON-quoted string
   // (CVE-2021-44531/44532). A naive split(",") would break `DNS:"x,
@@ -1194,6 +1212,44 @@ function testPqcKeyShares() {
   var eNum = null;
   try { nt.pqc.setKeyShares([123]); } catch (e) { eNum = e; }
   check("setKeyShares(non-string entry) throws tls/bad-key-share", eNum && eNum.code === "tls/bad-key-share");
+
+  // A name that passes the character check but that the runtime OpenSSL cannot
+  // set is refused at set(), naming the group, and the posture in force stays.
+  // Without this the name is stored and the first listener built from it
+  // throws ERR_CRYPTO_OPERATION_FAILED, which names neither.
+  nt.pqc.setKeyShares(["X25519MLKEM768", "X25519"]);
+  // secp256k1, brainpoolP256r1, secp224r1 and sect571r1 are groups OpenSSL can
+  // set but that TLS 1.3 does not define, so a listener and a TLS 1.3 client
+  // given only those fail with ERR_SSL_NO_SUITABLE_GROUPS.
+  var unsettable = ["NotAGroup_1", "X25519Kyber768Draft00", "auto", "DEFAULT", "default",
+    "secp256k1", "brainpoolP256r1", "secp224r1", "sect571r1", "secp192r1"];
+  for (var ui = 0; ui < unsettable.length; ui += 1) {
+    var eUnset = null;
+    try { nt.preferredGroups.set(["X25519", unsettable[ui]]); } catch (e) { eUnset = e; }
+    check("preferredGroups.set refuses " + unsettable[ui] + " with tls/bad-key-share",
+      eUnset && eUnset.code === "tls/bad-key-share", eUnset ? eUnset.code + " " + eUnset.message : "no throw");
+    check("and the message names " + unsettable[ui],
+      eUnset && eUnset.message.indexOf("'" + unsettable[ui] + "'") !== -1, eUnset && eUnset.message);
+    check("and the posture in force is unchanged after refusing " + unsettable[ui],
+      nt.preferredGroups.get().join(":") === "X25519MLKEM768:X25519", nt.preferredGroups.get().join(":"));
+  }
+  var eUnsetPqc = null;
+  try { nt.pqc.setKeyShares(["NotAGroup_1"]); } catch (e) { eUnsetPqc = e; }
+  check("pqc.setKeyShares refuses a group the runtime cannot set",
+    eUnsetPqc && eUnsetPqc.code === "tls/bad-key-share", eUnsetPqc && eUnsetPqc.code);
+  // Control: every name the shipped posture and the listener fallback use is
+  // accepted, so the refusals above are not refusing everything.
+  var settable = nt.preferredGroups.DEFAULT.slice().concat(["X448", "secp256r1", "secp384r1", "secp521r1", "x25519",
+    "prime256v1", "ffdhe2048", "MLKEM768", "brainpoolP256r1tls13"]);
+  for (var si = 0; si < settable.length; si += 1) {
+    var eSet = null;
+    try { nt.preferredGroups.set([settable[si]]); } catch (e) { eSet = e; }
+    check("preferredGroups.set accepts " + settable[si], eSet === null, eSet && eSet.message);
+  }
+  var built = null;
+  nt.preferredGroups.set(["SecP384r1MLKEM1024", "secp384r1"]);
+  try { built = nodeTls.createSecureContext({ ecdhCurve: nt.serverKeyAgreementGroups() }); } catch (_e) { built = null; }
+  check("a posture set() accepted builds a listener context", built !== null);
 
   var reset = nt.pqc.resetKeyShares();
   check("resetKeyShares restores default", reset.length === 4 && reset[0] === "X25519MLKEM768");
@@ -3421,6 +3477,7 @@ async function run() {
   await testEchConnectWithBadOverrideEchConfig();
   await testConnectWithEchAgainstLocalServer();
   testPkixSurface();
+  testPkixMalformedQuotedSanReturnsHostnameMismatch();
   testPkixSanRequiredWhenAbsent();
   testPkixCnFallbackRefused();
   testPkixDnsExactMatch();

@@ -298,6 +298,60 @@ async function _underGdpr(fn) {
   }
 }
 
+var C_LIVE_WAIT_MS = b.constants.TIME.seconds(15);
+
+// A checkout pool holding at most one session, with pg-pool's release
+// semantics: release(err) with a truthy argument destroys the session,
+// release() returns it to the pool for the next checkout.
+function _oneSlotPool(drv) {
+  var st = { busy: false, waiters: [], idle: null, destroyed: 0 };
+  function _next() {
+    st.busy = false;
+    var w = st.waiters.shift();
+    if (w) w();
+  }
+  st.connect = function () {
+    return new Promise(function (resolve, reject) {
+      function attempt() {
+        if (st.busy) { st.waiters.push(attempt); return; }
+        st.busy = true;
+        var reuse = st.idle;
+        st.idle = null;
+        (reuse ? Promise.resolve(reuse) : drv.connect()).then(function (client) {
+          client.release = function (err) {
+            client.release = null;
+            if (err) {
+              st.destroyed += 1;
+              drv.close(client);
+            } else {
+              st.idle = client;
+            }
+            _next();
+          };
+          resolve(client);
+        }, function (e) { _next(); reject(e); });
+      }
+      attempt();
+    });
+  };
+  st.drain = async function () {
+    if (st.idle) { var c = st.idle; st.idle = null; await drv.close(c); }
+  };
+  return st;
+}
+
+// Settle a promise or time out, without leaving the timer running.
+function _bounded(promise, ms) {
+  var timer = null;
+  var timeout = new Promise(function (resolve) {
+    timer = setTimeout(function () { resolve({ timeout: true }); }, ms);
+  });
+  return Promise.race([
+    promise.then(function (v) { return { value: v }; }, function (e) { return { err: e }; }),
+    timeout,
+  ]).then(function (r) { clearTimeout(timer); return r; });
+}
+
 async function _expectThrow(label, fn, expectedCode) {
   var threw = null;
   try { await fn(); } catch (e) { threw = e; }
@@ -557,6 +611,70 @@ async function run() {
   var evilCheck = _psql("SELECT count(*) AS n FROM rls_sessions WHERE id = 's-evil';");
   check("RLS: the cross-tenant INSERT did NOT persist (rolled back)",
         /\b0\b/.test(evilCheck.trim()));
+
+  // ====================================================================
+  // 6. adapters.connectAs disposes a client whose SET fails.
+  //    A one-slot checkout pool with pg-pool's release semantics:
+  //    release(err) destroys the session and frees the slot, release()
+  //    returns the session to the pool. SET ROLE on a role that does not
+  //    exist fails on a real server; if the failed client were kept, the
+  //    second connect would wait on the exhausted pool forever.
+  // ====================================================================
+  var onePool = _oneSlotPool(driver);
+  var noRoleConnect = b.externalDb.adapters.connectAs(onePool.connect, {
+    query: driver.query,
+    role:  "blamejs_no_such_role",
+  });
+  var firstTry  = await _bounded(noRoleConnect(), C_LIVE_WAIT_MS);
+  var secondTry = await _bounded(noRoleConnect(), C_LIVE_WAIT_MS);
+  check("connectAs: first connect with a missing role rejects with the server's role error",
+        firstTry.err && firstTry.err.code === "22023", JSON.stringify(firstTry));
+  check("connectAs: second connect is not blocked by a leaked client and rejects the same way",
+        secondTry.err && secondTry.err.code === "22023", JSON.stringify(secondTry));
+  check("connectAs: each failed client was destroyed rather than returned to the pool",
+        onePool.destroyed === 2 && onePool.idle === null);
+  await onePool.drain();
+
+  // ====================================================================
+  // 7. Default BEGIN / COMMIT / ROLLBACK run on the transaction's own
+  //    backend when two backends supply no hooks of their own.
+  // ====================================================================
+  var otherDriver = _makeDockerPgDriver();
+  var otherSeen = [];
+  var opsSeen = [];
+  await b.externalDb.shutdown();
+  b.externalDb._resetForTest();
+  b.externalDb.init({
+    backends: {
+      ops: {
+        connect: driver.connect, close: driver.close, dialect: "postgres",
+        query: function (client, sql, params) { opsSeen.push(sql); return driver.query(client, sql, params); },
+      },
+      other: {
+        connect: otherDriver.connect, close: otherDriver.close, dialect: "postgres",
+        query: function (client, sql, params) { otherSeen.push(sql); return otherDriver.query(client, sql, params); },
+      },
+    },
+    defaultBackend: "ops",
+  });
+  await b.externalDb.transaction(async function (tx) {
+    await tx.query("INSERT INTO orders (id, region, total) VALUES ($1, $2, $3)", ["o-tx", "eu", 3]);
+  }, { backend: "ops" });
+  try {
+    await b.externalDb.transaction(async function (tx) {
+      await tx.query("INSERT INTO orders (id, region, total) VALUES ($1, $2, $3)", ["o-tx-rb", "eu", 4]);
+      throw new Error("abort");
+    }, { backend: "ops" });
+  } catch (_e) { void _e; }
+  check("default tx hooks: BEGIN / COMMIT / ROLLBACK went through the ops backend",
+        opsSeen.indexOf("BEGIN") !== -1 && opsSeen.indexOf("COMMIT") !== -1 &&
+        opsSeen.indexOf("ROLLBACK") !== -1, JSON.stringify(opsSeen));
+  check("default tx hooks: the other backend's query function saw nothing",
+        otherSeen.length === 0, JSON.stringify(otherSeen));
+  check("default tx hooks: the committed row persisted",
+        /\b1\b/.test(_psql("SELECT count(*) AS n FROM orders WHERE id = 'o-tx';").trim()));
+  check("default tx hooks: the rolled-back row did not persist",
+        /\b0\b/.test(_psql("SELECT count(*) AS n FROM orders WHERE id = 'o-tx-rb';").trim()));
 
   // ---- teardown ----
   await b.externalDb.shutdown();

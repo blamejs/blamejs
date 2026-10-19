@@ -154,6 +154,35 @@ async function testClientIpPrefixV4MappedV6() {
   }
 }
 
+// The exact clientIp field binds the client, not the spelling a listener
+// used: the dual-stack peer ::ffff:203.0.113.5 and the IPv4 peer 203.0.113.5
+// are one client, and 203.0.113.6 is another.
+async function testClientIpFieldComparesTheCanonicalAddress() {
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ses-clientip-canon-"));
+  try {
+    await setupTestDb(tmpDir);
+    var s = await b.session.create({
+      userId:            "u-1",
+      req:               _makeReq({ "x-forwarded-for": "::ffff:203.0.113.5", "user-agent": "ua1" }),
+      fingerprintFields: ["clientIp"],
+    });
+    var same = await b.session.verify(s.token, {
+      req:               _makeReq({ "x-forwarded-for": "203.0.113.5", "user-agent": "ua1" }),
+      fingerprintFields: ["clientIp"],
+    });
+    check("clientIp: ::ffff:203.0.113.5 then 203.0.113.5 is the same client (no drift)",
+      same && same.fingerprintDrift === false, same && String(same.fingerprintDrift));
+    var other = await b.session.verify(s.token, {
+      req:               _makeReq({ "x-forwarded-for": "203.0.113.6", "user-agent": "ua1" }),
+      fingerprintFields: ["clientIp"],
+    });
+    check("clientIp: a different IPv4 client still drifts",
+      other && other.fingerprintDrift === true, other && String(other.fingerprintDrift));
+  } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
 // A request whose immediate peer is a reverse proxy: the socket peer is the
 // proxy, the real client arrives in X-Forwarded-For.
 function _makeProxiedReq(proxyAddr, clientIp) {
@@ -1310,6 +1339,7 @@ async function run() {
   await testClientIpPrefixV4();
   await testClientIpPrefixV6();
   await testClientIpPrefixV4MappedV6();
+  await testClientIpFieldComparesTheCanonicalAddress();
   await testFingerprintPeerGatedClientIp();
   await testPluggableStore();
   await testPurgeDoesNotRevokeARefreshedSession();

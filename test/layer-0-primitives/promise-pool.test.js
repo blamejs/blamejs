@@ -198,7 +198,51 @@ async function testFireContainsARejectingTask() {
   }
 }
 
+// Every task's own result reaches the promise returned for it, whatever the
+// concurrency, with tasks finishing in a different order than they started
+// and some of them failing.
+async function testEachTaskSettlesItsOwnPromise() {
+  for (var conc = 1; conc <= 6; conc += 1) {
+    var pool = b.promisePool.create({ concurrency: conc });
+    var wrong = [];
+    var all = [];
+    for (var i = 0; i < 50; i += 1) {
+      all.push(pool.run(_ownTask(i)).then(_expectValue(i, wrong), _expectError(i, wrong)));
+    }
+    await Promise.all(all);
+    check("promise-pool concurrency " + conc + ": every task settles its own promise",
+      wrong.length === 0, wrong.slice(0, 5).join(", "));
+    await pool.drain({ close: true });
+  }
+}
+
+function _ownTask(i) {
+  return function () {
+    return new Promise(function (resolve, reject) {
+      setImmediate(function () {
+        if (i % 7 === 3) reject(new Error("task-" + i));
+        else resolve("value-" + i);
+      });
+    }).then(function (v) {
+      return i % 2 === 0 ? v : new Promise(function (r) { setImmediate(function () { r(v); }); });
+    });
+  };
+}
+
+function _expectValue(i, wrong) {
+  return function (v) {
+    if (i % 7 === 3 || v !== "value-" + i) wrong.push(i + "->" + v);
+  };
+}
+
+function _expectError(i, wrong) {
+  return function (e) {
+    if (i % 7 !== 3 || e.message !== "task-" + i) wrong.push(i + "->" + e.message);
+  };
+}
+
 async function run() {
+  await testEachTaskSettlesItsOwnPromise();
   await testFireContainsARejectingTask();
   await testRunsConcurrent();
   await testDrainWaitsForInFlight();

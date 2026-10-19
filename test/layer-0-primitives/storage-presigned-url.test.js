@@ -145,6 +145,103 @@ async function testInvalidExpiresInRejected() {
   }
 }
 
+// The refusals the presigned-URL docs name, each with its condition.
+async function testPresignDocumentedCodes() {
+  b.storage._resetForTest();
+  function codeOf(fn) { try { fn(); return null; } catch (e) { return e.code || null; } }
+  check("presignedUploadUrl before init -> storage/not-initialized",
+    codeOf(function () { b.storage.presignedUploadUrl("k.bin", {}); }) === "storage/not-initialized");
+  check("presignedDownloadUrl before init -> storage/not-initialized",
+    codeOf(function () { b.storage.presignedDownloadUrl("k.bin", {}); }) === "storage/not-initialized");
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-presign-"));
+  try {
+    await setupTestDb(tmpDir);
+    b.storage._resetForTest();
+    await b.vault.init({ dataDir: tmpDir, mode: "plaintext" });
+    b.storage.init({
+      backends: {
+        "s3":   SIGV4_CONFIG,
+        "disk": { protocol: "local", rootDir: path.join(tmpDir, "uploads"), classifications: ["public"] },
+      },
+      refuseUnclassified: true,
+    });
+    var fns = ["presignedUploadUrl", "presignedDownloadUrl"];
+    for (var i = 0; i < fns.length; i += 1) {
+      var fn = b.storage[fns[i]];
+      check(fns[i] + ": empty key -> storage/invalid-key",
+        codeOf(function () { fn("", { backend: "s3" }); }) === "storage/invalid-key");
+      check(fns[i] + ": unknown backend -> storage/unknown-backend",
+        codeOf(function () { fn("k.bin", { backend: "nope" }); }) === "storage/unknown-backend");
+      check(fns[i] + ": backend not serving the classification -> storage/classification-mismatch",
+        codeOf(function () { fn("k.bin", { backend: "s3", classification: "public" }); }) === "storage/classification-mismatch");
+      check(fns[i] + ": refuseUnclassified with neither classification nor backend -> storage/unclassified",
+        codeOf(function () { fn("k.bin", {}); }) === "storage/unclassified");
+      check(fns[i] + ": no backend serves the classification -> storage/no-backend-for-classification",
+        codeOf(function () { fn("k.bin", { classification: "personal" }); }) === "storage/no-backend-for-classification");
+      check(fns[i] + ": expiresIn out of range -> objectstore/invalid-expires",
+        codeOf(function () { fn("k.bin", { backend: "s3", expiresIn: 604801 }); }) === "objectstore/invalid-expires");
+      check(fns[i] + ": local backend -> objectstore/presign-not-supported",
+        codeOf(function () { fn("k.bin", { backend: "disk" }); }) === "objectstore/presign-not-supported");
+      check(fns[i] + ": the unread expiresInSec option -> storage/bad-opts",
+        codeOf(function () { fn("k.bin", { backend: "s3", expiresInSec: 60 }); }) === "storage/bad-opts");
+      check(fns[i] + ": key containing NUL -> objectstore/invalid-key",
+        codeOf(function () { fn("a\u0000b", { backend: "s3" }); }) === "objectstore/invalid-key");
+      check(fns[i] + ": key with a .. segment -> objectstore/invalid-key",
+        codeOf(function () { fn("a/../b", { backend: "s3" }); }) === "objectstore/invalid-key");
+    }
+    check("presignedUploadUrl: contentType with CR/LF -> objectstore/invalid-content-type",
+      codeOf(function () { b.storage.presignedUploadUrl("k.bin", { backend: "s3", contentType: "a\r\nb" }); }) ===
+        "objectstore/invalid-content-type");
+    check("presignedDownloadUrl: contentType is not one of its options -> storage/bad-opts",
+      codeOf(function () { b.storage.presignedDownloadUrl("k.bin", { backend: "s3", contentType: "image/png" }); }) ===
+        "storage/bad-opts");
+    check("presignedDownloadUrl: responseHeaders that is not an object -> objectstore/invalid-response-headers",
+      codeOf(function () { b.storage.presignedDownloadUrl("k.bin", { backend: "s3", responseHeaders: "x" }); }) ===
+        "objectstore/invalid-response-headers");
+    check("presignedDownloadUrl: unrecognized responseHeaders key -> objectstore/invalid-response-headers",
+      codeOf(function () { b.storage.presignedDownloadUrl("k.bin", { backend: "s3", responseHeaders: { bogus: "x" } }); }) ===
+        "objectstore/invalid-response-headers");
+    check("presignedDownloadUrl: responseHeaders value with CR/LF -> objectstore/invalid-response-headers",
+      codeOf(function () {
+        b.storage.presignedDownloadUrl("k.bin", { backend: "s3", responseHeaders: { contentType: "a\r\nb" } });
+      }) === "objectstore/invalid-response-headers");
+    var pol = b.storage.presignedUploadPolicy;
+    check("presignedUploadPolicy: the unread expiresInSec option -> storage/bad-opts",
+      codeOf(function () { pol("k.bin", { backend: "s3", maxBytes: 1024, expiresInSec: 60 }); }) === "storage/bad-opts");
+    check("presignedUploadPolicy: negative minBytes -> objectstore/invalid-min-bytes",
+      codeOf(function () { pol("k.bin", { backend: "s3", maxBytes: 1024, minBytes: -1 }); }) === "objectstore/invalid-min-bytes");
+    check("presignedUploadPolicy: key containing NUL -> objectstore/invalid-key",
+      codeOf(function () { pol("a\u0000b", { backend: "s3", maxBytes: 1024 }); }) === "objectstore/invalid-key");
+    check("presignedUploadPolicy: contentType with NUL -> objectstore/invalid-content-type",
+      codeOf(function () { pol("k.bin", { backend: "s3", maxBytes: 1024, contentType: "a\u0000b" }); }) ===
+        "objectstore/invalid-content-type");
+    var polMin = pol("k.bin", { backend: "s3", maxBytes: 1024, minBytes: 10, date: new Date("2026-04-27T00:00:00Z") });
+    check("presignedUploadPolicy: minBytes is the lower bound of content-length-range",
+      JSON.parse(Buffer.from(polMin.fields.policy, "base64").toString("utf8")).conditions.some(function (c) {
+        return Array.isArray(c) && c[0] === "content-length-range" && c[1] === 10 && c[2] === 1024;
+      }));
+    var fixed = new Date("2026-04-27T00:00:00Z");
+    var dflt = b.storage.presignedUploadUrl("k.bin", { backend: "s3", date: fixed });
+    check("presignedUploadUrl: expiresIn defaults to 900 seconds",
+      new URL(dflt.url).searchParams.get("X-Amz-Expires") === "900");
+  } finally {
+    b.storage._resetForTest();
+    await teardownTestDb(tmpDir);
+  }
+  var emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-presign-"));
+  try {
+    await setupTestDb(emptyDir);
+    b.storage._resetForTest();
+    await b.vault.init({ dataDir: emptyDir, mode: "plaintext" });
+    b.storage.init({ backends: {} });
+    check("presignedUploadUrl with no backends -> storage/no-backends",
+      codeOf(function () { b.storage.presignedUploadUrl("k.bin", {}); }) === "storage/no-backends");
+  } finally {
+    b.storage._resetForTest();
+    await teardownTestDb(emptyDir);
+  }
+}
+
 async function testLocalBackendThrowsNotSupported() {
   var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-presign-"));
   try {
@@ -682,6 +779,18 @@ async function testPresignedUploadPolicyAzureClientOnly() {
       azureThrew && azureThrew.code === "objectstore/presign-not-supported");
     check("azure policy: error message names presignedUploadUrl as the alternative",
       azureThrew && /presignedUploadUrl/i.test(azureThrew.message));
+
+    var rhThrew = null;
+    try {
+      b.storage.presignedDownloadUrl("a.bin", {
+        classification:  "operational",
+        responseHeaders: { contentDisposition: "attachment; filename=\"a.bin\"" },
+      });
+    } catch (e) { rhThrew = e; }
+    check("azure download: responseHeaders, which only sigv4 applies, -> storage/response-headers-unsupported",
+      rhThrew && rhThrew.code === "storage/response-headers-unsupported");
+    var noRh = b.storage.presignedDownloadUrl("a.bin", { classification: "operational" });
+    check("azure download without responseHeaders still signs a GET URL", noRh.method === "GET");
   } finally {
     b.storage._resetForTest();
     await teardownTestDb(tmpDir);
@@ -893,6 +1002,7 @@ async function run() {
   await testSurface();
   await testSigv4ProducesPresignedUrl();
   await testSigv4SignatureIsDeterministic();
+  await testPresignDocumentedCodes();
   await testInvalidExpiresInRejected();
   await testLocalBackendThrowsNotSupported();
   await testHttpPutBackendThrowsNotSupported();

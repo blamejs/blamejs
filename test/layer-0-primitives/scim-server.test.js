@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) blamejs contributors
 "use strict";
+// SMOKE_RUN_SOLO: growth checks here compare wall-clock time across input sizes, which a CPU shared with the smoke pool distorts.
 // b.middleware.scimServer — SCIM 2.0 server middleware.
 
 var helpers = require("../helpers");
@@ -750,6 +751,41 @@ async function _runFilterParsingTests() {
   var garbage = await listWith("this is not a filter");
   check("filter: unparseable filter kept as raw",
         garbage && typeof garbage.raw === "string" && garbage.attribute === undefined);
+
+  var plain = await listWith('userName eq "bjensen"');
+  check("filter: attribute, op and value parsed",
+        plain && plain.attribute === "userName" && plain.op === "eq" && plain.value === "bjensen",
+        JSON.stringify(plain));
+  var padded = await listWith('  userName eq   "bjensen"  ');
+  check("filter: surrounding whitespace is ignored and the raw filter kept",
+        padded && padded.attribute === "userName" && padded.value === "bjensen" &&
+        padded.raw === '  userName eq   "bjensen"  ', JSON.stringify(padded));
+  var bare = await listWith("a pr");
+  check("filter: a one-letter attribute with pr parses", bare && bare.op === "pr" && bare.attribute === "a");
+  var spacedPr = await listWith("title pr   ");
+  check("filter: pr followed by whitespace parses", spacedPr && spacedPr.op === "pr" && spacedPr.value === undefined);
+
+  var multiline = await listWith("a eq x\ny");
+  check("filter: a value holding a line break is kept as raw",
+        multiline && multiline.raw === "a eq x\ny" && multiline.attribute === undefined,
+        JSON.stringify(multiline));
+
+  // The filter came straight from the query string. `\s+(.+)` followed by
+  // `\s*$` split a run of spaces three ways, and a 4 KiB URL of "+" with
+  // "x%0Ay" after it held the event loop for 8.7s before impl.list ran.
+  var growth = await helpers.looksSuperlinearAsync(function (n) {
+    return _drive(mw, { method: "GET", url: "/scim/v2/Users?filter=a+eq+" + "+".repeat(n) + "x%0Ay", headers: {} });
+  }, { small: 500, large: 2000, threshold: 6, label: "scim filter whitespace run" });
+  check("filter: parsing is linear in a whitespace run (ratio " + growth.ratio + ")",
+        growth.superlinear === false);
+
+  // RFC 7644 section 3.4.2.2: attribute operators are case-insensitive.
+  var mixed = await listWith('userName Eq "bjensen"');
+  check("filter: an operator written Eq parses as eq",
+        mixed && mixed.op === "eq" && mixed.attribute === "userName" && mixed.value === "bjensen",
+        JSON.stringify(mixed));
+  var upperPr = await listWith("title PR");
+  check("filter: an operator written PR parses as pr", upperPr && upperPr.op === "pr", JSON.stringify(upperPr));
 
   captured = [];
   await _drive(mw, { method: "GET", url: "/scim/v2/Users", headers: {} });

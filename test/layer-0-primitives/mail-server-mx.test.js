@@ -1562,10 +1562,75 @@ async function testRelayCidrEnforced() {
     { cidr: "::ffff:10.0.0.0/104", scope: "internal" });
   bootAccepts("hex-group IPv4-mapped relay CIDR accepted at boot",
     { cidr: "::ffff:0a00:0/104", scope: "internal" });
+
+  // (c3) The hex-group spelling covers the same IPv4 range as the dotted one,
+  // so it admits the IPv4 peer 127.0.0.1 on the wire.
+  var hexSrv = b.mail.server.mx.create({
+    tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
+    relayAllowedFor: [{ cidr: "::ffff:7f00:0/104", scope: "loopback" }],
+  });
+  var hexInfo = await hexSrv.listen({ port: 0, address: "127.0.0.1" });
+  try {
+    var hexSock = await _connectTo(hexInfo);
+    await _sendCommand(hexSock, "EHLO sender.example.com");
+    await _sendCommand(hexSock, "MAIL FROM:<s@external.com>");
+    var hexReply = await _sendCommand(hexSock, "RCPT TO:<bob@notlocal.example>");
+    check("relay CIDR ::ffff:7f00:0/104 admits the IPv4 peer 127.0.0.1 → 250",
+      /^250 /.test(hexReply), hexReply);
+    hexSock.destroy();
+  } finally { await hexSrv.close({ timeoutMs: 1000 }); }                               // allow:raw-time-literal — test-only short drain
   check("the ::ffff:10.0.0.0/104 fold (10.0.0.0/8) matches a genuine IPv4 peer",
     b.ssrfGuard.cidrContains("10.0.0.0/8", "10.2.3.4") === true);
   check("the ::ffff:10.0.0.0/104 fold (10.0.0.0/8) matches an IPv4-mapped peer",
     b.ssrfGuard.cidrContains("10.0.0.0/8", b.ssrfGuard.canonicalizeHost("::ffff:10.2.3.4")) === true);
+}
+
+// A dual-stack listener on :: reports an IPv4 sender as ::ffff:127.0.0.1. The
+// framework's own greylist and DNSBL gates take that address as the IPv4
+// sender it is: greylisting defers it, and a DNSBL listing of 127.0.0.1 under
+// its IPv4 name refuses it.
+async function testDualStackListenerGatesAnIpv4Sender() {
+  var ctx = await _makeTestTlsContext();
+  var fakeResolver = {
+    queryA: function (name) {
+      if (name === "1.0.0.127.bl.example.com") {
+        return Promise.resolve({ rrs: [{ type: 1, decoded: "127.0.0.2", ttl: 60 }] });
+      }
+      var e = new Error("nx"); e.code = "resolver/nxdomain"; return Promise.reject(e);
+    },
+    queryTxt: function () { var e = new Error("nx"); e.code = "resolver/nxdomain"; return Promise.reject(e); },
+    query:    function () { var e = new Error("nx"); e.code = "resolver/nxdomain"; return Promise.reject(e); },
+  };
+  var cases = [
+    { label: "greylist", gate: { greylist: b.mail.greylist.create() }, expect: /^450 4\.7\.1/ },
+    { label: "DNSBL",    gate: { rbl: b.mail.rbl.create({ resolver: fakeResolver, blocklists: ["bl.example.com"] }) },
+      expect: /^554 5\.7\.1/ },
+  ];
+  for (var i = 0; i < cases.length; i++) {
+    var srv = b.mail.server.mx.create(Object.assign({
+      tlsContext: ctx, profile: "permissive", localDomains: ["example.com"],
+    }, cases[i].gate));
+    var info;
+    try { info = await srv.listen({ port: 0, address: "::" }); }
+    catch (e) {
+      helpers.unavailable("mx dual-stack " + cases[i].label, "cannot listen on :: (" + (e && e.code) + ")");
+      continue;
+    }
+    try {
+      var sock;
+      try { sock = await _connectTo(info); }
+      catch (e) {
+        helpers.unavailable("mx dual-stack " + cases[i].label, "IPv4 connect to :: refused (" + (e && e.code) + ")");
+        continue;
+      }
+      await _sendCommand(sock, "EHLO sender.example.com");
+      await _sendCommand(sock, "MAIL FROM:<s@external.example>");
+      var reply = await _sendCommand(sock, "RCPT TO:<alice@example.com>");
+      check("dual-stack listener: the " + cases[i].label + " gate judges the IPv4 sender",
+        cases[i].expect.test(reply), reply);
+      sock.destroy();
+    } finally { await srv.close({ timeoutMs: 1000 }); }                                // allow:raw-time-literal — test-only short drain
+  }
 }
 
 // ---- Agent handoff failure surfaces a 451 transient error ---------------
@@ -2002,6 +2067,7 @@ async function run() {
   await testWireSmuggling();
   await testRelayAllowed();
   await testRelayCidrEnforced();
+  await testDualStackListenerGatesAnIpv4Sender();
   await testAgentHandoffFailure();
   await testGateThrows();
   await testIdleTimeout();

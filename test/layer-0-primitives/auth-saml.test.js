@@ -419,6 +419,13 @@ async function testVerifyResponseHappyPath() {
   check("verify happy: multi-valued attribute is an array",
     Array.isArray(info.attributes.roles) && info.attributes.roles.join(",") === "admin,ops");
   check("verify happy: audience defaults to entityId", info.audience === SP_ENTITY_ID);
+
+  var thrown = null;
+  try { _fakeSp().verifyResponse(_buildSignedResponse(idp, { tag: "bad-anchor" })); }
+  catch (e) { thrown = e; }
+  check("verify: an idpCertPem that does not parse -> AuthError auth-saml/bad-idp-cert",
+    thrown !== null && thrown.code === "auth-saml/bad-idp-cert" &&
+    thrown.constructor && thrown.constructor.name === "AuthError");
 }
 
 async function testVerifyResponseInResponseTo() {
@@ -518,6 +525,65 @@ function testLogoutRequestValidation() {
     _codeOf(function () { sp.buildLogoutRequest("nope"); }) === "auth-saml/bad-opts");
   var unknownCode = _codeOf(function () { sp.buildLogoutRequest({ nameId: "a", bogus: 1 }); });
   check("buildLogoutRequest: unknown opt is refused", /unknown option/.test(unknownCode));
+  check("buildLogoutRequest: non-string idpSloUrl -> no-idp-slo",
+    _codeOf(function () { sp.buildLogoutRequest({ nameId: "a", idpSloUrl: 5 }); }) === "auth-saml/no-idp-slo");
+  check("buildLogoutRequest: empty idpSloUrl falls back to the configured endpoint",
+    sp.buildLogoutRequest({ nameId: "a", idpSloUrl: "" }).redirectUrl.indexOf(IDP_SLO_URL + "?") === 0);
+  check("buildLogoutRequest: signingKey without signingAlg -> bad-signing-alg",
+    _codeOf(function () { sp.buildLogoutRequest({ nameId: "a", signingKey: new Uint8Array(4) }); }) === "auth-saml/bad-signing-alg");
+  var bareSp = _fakeSp({ idpSloUrl: undefined });
+  check("buildLogoutRequest: no SLO endpoint configured falls back to idpSsoUrl",
+    bareSp.buildLogoutRequest({ nameId: "a" }).redirectUrl.indexOf(IDP_SSO_URL + "?") === 0);
+
+  check("buildLogoutRequestPost: non-object opts -> bad-opts",
+    _codeOf(function () { sp.buildLogoutRequestPost("nope"); }) === "auth-saml/bad-opts");
+  check("buildLogoutRequestPost: missing nameId -> no-nameid",
+    _codeOf(function () { sp.buildLogoutRequestPost({}); }) === "auth-saml/no-nameid");
+  check("buildLogoutRequestPost: non-string idpSloUrl -> no-idp-slo",
+    _codeOf(function () { sp.buildLogoutRequestPost({ nameId: "a", idpSloUrl: {} }); }) === "auth-saml/no-idp-slo");
+  check("buildLogoutRequestPost: no SLO endpoint configured falls back to idpSsoUrl",
+    bareSp.buildLogoutRequestPost({ nameId: "a" }).action === IDP_SSO_URL);
+  check("buildLogoutRequestSoap: non-string idpSloUrl -> no-idp-slo",
+    _codeOf(function () { sp.buildLogoutRequestSoap({ nameId: "a", idpSloUrl: true }); }) === "auth-saml/no-idp-slo");
+
+  ["buildLogoutRequest", "buildLogoutRequestPost", "buildLogoutRequestSoap"].forEach(function (fn) {
+    [0, false, null, NaN].forEach(function (v) {
+      check(fn + ": falsy non-string idpSloUrl " + String(v) + " -> no-idp-slo",
+        _codeOf(function () { sp[fn]({ nameId: "a", idpSloUrl: v }); }) === "auth-saml/no-idp-slo");
+    });
+  });
+}
+
+function testLogoutSigningKeyCodes() {
+  var sp = _fakeSp();
+  var ed = nodeCrypto.generateKeyPairSync("ed25519");
+  var builders = [
+    { name: "buildLogoutRequest",     opts: { nameId: "a" } },
+    { name: "buildLogoutRequestPost", opts: { nameId: "a" } },
+    { name: "buildLogoutRequestSoap", opts: { nameId: "a" } },
+    { name: "buildLogoutResponse",    opts: { inResponseTo: "_x", destination: IDP_SLO_URL } },
+  ];
+  var cases = [
+    { label: "ed25519 with no signingKey",           signingAlg: "ed25519" },
+    { label: "ed25519 with a 4-byte raw key",        signingAlg: "ed25519",      signingKey: new Uint8Array(4) },
+    { label: "ed25519 with a public KeyObject",      signingAlg: "ed25519",      signingKey: ed.publicKey },
+    { label: "ed25519 with an unparseable PEM",      signingAlg: "ed25519",      signingKey: "not a pem" },
+    { label: "rsa-sha256 with an unparseable PEM",   signingAlg: "rsa-sha256",   signingKey: "not a pem" },
+    { label: "ecdsa-sha256 with an unparseable PEM", signingAlg: "ecdsa-sha256", signingKey: "not a pem" },
+    { label: "ml-dsa-65 with a 4-byte key",          signingAlg: "ml-dsa-65",    signingKey: new Uint8Array(4) },
+    { label: "ml-dsa-87 with a 4032-byte key",       signingAlg: "ml-dsa-87",    signingKey: new Uint8Array(4032) },
+  ];
+  builders.forEach(function (bd) {
+    cases.forEach(function (c) {
+      var o = Object.assign({}, bd.opts, { signingAlg: c.signingAlg });
+      if (c.signingKey !== undefined) o.signingKey = c.signingKey;
+      var thrown = null;
+      try { sp[bd.name](o); } catch (e) { thrown = e; }
+      check(bd.name + ": " + c.label + " -> AuthError auth-saml/bad-signing-key",
+        thrown !== null && thrown.code === "auth-saml/bad-signing-key" &&
+        thrown.constructor && thrown.constructor.name === "AuthError");
+    });
+  });
 }
 
 function testLogoutResponseValidation() {
@@ -526,6 +592,8 @@ function testLogoutResponseValidation() {
     _codeOf(function () { sp.buildLogoutResponse({ destination: IDP_SLO_URL }); }) === "auth-saml/no-in-response-to");
   check("buildLogoutResponse: missing destination → no-destination",
     _codeOf(function () { sp.buildLogoutResponse({ inResponseTo: "_x" }); }) === "auth-saml/no-destination");
+  check("buildLogoutResponse: non-object opts -> bad-opts",
+    _codeOf(function () { sp.buildLogoutResponse(null); }) === "auth-saml/bad-opts");
 }
 
 function testParseLogoutRequestValidation() {
@@ -1432,6 +1500,10 @@ function testSloPostBindings() {
   check("SLO POST: rsa-sha384 embedded XMLDSig round trip", roundTrip("rsa-sha384", skPem, pkPem));
   check("SLO POST: rsa-sha512 embedded XMLDSig round trip", roundTrip("rsa-sha512", skPem, pkPem));
   check("SLO POST: ed25519 embedded XMLDSig round trip (raw key)", roundTrip("ed25519", ed.seed, ed.pub));
+  var placed = sp.buildLogoutRequestPost({ nameId: "alice@idp", signingKey: skPem, signingAlg: "rsa-sha256" }).raw;
+  check("SLO POST: the signature element directly follows saml:Issuer",
+    placed.indexOf("</saml:Issuer><ds:Signature ") > 0 &&
+    placed.indexOf("</ds:Signature><saml:NameID") > 0);
 
   // _embedXmlDsig key/alg validation (buildLogoutRequestPost calls it directly).
   check("SLO POST: unknown signingAlg -> bad-signing-alg",
@@ -2220,6 +2292,7 @@ async function run() {
   await testVerifyResponseTamperedDigest();
   // SLO redirect
   testLogoutRequestValidation();
+  testLogoutSigningKeyCodes();
   testLogoutResponseValidation();
   testParseLogoutRequestValidation();
   testLogoutResponseRoundTrip();

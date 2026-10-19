@@ -326,6 +326,134 @@ async function testDeferredNextContinuesChain() {
   check("finalNext called after a deferred next()", finalCalled === true);
 }
 
+async function testNextIsSingleUsePerInvocation() {
+  // Entry one calls next() once, then keeps the callback and calls it
+  // again later. The gate after it never calls next(). The stored second
+  // call must not move the request past the gate.
+  var storedNext = null;
+  var finalCalled = false;
+  var pipe = b.middleware.composePipeline([
+    { name: "first", mw: function (req, res, next) {
+      req._tags = ["first"];
+      storedNext = next;
+      next();
+    } },
+    { name: "gate", mw: function (req, res, _next) {
+      req._tags.push("gate");
+    } },
+    { name: "after", mw: _passMw("after") },
+  ]);
+  var req = {}; var res = {};
+  pipe(req, res, function () { finalCalled = true; });
+  check("compose-pipeline: the gate ran once", req._tags.join(",") === "first,gate");
+  storedNext();
+  await helpers.passiveObserve(20, "compose-pipeline: a stored next() call settles");
+  check("compose-pipeline: a duplicate next() does not run the entry after the gate",
+    req._tags.indexOf("after") === -1);
+  check("compose-pipeline: a duplicate next() does not reach finalNext", finalCalled === false);
+  check("compose-pipeline: a duplicate next() does not run the gate again",
+    req._tags.join(",") === "first,gate");
+}
+
+async function testThrowAfterNextDoesNotAdvance() {
+  // Entry one calls next() and then throws. The gate never calls next().
+  // The throw must not move the request past the gate or reach the
+  // error-handler slot behind it; the composed promise rejects with it.
+  var sentinel = new Error("after-next");
+  var finalCalled = false;
+  var handlerSaw = null;
+  var pipe = b.middleware.composePipeline([
+    { name: "first", mw: function (req, res, next) {
+      req._tags = ["first"];
+      next();
+      throw sentinel;
+    } },
+    { name: "gate", mw: function (req, res, _next) { req._tags.push("gate"); } },
+    { name: "after", mw: _passMw("after") },
+    { name: "lateErrors", mw: function (err, req, res, _next) { handlerSaw = err; } },
+  ]);
+  var req = {}; var res = {};
+  var rejected = null;
+  await pipe(req, res, function () { finalCalled = true; }).then(null, function (e) { rejected = e; });
+  check("compose-pipeline: a throw after next() rejects the composed promise", rejected === sentinel);
+  check("compose-pipeline: a throw after next() does not run the entries after the gate",
+    req._tags.join(",") === "first,gate");
+  check("compose-pipeline: a throw after next() does not reach the error handler", handlerSaw === null);
+  check("compose-pipeline: a throw after next() does not reach finalNext", finalCalled === false);
+}
+
+async function _runCapturingStderr(fn) {
+  var lines = [];
+  var origConsoleError = console.error;
+  console.error = function () {
+    lines.push(Array.prototype.slice.call(arguments).map(String).join(" "));
+  };
+  try { await fn(); }
+  finally { console.error = origConsoleError; }
+  return lines;
+}
+
+async function testThrowAfterChainFinishedIsReported() {
+  // Entry one calls next(), the rest of the chain runs synchronously and
+  // reaches finalNext inside that call, and entry one then throws. The
+  // composed promise has already resolved and finalNext has already run,
+  // so the throw cannot change the outcome; it is written to the log
+  // naming the entry and the error code.
+  var shapes = [
+    { label: "sync", mw: function (req, res, next) {
+      next();
+      var e = new Error("thrown-after-next"); e.code = "app/late-sync"; throw e;
+    } },
+    { label: "async", mw: async function (req, res, next) {
+      next();
+      var e = new Error("async-thrown-after-next"); e.code = "app/late-async"; throw e;
+    } },
+  ];
+  for (var i = 0; i < shapes.length; i++) {
+    var shape = shapes[i];
+    var finalCalls = 0;
+    var outcome = "pending";
+    var lines = await _runCapturingStderr(async function () {
+      var pipe = b.middleware.composePipeline([
+        { name: "first",  mw: shape.mw },
+        { name: "second", mw: function (req, res, next) { next(); } },
+      ]);
+      await pipe({}, {}, function () { finalCalls += 1; })
+        .then(function () { outcome = "resolved"; }, function (e) { outcome = "rejected:" + e.message; });
+      await helpers.passiveObserve(20, "compose-pipeline: a late throw is reported in this window");
+    });
+    var code = shape.label === "sync" ? "app/late-sync" : "app/late-async";
+    check("compose-pipeline (" + shape.label + "): finalNext ran once before the late throw", finalCalls === 1);
+    check("compose-pipeline (" + shape.label + "): the composed promise keeps its resolved outcome",
+      outcome === "resolved");
+    check("compose-pipeline (" + shape.label + "): a throw after the chain finished is logged with the entry and code",
+      lines.some(function (l) { return l.indexOf("'first'") !== -1 && l.indexOf(code) !== -1; }));
+    check("compose-pipeline (" + shape.label + "): the late-throw log line does not carry the error message",
+      lines.every(function (l) { return l.indexOf("thrown-after-next") === -1; }));
+  }
+}
+
+async function testThrowAfterResponseClosedIsReported() {
+  // The client disconnects (res emits close) while a middleware is still
+  // running, and the middleware then throws without calling next. The
+  // composed promise has already settled, so the throw is logged.
+  var EventEmitter = require("node:events");
+  var res = new EventEmitter();
+  var lines = await _runCapturingStderr(async function () {
+    var pipe = b.middleware.composePipeline([
+      { name: "slow", mw: async function (req, r, _next) {
+        await null;
+        r.emit("close");
+        var e = new Error("after-close"); e.code = "app/after-close"; throw e;
+      } },
+    ]);
+    await pipe({}, res, function () {});
+    await helpers.passiveObserve(20, "compose-pipeline: a throw after close is reported in this window");
+  });
+  check("compose-pipeline: a throw after the response closed is logged",
+    lines.some(function (l) { return l.indexOf("'slow'") !== -1 && l.indexOf("app/after-close") !== -1; }));
+}
+
 async function run() {
   testSurface();
   testSequentialDispatch();
@@ -345,6 +473,10 @@ async function run() {
   await testHaltingMiddlewareSettlesPromise();
   await testHandledErrorSettlesWithoutFinalNext();
   await testDeferredNextContinuesChain();
+  await testNextIsSingleUsePerInvocation();
+  await testThrowAfterNextDoesNotAdvance();
+  await testThrowAfterChainFinishedIsReported();
+  await testThrowAfterResponseClosedIsReported();
 }
 
 module.exports = { run: run };

@@ -678,6 +678,52 @@ async function testIpPinPeerGated() {
   }
 }
 
+// A grant minted while the client was reported as ::ffff:10.0.0.1 (a
+// dual-stack listener) is redeemed by the same client reported as 10.0.0.1,
+// and the pin compares the two as the one address they are.
+async function testIpPinComparesTheCanonicalAddress() {
+  var tmpDir = _tmp();
+  await setupTestDb(tmpDir);
+  try {
+    b.breakGlass.init({ clientIpResolver: function (rq) { return rq.headers["x-test-client"]; } });
+    b.queue.init({ backends: { primary: { protocol: "local" } } });
+    var jid = await b.queue.enqueue("ip-pin-canon-q", { secret: "row-ip-pin-canon" });
+    await b.breakGlass.policy.set("_blamejs_jobs", {
+      columns: ["payload"], factors: ["totp"], maxRowsPerGrant: 5,
+      pinIp: true, sessionPin: false,
+    });
+    var totp = _validTotp();
+    var grant = await b.breakGlass.grant({
+      req:    _fakeReq({ headers: { "x-test-client": "::ffff:10.0.0.1" } }),
+      table:  "_blamejs_jobs",
+      reason: "ip-pin canonical: minting from the mapped spelling of the client",
+      factor: { type: "totp", code: totp.code, secret: totp.secret },
+    });
+
+    var threwOther = null;
+    try {
+      await b.breakGlass.unsealRow(grant, "_blamejs_jobs", jid.jobId,
+        { req: _fakeReq({ headers: { "x-test-client": "10.0.0.2" } }) });
+    } catch (e) { threwOther = e; }
+    check("ip-pin canonical: a different client is still refused",
+          threwOther && /breakglass\/grant-ip-mismatch/.test(threwOther.code));
+
+    var threwSame = null, ok = null;
+    try {
+      ok = await b.breakGlass.unsealRow(grant, "_blamejs_jobs", jid.jobId,
+        { req: _fakeReq({ headers: { "x-test-client": "10.0.0.1" } }) });
+    } catch (e) { threwSame = e; }
+    check("ip-pin canonical: the same client written as 10.0.0.1 redeems the grant",
+          threwSame === null && ok && ok.payload && ok.payload.indexOf("row-ip-pin-canon") !== -1,
+          threwSame && threwSame.code);
+
+    try { await b.queue.shutdown({ timeoutMs: 200 }); } catch (_e) {}
+  } finally {
+    b.breakGlass.init();
+    await teardownTestDb(tmpDir);
+  }
+}
+
 async function testSessionPinEnforcement() {
   var tmpDir = _tmp();
   await setupTestDb(tmpDir);
@@ -2178,6 +2224,7 @@ async function run() {
   // grant binding enforcement (IP / session pin + fail-closed) + TOTP replay
   await testIpPinEnforcement();
   await testIpPinPeerGated();
+  await testIpPinComparesTheCanonicalAddress();
   await testSessionPinEnforcement();
   await testIpPinFailClosedOnNullBinding();
   await testTotpReplayDefense();

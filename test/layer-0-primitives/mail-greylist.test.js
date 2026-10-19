@@ -226,6 +226,73 @@ async function run() {
   await testGc();
   await testMaxEntriesEvictsOldest();
   await testFingerprintHashStable();
+  await testAMappedOrTranslatedSenderIsKeyedOnItsIpv4Address();
+  await testAllowedSourcesMatchCidrsAndEverySpelling();
+  testAllowedSourcesRefusesAnEntryThatIsNotAnAddress();
+}
+
+// A dual-stack MX listener reports an IPv4 sender as ::ffff:a.b.c.d.
+async function testAMappedOrTranslatedSenderIsKeyedOnItsIpv4Address() {
+  var spellings = ["::ffff:203.0.113.42", "::ffff:cb00:712a", "64:ff9b::cb00:712a"];
+  for (var i = 0; i < spellings.length; i++) {
+    var gl = b.mail.greylist.create({ minDelayMs: 30 });
+    var first = null, err = null;
+    try { first = await gl.check(_ctx({ ip: spellings[i] })); } catch (e) { err = e; }
+    check("the sender " + spellings[i] + " is greylisted rather than refused as bad input",
+          first !== null && first.action === "defer", err ? err.code : JSON.stringify(first));
+    var key = null;
+    try { key = b.mail.greylist._cidrKey(spellings[i], 24, 64); } catch (e) { key = e.code; }
+    check("the sender " + spellings[i] + " is keyed on the IPv4 /24 it names",
+          key === "203.0.113.0/24", key);
+    var other = await gl.check(_ctx({ ip: "198.51.100.42" }));
+    check("another IPv4 sender after " + spellings[i] + " is first-seen", other.reason === "first-seen");
+    await helpers.passiveObserve(50, "mail-greylist: 30ms minDelay elapsed for the mapped-sender retry");
+    var retry = await gl.check(_ctx({ ip: "203.0.113.42" }));
+    check("the same sender written as 203.0.113.42 passes on retry after " + spellings[i],
+          retry.action === "accept-first-pass", retry.action);
+  }
+  var two = b.mail.greylist.create({ minDelayMs: 30 });
+  await two.check(_ctx({ ip: "::ffff:cb00:712a" }));
+  var hexOther = await two.check(_ctx({ ip: "::ffff:c633:642a" }));
+  check("two hex-mapped senders in different /24s are two senders",
+        hexOther.reason === "first-seen", hexOther.reason);
+}
+
+async function testAllowedSourcesMatchCidrsAndEverySpelling() {
+  var byCidr = b.mail.greylist.create({ allowedSources: ["203.0.113.0/24"] });
+  var v1 = await byCidr.check(_ctx({ ip: "203.0.113.42" }));
+  check("allowedSources CIDR 203.0.113.0/24 skips 203.0.113.42", v1.action === "accept", v1.action);
+  var v2 = await byCidr.check(_ctx({ ip: "::ffff:203.0.113.42" }));
+  check("allowedSources CIDR 203.0.113.0/24 skips ::ffff:203.0.113.42", v2.action === "accept", v2.action);
+  var v3 = await byCidr.check(_ctx({ ip: "198.51.100.42" }));
+  check("allowedSources CIDR 203.0.113.0/24 does not skip 198.51.100.42", v3.action === "defer", v3.action);
+
+  var byIp = b.mail.greylist.create({ allowedSources: ["203.0.113.42"] });
+  var v4 = await byIp.check(_ctx({ ip: "::ffff:cb00:712a" }));
+  check("allowedSources 203.0.113.42 skips its hex-mapped spelling", v4.action === "accept", v4.action);
+  var byMapped = b.mail.greylist.create({ allowedSources: ["::ffff:203.0.113.42"] });
+  var v5 = await byMapped.check(_ctx({ ip: "203.0.113.42" }));
+  check("allowedSources ::ffff:203.0.113.42 skips 203.0.113.42", v5.action === "accept", v5.action);
+}
+
+function testAllowedSourcesRefusesAnEntryThatIsNotAnAddress() {
+  ["mx.example.com", "203.0.113.0/33", "203.0.113/24", "", 42].forEach(function (entry) {
+    var code = null;
+    try { b.mail.greylist.create({ allowedSources: [entry] }); } catch (e) { code = e.code; }
+    check("allowedSources " + JSON.stringify(entry) + " is refused with mail-greylist/bad-input",
+          code === "mail-greylist/bad-input", String(code));
+  });
+  ["203.0.113.0/24", { "203.0.113.0/24": true }, 7].forEach(function (value) {
+    var code = null;
+    try { b.mail.greylist.create({ allowedSources: value }); } catch (e) { code = e.code; }
+    check("allowedSources " + JSON.stringify(value) + " (not an array) is refused with mail-greylist/bad-input",
+          code === "mail-greylist/bad-input", String(code));
+  });
+  [undefined, null, []].forEach(function (value) {
+    var code = null;
+    try { b.mail.greylist.create({ allowedSources: value }); } catch (e) { code = e.code; }
+    check("allowedSources " + String(JSON.stringify(value)) + " is accepted as no sources", code === null, String(code));
+  });
 }
 
 module.exports = { run: run };

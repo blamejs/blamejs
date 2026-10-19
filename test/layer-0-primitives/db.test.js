@@ -392,6 +392,49 @@ async function testTransaction() {
     check("transaction re-propagates the body error", rolled && /boom-in-txn/.test(rolled.message));
     check("rolled-back row is absent",
       !b.db.from("ledger").where({ _id: "b" }).first());
+
+    // An async function is refused before it is called, so neither the
+    // writes before its first await nor the writes after it run.
+    var unhandled = [];
+    function onUnhandled(e) { unhandled.push((e && e.message) || String(e)); }
+    process.on("unhandledRejection", onUnhandled);
+    var asyncErr = null;
+    var asyncBodyRan = false;
+    var thenErr = null;
+    try {
+      try {
+        b.db.transaction(async function () {
+          asyncBodyRan = true;
+          b.db.from("ledger").insertOne({ _id: "c", bal: 3 });
+          await null;
+          b.db.from("ledger").insertOne({ _id: "d", bal: 4 });
+          throw new Error("async-body-failed");
+        });
+      } catch (e) { asyncErr = e; }
+      // A plain function that returns a promise is refused after it returns:
+      // what it wrote synchronously is rolled back and its rejection is held.
+      try {
+        b.db.transaction(function () {
+          b.db.from("ledger").insertOne({ _id: "e", bal: 5 });
+          return Promise.reject(new Error("thenable-body-failed"));
+        });
+      } catch (e) { thenErr = e; }
+      await helpers.passiveObserve(50, "db.transaction async body: a rejection would surface in this window");
+    } finally {
+      process.removeListener("unhandledRejection", onUnhandled);
+    }
+    check("transaction(async fn) throws db/async-transaction-fn",
+      asyncErr && asyncErr.code === "db/async-transaction-fn");
+    check("transaction(async fn) does not call the async function", asyncBodyRan === false);
+    check("transaction(async fn) writes nothing before the first await",
+      !b.db.from("ledger").where({ _id: "c" }).first());
+    check("transaction(async fn) writes nothing after the first await",
+      !b.db.from("ledger").where({ _id: "d" }).first());
+    check("transaction(fn returning a promise) throws db/async-transaction-fn",
+      thenErr && thenErr.code === "db/async-transaction-fn");
+    check("transaction(fn returning a promise) rolls back its synchronous writes",
+      !b.db.from("ledger").where({ _id: "e" }).first());
+    check("transaction(async fn) leaves no unhandled rejection", unhandled.length === 0);
   } finally {
     _teardownPlain(tmpDir);
   }

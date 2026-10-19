@@ -56,6 +56,25 @@ async function run() {
   var threw = null;
   try { b.a2a.createCard({ issuer: "x" }); } catch (e) { threw = e; }
   check("createCard refuses incomplete card", threw && threw.code === "a2a/missing-field");
+
+  // A card that is not a plain object is refused by the entry points
+  // that accept a caller-built card.
+  var nonObjects = [null, undefined, "card", 42, ["issuer"]];
+  for (var n = 0; n < nonObjects.length; n += 1) {
+    var signErr = null;
+    try { b.a2a.signCard(nonObjects[n], kp.privateKey, { audit: false }); }
+    catch (e) { signErr = e; }
+    check("signCard refuses non-object card #" + n + " with a2a/bad-card",
+      signErr && signErr.code === "a2a/bad-card");
+  }
+  var truthyNonObjects = ["card", 42, ["issuer"]];
+  for (var t = 0; t < truthyNonObjects.length; t += 1) {
+    var forged = { card: truthyNonObjects[t], signature: env.signature,
+      signedAt: env.signedAt, expiresAt: env.expiresAt };
+    var vr = b.a2a.verifyCard(forged, kp.publicKey, { audit: false });
+    check("verifyCard refuses non-object card #" + t + " as card-shape:a2a/bad-card",
+      vr.valid === false && vr.reason === "card-shape:a2a/bad-card");
+  }
 }
 
 module.exports = { run: run };

@@ -11366,16 +11366,20 @@ function testPqcAgentCreateHttpHasNoTlsPosture() {
 
 // ---- pqc-gate ----
 //
-// Build a synthetic ClientHello buffer with a configurable supported_groups
-// list. Lets us exercise the parser without standing up real TLS.
+// Build a synthetic TLS 1.3 ClientHello buffer with a configurable
+// supported_groups list. Lets us exercise the parser without standing up
+// real TLS. `opts.noVersions` leaves out the supported_versions extension,
+// which a TLS 1.2-only client does not send.
 
-function _makeClientHello(groupIds) {
+function _makeClientHello(groupIds, opts) {
   // Body layout we control:
   //   version(2) random(32) sessionId(0+1) cipherSuites(2+2) comp(1+1)
-  //     extensions(2 + supported_groups extension)
+  //     extensions(2 + supported_groups extension + supported_versions extension)
   //
   // supported_groups extension:
   //   type=0x000A length(2)  list_length(2)  group_ids(2 each)
+  // supported_versions extension:
+  //   type=0x002B length(2)  list_length(1)  0x0304
   var groupsBytes = Buffer.alloc(2 + groupIds.length * 2);
   groupsBytes.writeUInt16BE(groupIds.length * 2, 0);
   for (var i = 0; i < groupIds.length; i++) {
@@ -11385,6 +11389,7 @@ function _makeClientHello(groupIds) {
     Buffer.from([0x00, 0x0A]),                          // type
     (function () { var b = Buffer.alloc(2); b.writeUInt16BE(groupsBytes.length, 0); return b; })(),
     groupsBytes,
+    (opts && opts.noVersions) ? Buffer.alloc(0) : Buffer.from([0x00, 0x2B, 0x00, 0x03, 0x02, 0x03, 0x04]),
   ]);
   var extensions = Buffer.concat([
     (function () { var b = Buffer.alloc(2); b.writeUInt16BE(extInner.length, 0); return b; })(),
@@ -11445,6 +11450,9 @@ function testClientHelloPqcDetection() {
   // A ClientHello with ONLY PQC hybrid groups → accepted
   var heroPQ = _makeClientHello([b.constants.PQC_GROUPS.SecP384r1MLKEM1024]);
   check("ClientHello with PQC group → accepted",  b.pqcGate.clientHelloHasPQC(heroPQ) === true);
+  check("ClientHello with PQC group but no supported_versions → rejected",
+        b.pqcGate.clientHelloHasPQC(_makeClientHello([b.constants.PQC_GROUPS.SecP384r1MLKEM1024],
+          { noVersions: true })) === false);
 
   // A ClientHello with both PQC + classical → accepted (PQC present is what matters)
   var heroMix = _makeClientHello([0x0017 /* secp256r1 */, b.constants.PQC_GROUPS.X25519MLKEM768]);
@@ -11485,6 +11493,39 @@ function testClientHelloPqcDetection() {
   check("non-handshake first byte → rejected",   b.pqcGate.clientHelloHasPQC(Buffer.from([0x14, 0x03, 0x03, 0x00, 0x05])) === false);
   check("too-short buffer → rejected",            b.pqcGate.clientHelloHasPQC(Buffer.alloc(10)) === false);
   check("null input → rejected",                  b.pqcGate.clientHelloHasPQC(null) === false);
+
+  // The groups the gate counts are the post-quantum groups the listener
+  // behind it offers, read from the live b.network.tls posture. IANA TLS
+  // Supported Groups: MLKEM1024 0x0202, SecP384r1MLKEM1024 0x11ED,
+  // X25519MLKEM768 0x11EC, x25519 0x001D.
+  var MLKEM1024_ID = 0x0202, SECP384_MLKEM1024_ID = 0x11ED, X25519_MLKEM768_ID = 0x11EC, X25519_ID = 0x001D;
+  try {
+    b.network.tls.preferredGroups.reset();
+    check("default posture: pure MLKEM1024 + X25519 is refused (the listener would pick X25519)",
+          b.pqcGate.clientHelloHasPQC(_makeClientHello([MLKEM1024_ID, X25519_ID])) === false);
+    b.network.tls.preferredGroups.set(["MLKEM1024", "X25519MLKEM768"]);
+    check("posture listing MLKEM1024: a client offering only MLKEM1024 is accepted",
+          b.pqcGate.clientHelloHasPQC(_makeClientHello([MLKEM1024_ID])) === true);
+    check("posture listing MLKEM1024: PQC_GROUP_IDS carries 0x0202",
+          b.pqcGate.PQC_GROUP_IDS.has(MLKEM1024_ID) === true);
+    b.network.tls.preferredGroups.set(["X25519MLKEM768", "X25519"]);
+    check("posture without SecP384r1MLKEM1024: a client offering it + X25519 is refused",
+          b.pqcGate.clientHelloHasPQC(_makeClientHello([SECP384_MLKEM1024_ID, X25519_ID])) === false);
+    check("posture without SecP384r1MLKEM1024: X25519MLKEM768 still counts",
+          b.pqcGate.clientHelloHasPQC(_makeClientHello([X25519_MLKEM768_ID])) === true);
+  } finally {
+    b.network.tls.preferredGroups.reset();
+  }
+  check("explicit groups: MLKEM1024 counts when the listener names it",
+        b.pqcGate.clientHelloHasPQC(_makeClientHello([MLKEM1024_ID]), { groups: "MLKEM1024/X25519" }) === true);
+  check("explicit groups: a hybrid the listener does not name does not count",
+        b.pqcGate.clientHelloHasPQC(_makeClientHello([X25519_MLKEM768_ID]), { groups: ["MLKEM1024"] }) === false);
+  var flatThrew = null;
+  try {
+    b.pqcGate.clientHelloHasPQC(_makeClientHello([MLKEM1024_ID]), { groups: "MLKEM1024:X25519" });
+  } catch (e) { flatThrew = e; }
+  check("explicit groups: one tuple mixing MLKEM1024 and X25519 throws TypeError",
+        flatThrew instanceof TypeError);
 }
 
 function testPqcGateSocketLifecycle() {

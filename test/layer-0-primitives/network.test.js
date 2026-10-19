@@ -3,6 +3,7 @@
 "use strict";
 
 var nodeCrypto = require("node:crypto");
+var nodeNet    = require("node:net");
 
 var helpers = require("../helpers");
 var check   = helpers.check;
@@ -25,6 +26,68 @@ async function _makeRealCaPem() {
 
 function _resetAll() {
   if (typeof network._resetForTest === "function") network._resetForTest();
+}
+
+function _listenTcp(host) {
+  return new Promise(function (resolve) {
+    var server = nodeNet.createServer(function (sock) { sock.destroy(); });
+    server.once("error", function (e) { resolve({ server: null, error: e }); });
+    server.listen(0, host, function () { resolve({ server: server, error: null }); });
+  });
+}
+
+// A tcp target written as a bracketed IPv6 literal ("[::1]", the form a URL
+// authority carries) reaches the listener, as the bare form does.
+async function _testHeartbeatTcpBracketedIpv6() {
+  var l = await _listenTcp("::1");
+  if (l.server === null) {
+    helpers.unavailable("heartbeat tcp [::1]", "cannot listen on ::1: " + (l.error && l.error.code));
+    return;
+  }
+  var port = l.server.address().port;
+  try {
+    var hosts = [["bare", "::1"], ["bracketed", "[::1]"]];
+    for (var i = 0; i < hosts.length; i += 1) {
+      var name = "probe-v6-" + hosts[i][0];
+      heartbeat.start({
+        targets: [{ name: name, type: "tcp", host: hosts[i][1], port: port, intervalMs: 50, timeoutMs: 2000, threshold: 1 }],
+      });
+      var st = await helpers.waitUntil(function () {
+        var s = heartbeat.status(name);
+        return (s && s.lastResult) ? s : false;
+      }, { label: "network heartbeat: " + name + " recorded a first probe" });
+      heartbeat.stop(name);
+      check("heartbeat tcp probe reaches a " + hosts[i][0] + " IPv6 host (" + hosts[i][1] + ")",
+        st.lastResult.ok === true, JSON.stringify(st.lastResult));
+    }
+  } finally {
+    l.server.close();
+  }
+}
+
+// A tcp target host that is empty, or brackets anything but an IPv6 address,
+// is refused at start(). Dialing "" or "[]" connects to localhost, so the
+// probe would report a typo as a healthy target.
+function _testHeartbeatTcpBadHost() {
+  var bad = ["", "[]", "[localhost]", "[127.0.0.1]", "[::1", "::1]"];
+  for (var i = 0; i < bad.length; i += 1) {
+    var err = null;
+    try {
+      heartbeat.start({ targets: [{ name: "bad-host-" + i, type: "tcp", host: bad[i], port: 1 }] });
+    } catch (e) { err = e; }
+    if (err === null) heartbeat.stop("bad-host-" + i);
+    check("heartbeat.start refuses tcp host " + JSON.stringify(bad[i]) + " with heartbeat/bad-tcp",
+      err !== null && err.code === "heartbeat/bad-tcp", err ? err.code : "no throw");
+  }
+  var good = ["localhost", "127.0.0.1", "::1", "[::1]", "[fe80::1]"];
+  for (var j = 0; j < good.length; j += 1) {
+    var gErr = null;
+    try {
+      heartbeat.start({ targets: [{ name: "good-host-" + j, type: "tcp", host: good[j], port: 1, intervalMs: C.TIME.hours(1) }] });
+      heartbeat.stop("good-host-" + j);
+    } catch (e) { gErr = e; }
+    check("heartbeat.start accepts tcp host " + JSON.stringify(good[j]), gErr === null, gErr && gErr.message);
+  }
 }
 
 async function run() {
@@ -75,6 +138,20 @@ async function run() {
     proxy.shouldProxy(new URL("https://localhost/x")) === false);
   check("proxy.shouldProxy false for NO_PROXY CIDR match",
     proxy.shouldProxy(new URL("http://10.5.6.7/x")) === false);
+  // The URL parser writes [::ffff:10.5.6.7] as [::ffff:a05:607]; it is the
+  // address 10.5.6.7 and goes direct under the same rule.
+  check("proxy.shouldProxy false for the IPv4-mapped spelling of a NO_PROXY CIDR host",
+    proxy.shouldProxy(new URL("http://[::ffff:10.5.6.7]/x")) === false);
+  proxy.set({ no: "::ffff:10.0.0.0/104,192.0.2.7,::ffff:198.51.100.9" });
+  check("proxy.shouldProxy false for an IPv4 host under an IPv4-mapped NO_PROXY CIDR",
+    proxy.shouldProxy(new URL("http://10.5.6.7/x")) === false);
+  check("proxy.shouldProxy false for the mapped spelling of a NO_PROXY address",
+    proxy.shouldProxy(new URL("http://[::ffff:192.0.2.7]/x")) === false);
+  check("proxy.shouldProxy false for an IPv4 host listed by its mapped spelling",
+    proxy.shouldProxy(new URL("http://198.51.100.9/x")) === false);
+  check("proxy.shouldProxy true for an IPv4 host outside every NO_PROXY entry",
+    proxy.shouldProxy(new URL("http://11.5.6.7/x")) === true);
+  proxy.set({ no: ".internal,10.0.0.0/8,localhost" });
   var snap = proxy.snapshot();
   check("proxy.snapshot exposes resolved settings",
     snap.http && snap.https && snap.noProxy.length === 3);
@@ -134,6 +211,10 @@ async function run() {
     st && (st.state === "down" || st.state === "degraded" || st.consecutiveFailures > 0));
   heartbeat.stop("probe-test");
   check("heartbeat.stop returns true on existing", heartbeat.status("probe-test") === null);
+  _resetAll();
+  await _testHeartbeatTcpBracketedIpv6();
+  _resetAll();
+  _testHeartbeatTcpBadHost();
   _resetAll();
 
   // ---- Socket defaults ----
@@ -322,16 +403,17 @@ async function run() {
   }
 
   // ---- NTS auth: server reply without AUTHENTICATOR_AND_ENC must fail closed ----
-  // We can't run a full NTS-KE / NTPv4 round trip in a unit test, but we
-  // can verify querySingle's input validation + auth-extension absence
-  // path. Build a minimal NTPv4 reply with a unique-identifier match
-  // but no authenticator extension; querySingle should reject it.
+  // A spoofed UDP server mirrors the request's unique identifier in an
+  // NTPv4 reply that carries no authenticator extension. RFC 8915 section
+  // 5.7 has the client discard an unauthenticated datagram and keep
+  // waiting, so the query runs to its timeout and then rejects with the
+  // reason the datagram was discarded (nts/no-authenticator) rather than
+  // nts/timeout. A short timeout keeps the wait small; the reply arrives
+  // over loopback well inside it.
   var ntsTestKey = nodeCrypto.randomBytes(32);
-  // Spoof a UDP server: call querySingle against a port we'll bind that
-  // mirrors the unique identifier without an authenticator. Listen on
-  // 127.0.0.1:<random> via dgram, accept the request, send the spoofed
-  // reply, expect querySingle to reject.
   var dgram = require("node:dgram");
+  var ntsTimeoutMs = 300;
+  var ntsReplied = false;
   await new Promise(function (resolveT) {
     var srv = dgram.createSocket("udp4");
     srv.bind(0, "127.0.0.1", async function () {
@@ -346,10 +428,12 @@ async function run() {
         reply.writeUInt16BE(0x0104, 48);
         reply.writeUInt16BE(36, 50);
         unique.copy(reply, 52);
-        srv.send(reply, 0, reply.length, rinfo.port, rinfo.address, function () {
+        srv.send(reply, 0, reply.length, rinfo.port, rinfo.address, function (sendErr) {
+          if (!sendErr) ntsReplied = true;
           srv.close();
         });
       });
+      var startedAt = Date.now();
       try {
         await nts.querySingle({
           host:     "127.0.0.1",
@@ -358,12 +442,16 @@ async function run() {
           c2sKey:   ntsTestKey,
           s2cKey:   ntsTestKey,
           cookies:  [Buffer.from("c1")],
-          timeoutMs: 5000,
+          timeoutMs: ntsTimeoutMs,
         });
         check("NTS rejects reply without AUTHENTICATOR_AND_ENC", false);
       } catch (e) {
+        var waitedMs = Date.now() - startedAt;
+        check("NTS: the spoofed reply was sent before the query settled", ntsReplied);
         check("NTS rejects reply without AUTHENTICATOR_AND_ENC",
-          (e.code || "").indexOf("nts/no-authenticator") !== -1);
+          (e.code || "").indexOf("nts/no-authenticator") !== -1, e.code + " " + e.message);
+        check("NTS keeps waiting after discarding the unauthenticated reply",
+          waitedMs >= ntsTimeoutMs - 20, waitedMs + "ms");
       }
       resolveT();
     });

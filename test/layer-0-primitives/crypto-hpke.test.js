@@ -2,16 +2,18 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * b.crypto.hpke — RFC 9180 Hybrid Public-Key Encryption.
+ * b.crypto.hpke: the blamejs ML-KEM-1024 + HKDF-SHA3-512 +
+ * XChaCha20-Poly1305 sealing format. It does not interoperate with
+ * RFC 9180; b.crypto.hpke.pq carries the RFC 9180 suites.
  *
- * Suite: ML-KEM-1024 + HKDF-SHA3-512 + ChaCha20-Poly1305. Round-trip
- * + AAD binding + suite-id binding (info string changes derive a
- * different key) + tampered-ciphertext rejection.
+ * Round-trip + AAD binding + info binding (a different info string derives
+ * a different key) + tampered-ciphertext rejection.
  */
 
-var helpers = require("../helpers");
-var b       = helpers.b;
-var check   = helpers.check;
+var nodeCrypto = require("node:crypto");
+var helpers    = require("../helpers");
+var b          = helpers.b;
+var check      = helpers.check;
 
 function testSurface() {
   check("crypto.hpke namespace exposed",
@@ -26,6 +28,24 @@ function testSurface() {
         b.crypto.hpke.SUPPORTED_SUITE.kem === "ML-KEM-1024");
   check("crypto.hpke.HpkeError is a class",
         typeof b.crypto.hpke.HpkeError === "function");
+}
+
+// The envelope's AEAD is XChaCha20-Poly1305 with a 24-byte nonce, which has
+// no HPKE AEAD id; the suite description names the cipher that runs.
+function testSuiteDescribesTheCipherThatRuns() {
+  check("SUPPORTED_SUITE.aead names XChaCha20-Poly1305",
+        b.crypto.hpke.SUPPORTED_SUITE.aead === "XChaCha20-Poly1305",
+        b.crypto.hpke.SUPPORTED_SUITE.aead);
+  check("SUPPORTED_SUITE.kdf names HKDF-SHA3-512",
+        b.crypto.hpke.SUPPORTED_SUITE.kdf === "HKDF-SHA3-512");
+  check("SUPPORTED_SUITE.label is the blamejs format label",
+        b.crypto.hpke.SUPPORTED_SUITE.label === "blamejs/hpke/v1");
+
+  // A 24-byte-nonce AEAD: the ciphertext is the plaintext plus a 16-byte
+  // Poly1305 tag, and the envelope carries no nonce of its own.
+  var pair = b.crypto.hpke.generateKeyPair();
+  var sealed = b.crypto.hpke.seal({ recipientPubKey: pair.publicKey, plaintext: "abc" });
+  check("ciphertext is plaintext + 16-byte tag", sealed.ciphertext.length === 3 + 16);
 }
 
 function testRoundTrip() {
@@ -89,7 +109,7 @@ function testAadBinding() {
       aad:         "aad-1",
     });
   } catch (e) { threwInfo = e; }
-  check("info-string mismatch refuses decrypt (suite_id binding)",
+  check("info-string mismatch refuses decrypt (info binding)",
         threwInfo && threwInfo.code === "crypto-hpke/aead-decrypt-failed");
 }
 
@@ -134,6 +154,20 @@ function testValidation() {
   check("non-string/Buffer plaintext throws",
         threwPt && threwPt.code === "crypto-hpke/bad-opt");
 
+  var threwBadPem = null;
+  try { b.crypto.hpke.seal({ recipientPubKey: "not a pem", plaintext: "x" }); }
+  catch (e) { threwBadPem = e; }
+  check("unreadable recipientPubKey throws crypto-hpke/bad-key",
+        threwBadPem && threwBadPem.code === "crypto-hpke/bad-key",
+        threwBadPem && (threwBadPem.code + " " + threwBadPem.message));
+
+  var threwBadPriv = null;
+  try { b.crypto.hpke.open({ privateKey: "not a pem", enc: Buffer.alloc(1568), ciphertext: Buffer.alloc(16) }); }
+  catch (e) { threwBadPriv = e; }
+  check("unreadable privateKey throws crypto-hpke/bad-key",
+        threwBadPriv && threwBadPriv.code === "crypto-hpke/bad-key",
+        threwBadPriv && (threwBadPriv.code + " " + threwBadPriv.message));
+
   var threwOpenEnc = null;
   try { b.crypto.hpke.open({ privateKey: "x", enc: "not-a-buffer", ciphertext: Buffer.alloc(0) }); }
   catch (e) { threwOpenEnc = e; }
@@ -141,12 +175,40 @@ function testValidation() {
         threwOpenEnc && threwOpenEnc.code === "crypto-hpke/bad-opt");
 }
 
+// node:crypto encapsulates to any KEM-capable key: RSA, EC, X25519, X448 and
+// the smaller ML-KEM parameter sets. The envelope is ML-KEM-1024 only, so a
+// key of any other type is refused on both sides before it is used.
+function testRefusesKeysThatAreNotMlKem1024() {
+  var pemEncoding = {
+    publicKeyEncoding:  { type: "spki",  format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  };
+  [["x25519", {}], ["x448", {}], ["ec", { namedCurve: "P-256" }],
+   ["rsa", { modulusLength: 2048 }], ["ml-kem-512", {}], ["ml-kem-768", {}]].forEach(function (row) {
+    var pair = nodeCrypto.generateKeyPairSync(row[0], Object.assign({}, row[1], pemEncoding));
+    var sealErr = null;
+    try { b.crypto.hpke.seal({ recipientPubKey: pair.publicKey, plaintext: "x" }); }
+    catch (e) { sealErr = e; }
+    check("seal refuses a " + row[0] + " public key with crypto-hpke/bad-key",
+          sealErr && sealErr.code === "crypto-hpke/bad-key",
+          sealErr ? (sealErr.code + " " + sealErr.message) : "sealed without error");
+    var openErr = null;
+    try { b.crypto.hpke.open({ privateKey: pair.privateKey, enc: Buffer.alloc(1568), ciphertext: Buffer.alloc(16) }); }
+    catch (e) { openErr = e; }
+    check("open refuses a " + row[0] + " private key with crypto-hpke/bad-key",
+          openErr && openErr.code === "crypto-hpke/bad-key",
+          openErr ? (openErr.code + " " + openErr.message) : "opened without error");
+  });
+}
+
 async function run() {
   testSurface();
+  testSuiteDescribesTheCipherThatRuns();
   testRoundTrip();
   testAadBinding();
   testTamperedCiphertext();
   testValidation();
+  testRefusesKeysThatAreNotMlKem1024();
 }
 
 module.exports = { run: run };

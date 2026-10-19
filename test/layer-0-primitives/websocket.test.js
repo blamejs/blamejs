@@ -813,6 +813,44 @@ function testConnectionCloseHandshake() {
   c3.on("close", function (code) { code3 = code; });
   s3.emit("data", clientFrame(ws.OPCODE_CLOSE, closePayload(3000, "app")));
   check("conn: private-use close code 3000 accepted", code3 === 3000 && c3.readyState === "closed");
+
+  // 1012 Service Restart, 1013 Try Again Later and 1014 Bad Gateway are
+  // assigned in the IANA WebSocket Close Code Number registry, so a peer may
+  // send them and the close is clean.
+  [1012, 1013, 1014].forEach(function (assigned) {
+    var sa = makeSocket();
+    var ca = new ws.WebSocketConnection(sa, { closeGraceMs: 10 });
+    var got = null;
+    ca.on("close", function (code, reason, wasClean) { got = { code: code, wasClean: wasClean }; });
+    sa.emit("data", clientFrame(ws.OPCODE_CLOSE, closePayload(assigned, "later")));
+    var echo = serverFrames(sa).filter(function (f) { return f.opcode === ws.OPCODE_CLOSE; });
+    check("conn: assigned close code " + assigned + " closes cleanly with that code",
+          got && got.code === assigned && got.wasClean === true);
+    check("conn: assigned close code " + assigned + " is echoed unchanged",
+          echo.length === 1 && echo[0].payload.readUInt16BE(0) === assigned);
+    teardown(ca, sa);
+  });
+
+  // close() refuses a code RFC 6455 7.4.1 forbids on the wire.
+  [999, 1004, 1005, 1006, 1015, 1016, 2999, 5000].forEach(function (bad) {
+    var sb = makeSocket();
+    var cb = new ws.WebSocketConnection(sb, { closeGraceMs: 10 });
+    var thrown = null;
+    try { cb.close(bad, "x"); } catch (e) { thrown = e; }
+    var wrote = serverFrames(sb).filter(function (f) { return f.opcode === ws.OPCODE_CLOSE; });
+    check("conn: close(" + bad + ") throws TypeError and writes no close frame",
+          thrown instanceof TypeError && wrote.length === 0 && cb.readyState === "open");
+    teardown(cb, sb);
+  });
+  var sOk = makeSocket();
+  var cOk = new ws.WebSocketConnection(sOk, { closeGraceMs: 10 });
+  cOk.close(1013, "busy");
+  var wroteOk = serverFrames(sOk).filter(function (f) { return f.opcode === ws.OPCODE_CLOSE; });
+  check("conn: close(1013) writes a close frame carrying 1013",
+        wroteOk.length === 1 && wroteOk[0].payload.readUInt16BE(0) === 1013);
+  teardown(cOk, sOk);
+
+  check("isValidCloseCode is exported", typeof ws.isValidCloseCode === "function");
 }
 
 function testConnectionCloseFrameViolations() {
@@ -831,6 +869,12 @@ function testConnectionCloseFrameViolations() {
   // Below-range close code 999.
   _abortCase("close-violation: below-range code 999", {},
     [clientFrame(ws.OPCODE_CLOSE, closePayload(999, ""))], ws.CLOSE_PROTOCOL_ERROR);
+
+  // 1015 is a local-only sentinel and 1016 is unassigned.
+  _abortCase("close-violation: reserved code 1015", {},
+    [clientFrame(ws.OPCODE_CLOSE, closePayload(1015, ""))], ws.CLOSE_PROTOCOL_ERROR);
+  _abortCase("close-violation: unassigned code 1016", {},
+    [clientFrame(ws.OPCODE_CLOSE, closePayload(1016, ""))], ws.CLOSE_PROTOCOL_ERROR);
 
   // Valid code but invalid UTF-8 in the reason.
   _abortCase("close-violation: invalid utf-8 reason", {},

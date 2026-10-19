@@ -330,6 +330,10 @@ function testShadowRegistryValidation() {
   expectCode("shadow: bad onCardinalityExceeded policy rejected",
     function () { b.metrics.snapshot.shadowRegistry({ namespace: "ns", onCardinalityExceeded: "explode" }); },
     "metrics-shadow/bad-policy");
+  // "audit-only" behaved exactly like "drop", so it is not an accepted value.
+  expectCode("shadow: audit-only policy refused",
+    function () { b.metrics.snapshot.shadowRegistry({ namespace: "ns", onCardinalityExceeded: "audit-only" }); },
+    "metrics-shadow/bad-policy");
   expectCode("shadow: negative cardinalityCap rejected",
     function () { b.metrics.snapshot.shadowRegistry({ namespace: "ns", cardinalityCap: -1 }); },
     "metrics-shadow/bad-cap");
@@ -994,16 +998,16 @@ function testShadowCardinalityPolicies() {
   expectCode("shadow refuse: over-cap inc throws",
     function () { refuse.inc("c_total", { id: "b" }); }, "metrics-shadow/cardinality-exceeded");
 
-  // audit-only: over-cap is dropped without throwing.
-  var auditOnly = b.metrics.snapshot.shadowRegistry({
-    namespace: "a", gauges: ["g"], cardinalityCap: 1, onCardinalityExceeded: "audit-only",
+  // drop: over-cap is dropped without throwing.
+  var dropping = b.metrics.snapshot.shadowRegistry({
+    namespace: "a", gauges: ["g"], cardinalityCap: 1, onCardinalityExceeded: "drop",
   });
-  auditOnly.set("g", 1, { id: "a" });
+  dropping.set("g", 1, { id: "a" });
   var noThrow = true;
-  try { auditOnly.set("g", 2, { id: "b" }); } catch (_e) { noThrow = false; }
-  check("shadow audit-only: over-cap gauge set does not throw", noThrow);
-  check("shadow audit-only: over-cap gauge value absent",
-    auditOnly.snapshot().gauges.g['{"id":"b"}'] === undefined);
+  try { dropping.set("g", 2, { id: "b" }); } catch (_e) { noThrow = false; }
+  check("shadow drop: over-cap gauge set does not throw", noThrow);
+  check("shadow drop: over-cap gauge value absent",
+    dropping.snapshot().gauges.g['{"id":"b"}'] === undefined);
 
   // Re-incrementing an existing label set bumps the stored value.
   var counter = b.metrics.snapshot.shadowRegistry({ namespace: "i", counters: ["n_total"] });

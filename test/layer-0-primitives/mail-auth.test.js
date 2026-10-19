@@ -2631,6 +2631,32 @@ async function testIprevPermerror() {
         rv2.result === "permerror");
 }
 
+// RFC 7208 section 5: a client reaching an IPv6 server through an
+// IPv4-mapped address is evaluated with the "A" records, as the IPv4 address
+// it is. A dual-stack MX listener reports every IPv4 sender that way.
+async function testSpfAndIprevEvaluateAMappedSenderAsIpv4() {
+  var dnsLookup = async function (host, type) {
+    if (host === "example.com" && type === "TXT") return [["v=spf1 ip4:192.0.2.0/24 -all"]];
+    if (host === "a.example" && type === "TXT") return [["v=spf1 a -all"]];
+    if (host === "a.example" && type === "A") return ["192.0.2.10"];
+    if (host === "10.2.0.192.in-addr.arpa" && type === "PTR") return ["mx.a.example"];
+    if (host === "mx.a.example" && type === "A") return ["192.0.2.10"];
+    var err = new Error("ENOTFOUND"); err.code = "ENOTFOUND"; throw err;
+  };
+  var spellings = ["::ffff:192.0.2.10", "::ffff:c000:20a", "::FFFF:192.0.2.10"];
+  for (var i = 0; i < spellings.length; i++) {
+    var ip4 = await b.mail.spf.verify({ ip: spellings[i], mailFrom: "alice@example.com", dnsLookup: dnsLookup });
+    check("spf ip4 mechanism passes the mapped sender " + spellings[i], ip4.result === "pass", ip4.result);
+    var a = await b.mail.spf.verify({ ip: spellings[i], mailFrom: "alice@a.example", dnsLookup: dnsLookup });
+    check("spf a mechanism passes the mapped sender " + spellings[i], a.result === "pass", a.result);
+    var rev = await b.mail.iprev.verify(spellings[i], { dnsLookup: dnsLookup });
+    check("iprev looks the mapped sender " + spellings[i] + " up in in-addr.arpa and passes",
+          rev.result === "pass" && rev.fcrdns === true, rev.result + " " + rev.explanation);
+  }
+  var outside = await b.mail.spf.verify({ ip: "::ffff:203.0.113.99", mailFrom: "alice@example.com", dnsLookup: dnsLookup });
+  check("spf still fails a mapped sender outside the ip4 range", outside.result === "fail", outside.result);
+}
+
 async function testIprevValidIpShape() {
   // Run with a TEST-NET-1 address that won't resolve. We don't assert
   // a specific verdict (PTR → fail OR temperror depending on network);
@@ -5351,6 +5377,7 @@ async function run() {
   await testIprevSurface();
   await testIprevPermerror();
   await testIprevValidIpShape();
+  await testSpfAndIprevEvaluateAMappedSenderAsIpv4();
   await testIprevForwardConfirmedPass();
   await testIprevForwardMismatchFail();
   await testIprevNoPtrFail();

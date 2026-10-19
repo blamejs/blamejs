@@ -213,6 +213,123 @@ async function testInsecureTlsAuditGatedToHttps() {
   check("https endpoint with allowInsecure DOES emit the insecure-TLS audit", tls === 1);
 }
 
+function _h2TlsServer(leaf) {
+  return new Promise(function (resolve) {
+    var captured = [];
+    var sni = [];
+    var server = http2.createSecureServer({ key: leaf.key, cert: leaf.cert });
+    server.on("secureConnection", function (s) { sni.push(s.servername || null); });
+    server.on("stream", function (stream, headers) {
+      var chunks = [];
+      stream.on("data", function (c) { chunks.push(c); });
+      stream.on("end", function () {
+        captured.push({ headers: headers, body: Buffer.concat(chunks) });
+        stream.respond({ ":status": 200, "content-type": "application/grpc+proto" }, { waitForTrailers: true });
+        stream.on("wantTrailers", function () { stream.sendTrailers({ "grpc-status": "0" }); });
+        stream.end(Buffer.from([0, 0, 0, 0, 0]));
+      });
+    });
+    server.listen(0, "127.0.0.1", function () {
+      resolve({
+        port: server.address().port, captured: captured, sni: sni,
+        close: function () { return new Promise(function (r) { server.close(r); }); },
+      });
+    });
+  });
+}
+
+// An https:// sink sends the url host as SNI when it is a name and no SNI
+// for an IP literal. An IP-literal `servername` equal to the url host is
+// dialed with no SNI; Node refuses an address as the TLS server name, so
+// passing it through would drop every record. One naming another address is
+// refused at create.
+async function testTlsServerName() {
+  var b = helpers.b;
+  var ca = await b.mtlsEngine.generateCa({ name: "otlp-grpc-sni-test-ca" });
+  var leaf = await b.mtlsEngine.signClientCert({
+    cn: "localhost", caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem,
+    usage: "server", sans: ["DNS:localhost", "IP:127.0.0.1"], validityDays: 1,
+  });
+  var cases = [
+    { label: "an IPv4 url host",                    servername: undefined,   sni: null },
+    { label: "an IPv4 servername equal to the host", servername: "127.0.0.1", sni: null },
+    { label: "a name in servername",                 servername: "localhost", sni: "localhost" },
+  ];
+  for (var i = 0; i < cases.length; i += 1) {
+    var tc = cases[i];
+    var srv = await _h2TlsServer(leaf);
+    var dropped = [];
+    var cfg = _baseConfig(srv.port, {
+      url: "https://127.0.0.1:" + srv.port, ca: ca.caCertPem, allowInsecure: false,
+      batchSize: 1, maxBatchAgeMs: 20,
+      onDrop: function (d) { dropped.push(d); },
+    });
+    if (tc.servername !== undefined) cfg.servername = tc.servername;
+    var sink = grpc.create(cfg);
+    try {
+      await sink.emit({ ts: Date.now(), level: "info", message: "sni-case-" + i });
+      await helpers.waitUntil(function () { return srv.captured.length >= 1 || dropped.length >= 1; }, {
+        label: "otlp-grpc tls: " + tc.label + ": export settles",
+      });
+      check("otlp-grpc tls: " + tc.label + " is delivered", srv.captured.length === 1,
+        dropped[0] ? (dropped[0].reason + " " + (dropped[0].error && dropped[0].error.message)) : "");
+      check("otlp-grpc tls: " + tc.label + " sends SNI " + JSON.stringify(tc.sni),
+        srv.sni.length >= 1 && srv.sni[0] === tc.sni, JSON.stringify(srv.sni));
+    } finally {
+      await sink.close();
+      await srv.close();
+    }
+  }
+  [
+    { label: "an IPv4 servername naming another address", servername: "127.0.0.2" },
+    { label: "an IPv4 servername on a host name",         servername: "127.0.0.1", host: "localhost" },
+    { label: "an empty servername",                       servername: "" },
+    { label: "a non-string servername",                   servername: 7 },
+  ].forEach(function (tc) {
+    var err = null;
+    try {
+      grpc.create(_baseConfig(1, { url: "https://" + (tc.host || "127.0.0.1") + ":1", servername: tc.servername }));
+    } catch (e) { err = e; }
+    check("otlp-grpc tls: " + tc.label + " is refused at create",
+      err && err.code === "log-stream-otlp-grpc/bad-opt" && /servername/.test(err.message),
+      err ? (err.code + " " + err.message) : "accepted");
+  });
+}
+
+// An IPv6 collector URL is written with brackets, and the request names it
+// the same way in :authority (RFC 3986 section 3.2.2).
+async function testIpv6AuthorityKeepsBrackets() {
+  var ifaces = require("node:os").networkInterfaces();
+  var v6 = Object.keys(ifaces).some(function (n) {
+    return (ifaces[n] || []).some(function (a) { return (a.family === "IPv6" || a.family === 6) && a.address === "::1"; });
+  });
+  if (!v6) { helpers.unavailable("otlp-grpc: [::1] collector", "no ::1 loopback on this host"); return; }
+  var captured = [];
+  var server = http2.createServer();
+  server.on("stream", function (stream, headers) {
+    captured.push(headers);
+    stream.on("data", function () { /* drain */ });
+    stream.on("end", function () {
+      stream.respond({ ":status": 200, "content-type": "application/grpc+proto" }, { waitForTrailers: true });
+      stream.on("wantTrailers", function () { stream.sendTrailers({ "grpc-status": "0" }); });
+      stream.end(Buffer.from([0, 0, 0, 0, 0]));
+    });
+  });
+  await new Promise(function (r) { server.listen(0, "::1", r); });
+  var port = server.address().port;
+  var sink = grpc.create(_baseConfig(port, { url: "http://[::1]:" + port, batchSize: 1, maxBatchAgeMs: 20 }));
+  try {
+    await sink.emit({ ts: Date.now(), level: "info", message: "v6-authority" });
+    await helpers.waitUntil(function () { return captured.length >= 1; },
+      { label: "otlp-grpc: the [::1] collector receives the export" });
+  } finally {
+    await sink.close();
+    await new Promise(function (r) { server.close(r); });
+  }
+  check("otlp-grpc: an IPv6 collector is named in brackets in :authority",
+    captured[0][":authority"] === "[::1]:" + port, JSON.stringify(captured[0][":authority"]));
+}
+
 async function run() {
   await testFramingShape();
   await testEncodeLogRecord();
@@ -221,6 +338,8 @@ async function run() {
   await testGrpcServerErrorTrailer();
   await testValidationRejectsBadUrl();
   await testInsecureTlsAuditGatedToHttps();
+  await testTlsServerName();
+  await testIpv6AuthorityKeepsBrackets();
 }
 
 module.exports = { run: run };

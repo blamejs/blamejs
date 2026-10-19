@@ -1532,7 +1532,18 @@ async function testAuthFailuresAndMultiStep(tls) {
     check("AUTH LOGIN issues 334 challenge", /^334 /.test(await _send(sock, "AUTH LOGIN")));
     check("AUTH LOGIN completes → 235",
       /^235 /.test(await _send(sock, Buffer.from("user", "utf8").toString("base64"))));
-  } finally { sock.destroy(); await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
+  } finally { sock.destroy(); }
+  // The AUTH line reader: a mechanism alone, a run of spaces before the
+  // initial response, and no mechanism at all.
+  var sock2 = await _connect(s.port);
+  try {
+    await _readReply(sock2);
+    await _send(sock2, "EHLO client.example.com");
+    check("AUTH with no mechanism → 5xx", /^5\d\d /.test(await _send(sock2, "AUTH")));
+    check("AUTH with a bad mechanism name → 5xx", /^5\d\d /.test(await _send(sock2, "AUTH PL@IN abcd")));
+    check("AUTH PLAIN with several spaces before the initial response → 235",
+      /^235 /.test(await _send(sock2, "AUTH PLAIN    " + _saslPlain("a@example.com", "good"))));
+  } finally { sock2.destroy(); await s.srv.close({ timeoutMs: b.constants.TIME.seconds(2) }); }
 }
 
 // ---- AUTH-failure per-IP rate-limit (421 + close) ----

@@ -113,6 +113,15 @@ function testSmugglingDefense() {
   // Permissive allows bare-LF
   var pl = b.guardImapCommand.validate("A001 LOGIN a\nb", { profile: "permissive" });
   check("permissive accepts bare-LF", pl.verb === "LOGIN");
+
+  // U+2028 and U+2029 are UTF8-3 characters, which RFC 9051 section 9 allows
+  // in a quoted string (QUOTED-CHAR). They do not end an IMAP line, so the
+  // guard passes them to the command's own argument reader.
+  [String.fromCharCode(0x2028), String.fromCharCode(0x2029)].forEach(function (sep) {
+    var q = b.guardImapCommand.validate("A001 SEARCH TEXT \"a" + sep + "b\"");
+    check("accepts U+" + sep.charCodeAt(0).toString(16) + " inside a quoted string",
+      q.verb === "SEARCH" && q.args.indexOf(sep) !== -1);
+  });
 }
 
 function testLiteralInjection() {

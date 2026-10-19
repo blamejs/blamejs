@@ -547,13 +547,24 @@ async function runCoseEdgeCases() {
   check("verify numeric signature returns signature-base64-bad",
     cc.verify({ manifest: manifest, signature: 12345 }, pair.publicKey, { audit: false }).reason === "signature-base64-bad");
 
-  // signCose reuse mode with a malformed private-key PEM: _publicKeyFromPrivatePem
-  // catches the createPublicKey throw and returns false → reuse mismatch.
-  check("signCose reuse-mode with unparseable PEM refused as reuse-signature-mismatch",
+  // signCose with a malformed private-key PEM: the key is loaded before the
+  // algorithm binding, so the refusal names the key rather than a later step.
+  check("signCose reuse-mode with unparseable PEM refused as bad-key",
     (function () {
       var er = _err(function () {
         cc.signCose(manifest, { privateKeyPem: "-----BEGIN PRIVATE KEY-----\nnope\n-----END PRIVATE KEY-----",
           timestamp: { token: Buffer.from([1]), signature: "AAAA" } });
+      });
+      return er && er.code === "content-credentials/bad-key";
+    })());
+  // A reused signature that does not verify against this manifest and key.
+  check("signCose reuse-mode with a signature from another key refused as reuse-signature-mismatch",
+    (function () {
+      var other = b.crypto.generateSigningKeyPair("ml-dsa-87");
+      var foreign = cc.signCose(manifest, { privateKeyPem: other.privateKey, timestamp: {}, audit: false });
+      var er = _err(function () {
+        cc.signCose(manifest, { privateKeyPem: pair.privateKey,
+          timestamp: { token: Buffer.from([1]), signature: foreign.timestampRequest.signature } });
       });
       return er && er.code === "content-credentials/reuse-signature-mismatch";
     })());
@@ -582,8 +593,9 @@ async function runCoseEdgeCases() {
   // 2-byte array-header range: _cborArrayHeader refuses it fail-closed with a
   // typed cbor-overflow error rather than emitting a truncated length header
   // that would silently misframe the x5chain array. Every fixed protocol
-  // codepoint (tag 18, labels 1/33/35, ≤2-entry maps) stays well below this
-  // ceiling, so an operator-supplied absurd chain is the only path here.
+  // codepoint (tag 18, header labels 1 and 33, the "sigTst2" tstContainer,
+  // maps of at most 2 entries) stays well below this ceiling, so an
+  // operator-supplied absurd chain is the only path here.
   var overflowErr = _err(function () {
     b.contentCredentials.signCose(manifest, {
       privateKeyPem: pair.privateKey, timestamp: false,
@@ -613,23 +625,226 @@ async function runCoseEdgeCases() {
   check("verifyCose non-map unprotected header rejected as cose-malformed",
     _vc(Buffer.from([0x84, 0x40, 0x40, 0x40, 0x40])).reason === "content-credentials/cose-malformed");
 
-  // Well-formed COSE shape with an EMPTY protected header → alg decode yields
-  // an empty map (algName null); with a NON-DECODABLE protected header → the
-  // alg decode catch (algName null). Both then fail the signature check
-  // (garbage signature) → signature-mismatch, not a throw.
+  // Well-formed COSE shape with an EMPTY protected header → no algorithm;
+  // with a NON-DECODABLE protected header → the alg decode catch. Both name
+  // no algorithm, so both fail as unknown-alg before any signature check.
   var vEmptyProt = _vc(Buffer.from([0x84, 0x40, 0xA0, 0x41, 0x00, 0x41, 0x00]));
-  check("verifyCose empty protected header → signature-mismatch (alg null)",
-    vEmptyProt.valid === false && vEmptyProt.reason === "signature-mismatch" && vEmptyProt.alg === null);
+  check("verifyCose empty protected header → unknown-alg (alg null)",
+    vEmptyProt.valid === false && vEmptyProt.reason === "unknown-alg" && vEmptyProt.alg === null);
   var vBadProt = _vc(Buffer.from([0x84, 0x41, 0xFF, 0xA0, 0x41, 0x00, 0x41, 0x00]));
-  check("verifyCose non-decodable protected header → signature-mismatch (alg null)",
-    vBadProt.valid === false && vBadProt.reason === "signature-mismatch" && vBadProt.alg === null);
+  check("verifyCose non-decodable protected header → unknown-alg (alg null)",
+    vBadProt.valid === false && vBadProt.reason === "unknown-alg" && vBadProt.alg === null);
 
-  // verifyCose signature verify THROWS on a malformed (non-empty) public-key
-  // PEM → the catch sets sigOk false → signature-mismatch.
-  var vBadKey = cc.verifyCose(Buffer.from([0x84, 0x40, 0xA0, 0x41, 0x00, 0x41, 0x00]),
+  // A malformed (non-empty) public-key PEM under a valid ML-DSA-87 header
+  // ({1: -50}) cannot be loaded → signature-mismatch, not a throw.
+  var vBadKey = cc.verifyCose(Buffer.from([0x84, 0x44, 0xA1, 0x01, 0x38, 0x31, 0xA0, 0x41, 0x00, 0x41, 0x00]),
     "-----BEGIN PUBLIC KEY-----\nnotvalid\n-----END PUBLIC KEY-----", { requireTimestamp: false, audit: false });
-  check("verifyCose malformed public key PEM → signature-mismatch (verify throw caught)",
-    vBadKey.valid === false && vBadKey.reason === "signature-mismatch");
+  check("verifyCose malformed public key PEM → signature-mismatch",
+    vBadKey.valid === false && vBadKey.reason === "signature-mismatch" && vBadKey.alg === "ml-dsa-87");
+}
+
+// The COSE_Sign1 shape an external C2PA 2.x verifier reads: the sigTst2
+// tstContainer under its text label, x5chain in the protected header, a
+// CounterSignature imprint built the way c2pa-rs builds it, COSE algorithm
+// values from the IANA registry, and a header algorithm that matches the key
+// and the signature encoding. Every expected value here is built from the
+// specification, not from the module's own constants.
+function _decodeCose(bytes) {
+  var t = b.cbor.decode(bytes, { allowedTags: [18] });
+  var arr = t.value;
+  var prot = arr[0].length === 0 ? new Map() : b.cbor.decode(arr[0]);
+  return { protBytes: arr[0], prot: prot, unprot: arr[1], payload: arr[2], sig: arr[3] };
+}
+
+// C2PA 2.x 10.3.2.5: the v2 payload is the serialized bstr of the COSE_Sign1
+// signature, placed in an RFC 9052 Sig_structure with context
+// "CounterSignature", an empty external_aad and no sign_protected.
+function _c2paV2CountersignTbs(protBytes, sig) {
+  return b.cbor.encode(["CounterSignature", protBytes, Buffer.alloc(0), b.cbor.encode(sig)]);
+}
+
+function _coseSign1Bytes(protMap, unprotMap, payload, sigFn) {
+  var protBytes = b.cbor.encode(protMap);
+  var tbs = b.cbor.encode(["Signature1", protBytes, Buffer.alloc(0), payload]);
+  var sig = sigFn(tbs);
+  return { bytes: b.cbor.encode(new b.cbor.Tag(18, [protBytes, unprotMap, payload, sig])), protBytes: protBytes, sig: sig };
+}
+
+async function runCoseRegistryConformance() {
+  var manifest = cc.build(VALID_BUILD);
+  var payload = Buffer.from(JSON.stringify(manifest), "utf8");
+  var mldsa = b.crypto.generateSigningKeyPair("ml-dsa-87");
+  var e;
+
+  // No SLH-DSA codepoint exists in the IANA COSE Algorithms registry: -51 is
+  // ESP384 and -56 is unassigned, so neither name may reach a header.
+  ["slh-dsa-shake-256f", "slh-dsa-sha2-128s"].forEach(function (name) {
+    check("signCose refuses " + name + " (no registered COSE algorithm)",
+      (e = _err(function () {
+        cc.signCose(manifest, { privateKeyPem: mldsa.privateKey, alg: name,
+          timestamp: false, timestampOptOutReason: "x", audit: false });
+      })) && e.code === "content-credentials/bad-alg");
+  });
+
+  // The header algorithm is bound to the key that signs.
+  check("signCose refuses alg es256 with an ML-DSA-87 key",
+    (e = _err(function () {
+      cc.signCose(manifest, { privateKeyPem: mldsa.privateKey, alg: "es256",
+        timestamp: false, timestampOptOutReason: "x", audit: false });
+    })) && e.code === "content-credentials/alg-key-mismatch");
+  var p256 = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  check("signCose refuses alg es384 with a P-256 key",
+    (e = _err(function () {
+      cc.signCose(manifest, { privateKeyPem: p256.privateKey.export({ type: "pkcs8", format: "pem" }),
+        alg: "es384", timestamp: false, timestampOptOutReason: "x", audit: false });
+    })) && e.code === "content-credentials/alg-key-mismatch");
+  check("signCose refuses alg ml-dsa-65 with an ML-DSA-87 key",
+    (e = _err(function () {
+      cc.signCose(manifest, { privateKeyPem: mldsa.privateKey, alg: "ml-dsa-65",
+        timestamp: false, timestampOptOutReason: "x", audit: false });
+    })) && e.code === "content-credentials/alg-key-mismatch");
+
+  // verifyCose: a header naming ES256 over an ML-DSA signature is not valid,
+  // and an algorithm outside the table is refused before any signature check.
+  var esOverMldsa = _coseSign1Bytes(new Map([[1, -7]]), new Map(), payload,
+    function (tbs) { return nodeCrypto.sign(null, tbs, mldsa.privateKey); });
+  var vMis = cc.verifyCose(esOverMldsa.bytes, mldsa.publicKey, { requireTimestamp: false, audit: false });
+  check("verifyCose: header ES256 over an ML-DSA-87 signature fails as alg-key-mismatch",
+    vMis.valid === false && vMis.reason === "alg-key-mismatch");
+  var unassigned = _coseSign1Bytes(new Map([[1, -56]]), new Map(), payload,
+    function (tbs) { return nodeCrypto.sign(null, tbs, mldsa.privateKey); });
+  var vUnk = cc.verifyCose(unassigned.bytes, mldsa.publicKey, { requireTimestamp: false, audit: false });
+  check("verifyCose: unassigned COSE algorithm -56 fails as unknown-alg",
+    vUnk.valid === false && vUnk.reason === "unknown-alg");
+  var noAlg = _coseSign1Bytes(new Map(), new Map(), payload,
+    function (tbs) { return nodeCrypto.sign(null, tbs, mldsa.privateKey); });
+  var vNoAlg = cc.verifyCose(noAlg.bytes, mldsa.publicKey, { requireTimestamp: false, audit: false });
+  check("verifyCose: protected header without alg fails as unknown-alg",
+    vNoAlg.valid === false && vNoAlg.reason === "unknown-alg");
+
+  // ECDSA: RFC 9053 2.1 signs with the hash the algorithm names and carries
+  // the signature as r || s, not as a DER SEQUENCE.
+  [["es256", "prime256v1", "sha256", -7, 64], ["es384", "secp384r1", "sha384", -35, 96],
+   ["es512", "secp521r1", "sha512", -36, 132]].forEach(function (row) {
+    var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: row[1] });
+    var privPem = kp.privateKey.export({ type: "pkcs8", format: "pem" });
+    var pubPem = kp.publicKey.export({ type: "spki", format: "pem" });
+    var out = cc.signCose(manifest, { privateKeyPem: privPem, alg: row[0],
+      timestamp: false, timestampOptOutReason: "x", audit: false });
+    var d = _decodeCose(out.coseSign1);
+    var tbs = b.cbor.encode(["Signature1", d.protBytes, Buffer.alloc(0), d.payload]);
+    var ok = false;
+    try { ok = nodeCrypto.verify(row[2], tbs, { key: pubPem, dsaEncoding: "ieee-p1363" }, d.sig); }
+    catch (_e) { ok = false; }
+    check("signCose " + row[0] + ": header alg " + row[3] + " and an RFC 9053 r||s " + row[2] + " signature",
+      d.prot.get(1) === row[3] && d.sig.length === row[4] && ok === true);
+    var foreign = _coseSign1Bytes(new Map([[1, row[3]]]), new Map(), payload, function (t) {
+      return nodeCrypto.sign(row[2], t, { key: kp.privateKey, dsaEncoding: "ieee-p1363" });
+    });
+    var vf = cc.verifyCose(foreign.bytes, pubPem, { requireTimestamp: false, audit: false });
+    check("verifyCose accepts an independently built " + row[0] + " COSE_Sign1",
+      vf.valid === true && vf.alg === row[0]);
+  });
+
+  // x5chain sits in the protected header (C2PA 2.1 14.5).
+  var leafDer = Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01]);
+  var withChain = cc.signCose(manifest, { privateKeyPem: mldsa.privateKey, certChain: [leafDer],
+    timestamp: false, timestampOptOutReason: "x", audit: false });
+  var dc = _decodeCose(withChain.coseSign1);
+  check("signCose: x5chain (33) is in the protected header",
+    Buffer.isBuffer(dc.prot.get(33)) && dc.prot.get(33).equals(leafDer));
+  check("signCose: x5chain (33) is not in the unprotected header", dc.unprot.has(33) === false);
+
+  // The TSA request imprint is the C2PA v2 CounterSignature over the signature.
+  var reqOut = cc.signCose(manifest, { privateKeyPem: mldsa.privateKey, timestamp: {}, audit: false });
+  var dr = _decodeCose(reqOut.coseSign1);
+  check("signCose request mode: toBeSigned is the C2PA v2 CounterSignature structure",
+    Buffer.isBuffer(reqOut.timestampRequest.toBeSigned) &&
+    reqOut.timestampRequest.toBeSigned.equals(_c2paV2CountersignTbs(dr.protBytes, dr.sig)));
+
+  // Attach mode writes "sigTst2" => { "tstTokens": [ { "val": token } ] }.
+  var rt = _timestampedRoundTrip(manifest, mldsa);
+  var da = _decodeCose(rt.attached.coseSign1);
+  check("signCose attach: nothing under COSE header label 35 (x5u)", da.unprot.has(35) === false);
+  var container = da.unprot.get("sigTst2");
+  check("signCose attach: sigTst2 is a tstContainer holding the one token",
+    container instanceof Map && Array.isArray(container.get("tstTokens")) &&
+    container.get("tstTokens").length === 1 &&
+    container.get("tstTokens")[0] instanceof Map &&
+    Buffer.isBuffer(container.get("tstTokens")[0].get("val")) &&
+    container.get("tstTokens")[0].get("val").equals(rt.token));
+
+  // A COSE_Sign1 built without signCose, the way c2pa-rs writes one, verifies
+  // with its timestamp.
+  var built = _coseSign1Bytes(new Map([[1, -50]]), new Map(), payload,
+    function (tbs) { return nodeCrypto.sign(null, tbs, mldsa.privateKey); });
+  var imprint = nodeCrypto.createHash("sha512").update(_c2paV2CountersignTbs(built.protBytes, built.sig)).digest();
+  var tsaCert = _makeTsaCert();
+  var token = _makeTsToken({ certDer: tsaCert.certDer, key: tsaCert.key, issuer: tsaCert.issuer,
+    serial: tsaCert.serial, imprintHash: imprint });
+  function _withSigTst(value) {
+    var unprot = new Map([["sigTst2", value]]);
+    return b.cbor.encode(new b.cbor.Tag(18, [built.protBytes, unprot, payload, built.sig]));
+  }
+  var anchorPem = new nodeCrypto.X509Certificate(tsaCert.certDer).toString();
+  var vExt = cc.verifyCose(_withSigTst(new Map([["tstTokens", [new Map([["val", token]])]]])),
+    mldsa.publicKey, { timestampTrustAnchorsPem: [anchorPem], audit: false });
+  check("verifyCose: externally built sigTst2 tstContainer verifies with its timestamp",
+    vExt.valid === true && vExt.timestamp && vExt.timestamp.valid === true);
+
+  // A sigTst2 that is present but malformed fails closed as invalid, never
+  // as absent.
+  var badShapes = [
+    ["a bare byte string", token],
+    ["an empty tstTokens array", new Map([["tstTokens", []]])],
+    ["two tokens", new Map([["tstTokens", [new Map([["val", token]]), new Map([["val", token]])]]])],
+    ["a val that is not bytes", new Map([["tstTokens", [new Map([["val", "x"]])]]])],
+    ["a tstTokens that is not an array", new Map([["tstTokens", new Map([["val", token]])]])],
+  ];
+  badShapes.forEach(function (row) {
+    var vb = cc.verifyCose(_withSigTst(row[1]), mldsa.publicKey, { audit: false });
+    check("verifyCose: sigTst2 with " + row[0] + " fails as timestamp-invalid",
+      vb.valid === false && vb.reason === "timestamp-invalid:sigtst2-malformed" &&
+      vb.timestamp && vb.timestamp.valid === false);
+  });
+
+  // signCose in 0.21.2 and earlier wrote the token as a byte string under
+  // integer label 35. verifyCose does not read that label, and a manifest
+  // carrying a token there fails with a reason that names it rather than as
+  // an absent timestamp, with or without requireTimestamp.
+  var legacy = b.cbor.encode(new b.cbor.Tag(18,
+    [built.protBytes, new Map([[35, token]]), payload, built.sig]));
+  [{ audit: false }, { requireTimestamp: false, audit: false }].forEach(function (vo) {
+    var vl = cc.verifyCose(legacy, mldsa.publicKey,
+      Object.assign({ timestampTrustAnchorsPem: [anchorPem] }, vo));
+    check("verifyCose: a token under the legacy label 35 fails as " +
+      "timestamp-invalid:legacy-label-35 (requireTimestamp " + (vo.requireTimestamp !== false) + ")",
+      vl.valid === false && vl.reason === "timestamp-invalid:legacy-label-35" &&
+      vl.timestamp && vl.timestamp.valid === false && vl.timestamp.reason === "legacy-label-35",
+      JSON.stringify({ reason: vl.reason, ts: vl.timestamp && vl.timestamp.reason }));
+  });
+  // An empty byte string under label 35 carries no token and reads as absent.
+  var legacyEmpty = b.cbor.encode(new b.cbor.Tag(18,
+    [built.protBytes, new Map([[35, Buffer.alloc(0)]]), payload, built.sig]));
+  var vle = cc.verifyCose(legacyEmpty, mldsa.publicKey, { audit: false });
+  check("verifyCose: an empty label 35 is not a token and fails as timestamp-required",
+    vle.valid === false && vle.reason === "timestamp-required", vle.reason);
+
+  // verifyCose takes an embedded b.contentCredentials manifest only. A
+  // detached (nil) payload, as a C2PA claim signature carries, and a correctly
+  // signed CBOR claim are both refused with the reasons the docs name.
+  var detachedTbs = b.cbor.encode(["Signature1", built.protBytes, Buffer.alloc(0), Buffer.alloc(0)]);
+  var detachedSig = nodeCrypto.sign(null, detachedTbs, mldsa.privateKey);
+  var detached = b.cbor.encode(new b.cbor.Tag(18, [built.protBytes, new Map(), null, detachedSig]));
+  var vDet = cc.verifyCose(detached, mldsa.publicKey, { requireTimestamp: false, audit: false });
+  check("verifyCose: a detached (nil) payload fails as content-credentials/cose-malformed",
+    vDet.valid === false && vDet.reason === "content-credentials/cose-malformed", vDet.reason);
+  var cborClaim = _coseSign1Bytes(new Map([[1, -50]]), new Map(),
+    b.cbor.encode(new Map([["claim_generator", "x"]])),
+    function (tbs) { return nodeCrypto.sign(null, tbs, mldsa.privateKey); });
+  var vClaim = cc.verifyCose(cborClaim.bytes, mldsa.publicKey, { requireTimestamp: false, audit: false });
+  check("verifyCose: a signed payload that is not a manifest fails as missing-required:<fields>",
+    vClaim.valid === false && /^missing-required:/.test(vClaim.reason), vClaim.reason);
 }
 
 // _verifyIdentityX509Chain error branches: the certificate-parse failures,
@@ -990,6 +1205,7 @@ async function run() {
 
   await runErrorPaths();
   await runCoseEdgeCases();
+  await runCoseRegistryConformance();
   await runX509ChainErrorBranches();
   await runIdentityAndCacEdge();
   await runAuditOnPaths();
