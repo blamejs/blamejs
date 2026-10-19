@@ -124,6 +124,15 @@
       ]
     },
     {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "Vendored `@blamejs/pki` 0.9.5 and the 2026-10-17 public suffix list",
+          "body": "`@blamejs/pki` 0.9.5 refuses a non-boolean value for a switch option (for example `detached: \"false\"` in `pki.cms.sign`, or `protectHeaders` in `pki.smime.sign`) instead of reading it as the opposite of what it says; `null` and an omitted option still select the default. The public suffix list is the 2026-10-17_18-52-06_UTC edition."
+        }
+      ]
+    },
+    {
       "heading": "Added",
       "items": [
         {
