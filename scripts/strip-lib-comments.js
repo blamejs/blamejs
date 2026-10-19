@@ -52,6 +52,13 @@ var JSDOC_TAG_RE = new RegExp(
 // there are 33 allow classes and a list would go stale on the next one.
 var MARKER_RE = /\ballow:[a-z0-9-]|codebase-patterns:allow-file|eslint-disable|c8 ignore|istanbul ignore|@ts-|prettier-ignore/;
 
+// A one-line `// registry: <https url>` annotation above a codepoint table.
+// The codebase-patterns registry detector reads it and requires the table to
+// be pinned in test/layer-0-primitives/registry-codepoints.test.js. Only the
+// bare URL form is kept; prose after the URL is narrative and is stripped.
+// The `\r?` covers CRLF files, where a line-comment range ends on the CR.
+var REGISTRY_RE = /^\/\/ registry: https:\/\/\S+[ \t]*\r?$/;
+
 // A comment that is the WHOLE body of a block. `catch (_e) { /* best-effort */ }`
 // is the shape: the comment is the only thing between the braces, and taking it
 // out leaves `catch (_e) { }` -- which the `silent-catch-stream-teardown` gate
@@ -129,6 +136,7 @@ var DISCIPLINE_RE = /drop-silent|drop silent/i;
 function isKept(text, src, range, ranges, index) {
   if (HEADER_RE.test(text)) return "header";
   if (MARKER_RE.test(text)) return "marker";
+  if (REGISTRY_RE.test(text)) return "marker";
   if (DISCIPLINE_RE.test(text)) return "marker";
   if (text.indexOf("/**") === 0 && JSDOC_TAG_RE.test(text)) return "jsdoc-tagged";
   if (src && _isSoleBlockBody(src, range, ranges, index)) return "empty-block";

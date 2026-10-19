@@ -288,6 +288,24 @@ function testCorsConfigValidationThrows() {
   check("ReDoS-shaped origins[] RegExp throws cors/unsafe-pattern",
         threwOnUnsafePattern && threwOnUnsafePattern.code === "cors/unsafe-pattern");
 
+  // The screen reads the pattern the middleware runs: ^(?:source)$ with g, y
+  // and m removed. Under m the raw entry's \s+(.+) follows a bounded prefix
+  // and is accepted, while the anchored form is quadratic on a long Origin.
+  var unsafeAnchored = [/^https:\/\/x\s+(.+)$/m];
+  for (var ua = 0; ua < unsafeAnchored.length; ua++) {
+    var threwAnchored = null;
+    try { b.middleware.cors({ origins: [unsafeAnchored[ua]] }); }
+    catch (e) { threwAnchored = e; }
+    check("origins[] " + String(unsafeAnchored[ua]) + " is refused with cors/unsafe-pattern",
+          threwAnchored && threwAnchored.code === "cors/unsafe-pattern",
+          threwAnchored ? threwAnchored.code : "accepted");
+  }
+  var safeAnchored = null;
+  try { b.middleware.cors({ origins: [/^https:\/\/(?:app|admin)\.example\.com$/m] }); }
+  catch (e) { safeAnchored = e; }
+  check("a host-specific origins[] RegExp with the m flag is still accepted",
+        safeAnchored === null, safeAnchored && safeAnchored.code);
+
   // undefined / not-passed → no throw, default behaviour.
   var ok = b.middleware.cors({});
   check("no opts: returns a function (default behaviour)", typeof ok === "function");

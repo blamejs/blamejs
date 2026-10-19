@@ -770,7 +770,50 @@ function testParseSignedDataRefusesNonOctetStringSignature() {
     threw === "cms/bad-signer-info");
 }
 
+// A SignerInfo carrying [0] signedAttrs needs six children: version, sid,
+// digestAlgorithm, signedAttrs, signatureAlgorithm, signature. Five children
+// with signedAttrs present leaves no signature, and parseSignedData must say
+// so with its own error rather than a TypeError from reading past the end.
+function _signedDataWithSignerInfo(siChildren) {
+  var digestSet = asn1.writeNode(0x31, asn1.writeNode(0x30, asn1.writeOid("2.16.840.1.101.3.4.2.10")));
+  var encap     = asn1.writeNode(0x30, asn1.writeOid("1.2.840.113549.1.7.1"));
+  var si        = asn1.writeNode(0x30, Buffer.concat(siChildren));
+  var inner     = asn1.writeNode(0x30, Buffer.concat([
+    asn1.writeInteger(Buffer.from([0x01])),
+    digestSet,
+    encap,
+    asn1.writeNode(0x31, si),
+  ]));
+  return _wrapContentInfo(SIGNED_DATA_OID, inner);
+}
+
+function testParseSignedDataRefusesSignerInfoWithAttrsButNoSignature() {
+  var version   = asn1.writeInteger(Buffer.from([0x01]));
+  var sid       = asn1.writeInteger(Buffer.from([0x07]));
+  var digestAlg = asn1.writeNode(0x30, asn1.writeOid("2.16.840.1.101.3.4.2.10"));
+  var attrs     = asn1.writeNode(0xa0, Buffer.alloc(0));
+  var sigAlg    = asn1.writeNode(0x30, asn1.writeOid("2.16.840.1.101.3.4.3.18"));
+  var sig       = asn1.writeOctetString(Buffer.from([0xaa, 0xbb]));
+
+  var threw = null;
+  try { b.cms.parseSignedData(_signedDataWithSignerInfo([version, sid, digestAlg, attrs, sigAlg])); }
+  catch (e) { threw = e; }
+  check("SignerInfo with signedAttrs and no signature refused with cms/bad-signer-info",
+    threw !== null && threw.code === "cms/bad-signer-info",
+    threw && (threw.name + " " + threw.code + " " + threw.message));
+
+  var six = b.cms.parseSignedData(_signedDataWithSignerInfo([version, sid, digestAlg, attrs, sigAlg, sig]));
+  check("control: the six-child SignerInfo with signedAttrs parses",
+    six.signerInfos.length === 1 && six.signerInfos[0].signature.length === 2 &&
+    six.signerInfos[0].signedAttrsRaw !== null);
+  var five = b.cms.parseSignedData(_signedDataWithSignerInfo([version, sid, digestAlg, sigAlg, sig]));
+  check("control: the five-child SignerInfo without signedAttrs parses",
+    five.signerInfos.length === 1 && five.signerInfos[0].signature.length === 2 &&
+    five.signerInfos[0].signedAttrsRaw === null);
+}
+
 function run() {
+  testParseSignedDataRefusesSignerInfoWithAttrsButNoSignature();
   testEncodeSignedDataRefusesMissingOpts();
   testEncodeSignedDataRefusesNonBufferEncap();
   testEncodeSignedDataRefusesNonObjectSigner();

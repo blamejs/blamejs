@@ -8,7 +8,9 @@
  * Or via smoke:   `node test/smoke.js`
  */
 
+var fs = require("fs");
 var http = require("http");
+var path = require("path");
 var helpers = require("../helpers");
 var b         = helpers.b;
 var check     = helpers.check;
@@ -1038,6 +1040,86 @@ async function testSendFailureAudit() {
   }
 }
 
+// The b.webhook.verifier block names every code verifier() and its verify()
+// raise, and no code they cannot raise.
+async function testVerifierBlockNamesTheCodesItRaises() {
+  var observed = {};
+  function cfg(label, opts) {
+    try { b.webhook.verifier(opts); } catch (e) { observed[e.code] = label; return; }
+    check("verifier config probe throws: " + label, false);
+  }
+  var base = { algo: "hmac-sha3-512", keys: { v1: "secret" } };
+  function withOpt(k, v) {
+    var o = { algo: base.algo, keys: base.keys };
+    o[k] = v;
+    return o;
+  }
+  cfg("opts undefined", undefined);
+  cfg("algo rsa", { algo: "rsa", keys: { v1: "s" } });
+  cfg("empty keys", { algo: "hmac-sha3-512", keys: {} });
+  cfg("toleranceMs -1", withOpt("toleranceMs", -1));
+  cfg("clockSkewMs NaN", withOpt("clockSkewMs", NaN));
+  cfg("signatureHeader empty", withOpt("signatureHeader", ""));
+  cfg("nonceStore {}", withOpt("nonceStore", {}));
+  cfg("now not a function", withOpt("now", "x"));
+  cfg("audit {}", withOpt("audit", {}));
+  cfg("auditFailures not boolean", withOpt("auditFailures", "yes"));
+  cfg("pqcAlgorithm under hmac", withOpt("pqcAlgorithm", "ml-dsa-87"));
+
+  var seen = {};
+  var nowMs = Date.now();
+  var v = b.webhook.verifier({
+    algo: "hmac-sha3-512", keys: { v1: "secret" },
+    nonceStore: { checkAndInsert: function (id) {
+      if (seen[id]) return false;
+      seen[id] = true;
+      return true;
+    } },
+    now: function () { return nowMs; },
+  });
+  var s = b.webhook.signer({
+    algo: "hmac-sha3-512", keys: { v1: "secret" },
+    now: function () { return nowMs; },
+  });
+  async function req(label, input) {
+    try { await v.verify(input); } catch (e) { observed[e.code] = label; return; }
+    check("verify probe throws: " + label, false);
+  }
+  var t = String(Math.floor(nowMs / 1000));
+  function hdr(value) { return { body: "x", headers: { "Webhook-Signature": value } }; }
+  await req("input null", null);
+  await req("body 42", { body: 42, headers: {} });
+  await req("no header", { body: "x", headers: {} });
+  await req("unparseable header", hdr("garbage"));
+  await req("no t=", hdr("id=a,v1=ab"));
+  await req("non-canonical t=", hdr("t=0" + t + ",id=a,v1=ab"));
+  await req("no id=", hdr("t=" + t + ",v1=ab"));
+  await req("no signature", hdr("t=" + t + ",id=a"));
+  await req("old t=", hdr("t=" + String(Number(t) - 3600) + ",id=a,v1=ab"));
+  await req("future t=", hdr("t=" + String(Number(t) + 3600) + ",id=a,v1=ab"));
+  await req("unknown kid", hdr("t=" + t + ",id=a,v9=ab"));
+  await req("bad signature", hdr("t=" + t + ",id=a,v1=ab"));
+  var signed = s.sign("hello");
+  await v.verify({ body: "hello", headers: signed.headers });
+  await req("replay", { body: "hello", headers: signed.headers });
+
+  var src = fs.readFileSync(path.join(__dirname, "..", "..", "lib", "webhook.js"), "utf8");
+  var start = src.indexOf("@primitive b.webhook.verifier\n");
+  if (start === -1) start = src.indexOf("@primitive b.webhook.verifier\r\n");
+  check("verifier block found", start !== -1);
+  var block = src.slice(start, src.indexOf("@opts", start));
+  var documented = {};
+  var codeRe = /`([a-z][a-z0-9-]*\/[a-z0-9-]+)`/g;
+  var m;
+  while ((m = codeRe.exec(block)) !== null) documented[m[1]] = true;
+  var notRaised = Object.keys(documented).filter(function (c) { return !observed[c]; }).sort();
+  var notDocumented = Object.keys(observed).filter(function (c) { return !documented[c]; }).sort();
+  check("verifier block names no code verifier cannot raise", notRaised.length === 0,
+    notRaised.join(","));
+  check("verifier block names every code verifier raises", notDocumented.length === 0,
+    notDocumented.join(","));
+}
+
 async function run() {
   await helpers.withDrain("webhook", _runTests);
 }
@@ -1098,6 +1180,7 @@ async function _runTests() {
   await testStripeVerifyBadInputs();
   // #378 — verify path must stay free of the Node networking chain.
   testVerifyLoadableWithoutHttpClient();
+  await testVerifierBlockNamesTheCodesItRaises();
 }
 
 module.exports = { run: run };

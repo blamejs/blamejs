@@ -178,6 +178,160 @@ async function run() {
       res5.statusCode === 500 && ranBare.length === 0,
       res5.statusCode + " " + JSON.stringify(ranBare));
   } finally { liveBare.server.close(); }
+
+  await _staleNextCases();
+}
+
+// A middleware's `next` belongs to that middleware's turn. One that keeps its
+// callback and calls it again after the chain has moved on must not decide
+// the verdict for a later middleware. Each case has the earlier middleware
+// store its `next`; the later one calls the stored callback during its own
+// turn, which is exactly when a delayed or duplicated call lands.
+function _deny(res) {
+  res.statusCode = 403;
+  setImmediate(function () { res.end("denied"); });
+}
+
+async function _staleNextCases() {
+  // (a) use() chain: a gate that never calls next and ends its 403 on a later
+  // tick. The stale next() from the middleware before it must not let the
+  // request through.
+  var staleA = null;
+  var ranA = [];
+  var appA = b.router.create();
+  appA.use(function keeper(req, res, next) { staleA = next; next(); });
+  appA.use(async function gate(req, res, _next) {
+    staleA();
+    await Promise.resolve();
+    _deny(res);
+  });
+  appA.get("/x", function (req, res) { ranA.push("route"); res.end("ok"); });
+  var liveA = await _listen(appA);
+  try {
+    var rA = await _get(liveA.port, "/x");
+    check("use(): a stale next() from an earlier middleware does not pass a gate that never called next",
+      rA.statusCode === 403 && rA.body === "denied" && ranA.length === 0,
+      rA.statusCode + " " + JSON.stringify(rA.body) + " " + JSON.stringify(ranA));
+  } finally { liveA.server.close(); }
+
+  // (b) use() chain: a stale next(err) from an earlier middleware must not
+  // abort a later middleware that called next(), nor be blamed on it.
+  var staleB = null;
+  var errB = null;
+  var ranB = [];
+  var appB = b.router.create();
+  appB.onError(function (err, req, res) { errB = err; res.writeHead(500); res.end("onError"); });
+  appB.use(function keeper(req, res, next) { staleB = next; next(); });
+  appB.use(function second(req, res, next) {
+    staleB(new Error("late error from keeper"));
+    next();
+  });
+  appB.get("/x", function (req, res) { ranB.push("route"); res.end("ok"); });
+  var liveB = await _listen(appB);
+  try {
+    var rB = await _get(liveB.port, "/x");
+    check("use(): a stale next(err) from an earlier middleware does not abort a later one that called next()",
+      rB.statusCode === 200 && rB.body === "ok" && errB === null && ranB.join(",") === "route",
+      rB.statusCode + " " + JSON.stringify(rB.body) + " " + (errB && errB.blamejsMiddleware));
+  } finally { liveB.server.close(); }
+
+  // (c) route-handler chain: the same stale next() against an async gate
+  // handler declared with three parameters.
+  var staleC = null;
+  var ranC = [];
+  var appC = b.router.create();
+  appC.get("/y",
+    function first(req, res, next) { staleC = next; next(); },
+    async function gate(req, res, _next) {
+      staleC();
+      await Promise.resolve();
+      _deny(res);
+    },
+    function final(req, res, _next) { ranC.push("final"); res.end("ok"); });
+  var liveC = await _listen(appC);
+  try {
+    var rC = await _get(liveC.port, "/y");
+    check("route handlers: a stale next() from an earlier handler does not pass a gate that never called next",
+      rC.statusCode === 403 && rC.body === "denied" && ranC.length === 0,
+      rC.statusCode + " " + JSON.stringify(rC.body) + " " + JSON.stringify(ranC));
+  } finally { liveC.server.close(); }
+
+  // (d) route-handler chain: a stale next(err) does not abort the handler
+  // that legitimately advanced.
+  var staleD = null;
+  var errD = null;
+  var ranD = [];
+  var appD = b.router.create();
+  appD.onError(function (err, req, res) { errD = err; res.writeHead(500); res.end("onError"); });
+  appD.get("/y",
+    function first(req, res, next) { staleD = next; next(); },
+    function second(req, res, next) { staleD(new Error("late error from first")); next(); },
+    function final(req, res, _next) { ranD.push("final"); res.end("ok"); });
+  var liveD = await _listen(appD);
+  try {
+    var rD = await _get(liveD.port, "/y");
+    check("route handlers: a stale next(err) from an earlier handler does not abort a later one",
+      rD.statusCode === 200 && errD === null && ranD.join(",") === "final",
+      rD.statusCode + " " + JSON.stringify(rD.body) + " " + (errD && errD.message));
+  } finally { liveD.server.close(); }
+
+  // (e) Within its own turn, a next(err) wins over a next() in either
+  // order: the request stops and onError answers.
+  var ranE = [];
+  var errE = null;
+  var appE = b.router.create();
+  appE.onError(function (err, req, res) { errE = err; res.writeHead(500); res.end("onError"); });
+  appE.use(function twice(req, res, next) { next(); next(new Error("second call")); });
+  appE.get("/x", function (req, res) { ranE.push("route"); res.end("ok"); });
+  var liveE = await _listen(appE);
+  try {
+    var rE = await _get(liveE.port, "/x");
+    check("use(): next() then next(err) in the same turn stops the request with the error",
+      rE.statusCode === 500 && errE && errE.message === "second call" && ranE.length === 0,
+      rE.statusCode + " " + JSON.stringify(rE.body));
+  } finally { liveE.server.close(); }
+
+  var ranE2 = [];
+  var errE2 = null;
+  var appE2 = b.router.create();
+  appE2.onError(function (err, req, res) { errE2 = err; res.writeHead(500); res.end("onError"); });
+  appE2.use(function twice(req, res, next) { next(new Error("first call")); next(); });
+  appE2.get("/x", function (req, res) { ranE2.push("route"); res.end("ok"); });
+  var liveE2 = await _listen(appE2);
+  try {
+    var rE2 = await _get(liveE2.port, "/x");
+    check("use(): next(err) then next() in the same turn stops the request with the first error",
+      rE2.statusCode === 500 && errE2 && errE2.message === "first call" && ranE2.length === 0,
+      rE2.statusCode + " " + JSON.stringify(rE2.body));
+  } finally { liveE2.server.close(); }
+
+  var ranE3 = [];
+  var errE3 = null;
+  var appE3 = b.router.create();
+  appE3.onError(function (err, req, res) { errE3 = err; res.writeHead(500); res.end("onError"); });
+  appE3.get("/x",
+    function twice(req, res, next) { next(); next(new Error("handler second call")); },
+    function final(req, res, _next) { ranE3.push("final"); res.end("ok"); });
+  var liveE3 = await _listen(appE3);
+  try {
+    var rE3 = await _get(liveE3.port, "/x");
+    check("route handlers: next() then next(err) in the same turn stops the request with the error",
+      rE3.statusCode === 500 && errE3 && errE3.message === "handler second call" && ranE3.length === 0,
+      rE3.statusCode + " " + JSON.stringify(rE3.body));
+  } finally { liveE3.server.close(); }
+
+  // Control: a middleware that awaits and then calls next() still continues.
+  var ranF = [];
+  var appF = b.router.create();
+  appF.use(async function slow(req, res, next) { await Promise.resolve(); next(); });
+  appF.get("/x", function (req, res) { ranF.push("route"); res.end("ok"); });
+  var liveF = await _listen(appF);
+  try {
+    var rF = await _get(liveF.port, "/x");
+    check("control: an async middleware that calls next() before it resolves still continues",
+      rF.statusCode === 200 && ranF.join(",") === "route",
+      rF.statusCode + " " + JSON.stringify(ranF));
+  } finally { liveF.server.close(); }
 }
 
 module.exports = { run: run };

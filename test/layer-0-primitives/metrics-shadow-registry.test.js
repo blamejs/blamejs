@@ -63,6 +63,50 @@ function testCardinalityCap() {
   check("cap refuses overflow", threw);
 }
 
+// Both policies write one rate-limited metrics.shadow.cardinality_dropped
+// audit row when a new label set exceeds the cap; "refuse" also throws.
+function _withCapturedAudit(fn) {
+  var auditModule = require("../../lib/audit");
+  var orig = auditModule.safeEmit;
+  var rows = [];
+  auditModule.safeEmit = function (e) { rows.push(e); };
+  try { fn(); } finally { auditModule.safeEmit = orig; }
+  return rows.filter(function (r) { return r && r.action === "metrics.shadow.cardinality_dropped"; });
+}
+
+function testCardinalityPolicyAuditRows() {
+  var dropShadow = b.metrics.snapshot.shadowRegistry({
+    namespace: "ns_drop", counters: ["c"], cardinalityCap: 1,
+  });
+  var dropThrew = null;
+  var dropRows = _withCapturedAudit(function () {
+    dropShadow.inc("c", { a: "1" });
+    try { dropShadow.inc("c", { a: "2" }); } catch (e) { dropThrew = e; }
+  });
+  check("drop (default): an over-cap label set does not throw", dropThrew === null);
+  check("drop (default): the over-cap series is absent",
+    dropShadow.snapshot().counters.c['{"a":"2"}'] === undefined &&
+    dropShadow.snapshot().counters.c['{"a":"1"}'] === 1);
+  check("drop (default): exactly one cardinality_dropped audit row, denied, policy drop",
+    dropRows.length === 1 && dropRows[0].outcome === "denied" &&
+    dropRows[0].metadata.policy === "drop" && dropRows[0].metadata.namespace === "ns_drop",
+    JSON.stringify(dropRows));
+
+  var refuseShadow = b.metrics.snapshot.shadowRegistry({
+    namespace: "ns_refuse", counters: ["c"], cardinalityCap: 1, onCardinalityExceeded: "refuse",
+  });
+  var refuseThrew = null;
+  var refuseRows = _withCapturedAudit(function () {
+    refuseShadow.inc("c", { a: "1" });
+    try { refuseShadow.inc("c", { a: "2" }); } catch (e) { refuseThrew = e; }
+  });
+  check("refuse: an over-cap label set throws metrics-shadow/cardinality-exceeded",
+    refuseThrew !== null && refuseThrew.code === "metrics-shadow/cardinality-exceeded");
+  check("refuse: exactly one cardinality_dropped audit row, denied, policy refuse",
+    refuseRows.length === 1 && refuseRows[0].outcome === "denied" &&
+    refuseRows[0].metadata.policy === "refuse", JSON.stringify(refuseRows));
+}
+
 function testPrometheusPreservesLabels() {
   var shadow = b.metrics.snapshot.shadowRegistry({
     namespace: "tenant_b",
@@ -160,6 +204,7 @@ function run() {
   testInc();
   testSet();
   testCardinalityCap();
+  testCardinalityPolicyAuditRows();
   testPrometheusPreservesLabels();
   testPrometheusLabelValueInjection();
   testPrometheusReservedLabelNames();

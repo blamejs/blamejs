@@ -15,6 +15,10 @@ var helpers = require("../helpers");
 var check = helpers.check;
 var b = helpers.b;
 var { setupTestDb, teardownTestDb } = require("../helpers/db");
+var pubsubCluster = require("../../lib/pubsub-cluster");
+var clusterStorage = require("../../lib/cluster-storage");
+var frameworkSchema = require("../../lib/framework-schema");
+var sqlMod = require("../../lib/sql");
 
 // pubsub caps channel names at 1 KiB (lib/pubsub.js _MAX_CHANNEL_LEN).
 var C_KIB = 1024;
@@ -204,6 +208,82 @@ async function testClusterFanOut() {
     await psA.close();
     await psB.close();
   } finally {
+    await teardownTestDb(tmpDir);
+  }
+}
+
+async function testClusterAsyncRejectionNamesItsOwnRow() {
+  // The cluster backend fans a polled batch out through safeApply. When
+  // the remote-message callback rejects asynchronously, the rejection
+  // settles after the batch loop has moved on, and the warning must
+  // still name the row whose delivery failed.
+  var tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-pubsub-rowid-"));
+  var origConsoleError = console.error;
+  var warnLines = [];
+  try {
+    await setupTestDb(tmpDir);
+
+    var backendA = pubsubCluster.create({
+      cluster: { currentNodeId: function () { return "node-A"; } },
+    });
+    var backendB = pubsubCluster.create({
+      cluster: { currentNodeId: function () { return "node-B"; } },
+      pollIntervalMs: 20,
+    });
+
+    var warmupSeen = false;
+    var delivered = [];
+    async function onRemote(topic, payload) {
+      if (payload === "\"warmup\"") {
+        warmupSeen = true;
+        backendB.stop();
+        return;
+      }
+      delivered.push(payload);
+      await new Promise(function (r) { setImmediate(r); });
+      if (payload === "\"bad\"") throw new Error("handler rejected");
+    }
+
+    backendB.start(onRemote);
+    await helpers.waitUntil(async function () {
+      await backendA.publishRemote("rowid", "warmup");
+      return warmupSeen;
+    }, { intervalMs: 20, label: "pubsub-cluster row id: first poll primed and delivered a warmup row" });
+    await helpers.passiveObserve(60, "pubsub-cluster row id: the stopped poll loop settles");
+
+    await backendA.publishRemote("rowid", "bad");
+    await backendA.publishRemote("rowid", "ok-1");
+    await backendA.publishRemote("rowid", "ok-2");
+    var idBuilt = sqlMod.select(frameworkSchema.tableName("_blamejs_pubsub_messages"),
+      { dialect: clusterStorage.dialect() })
+      .columns(["id", "payload"]).where("topic", "=", "rowid").toSql();
+    var idRows = (await clusterStorage.execute(idBuilt.sql, idBuilt.params)).rows || [];
+    var badId = null;
+    for (var i = 0; i < idRows.length; i++) {
+      if (idRows[i].payload === "\"bad\"") badId = String(idRows[i].id);
+    }
+
+    console.error = function () {
+      warnLines.push(Array.prototype.join.call(arguments, " "));
+    };
+    backendB.start(onRemote);
+    await helpers.waitUntil(function () {
+      return warnLines.some(function (l) { return l.indexOf("malformed pubsub fan-out row") !== -1; });
+    }, { label: "pubsub-cluster row id: the rejected delivery was logged" });
+    backendB.stop();
+    console.error = origConsoleError;
+
+    var rowLines = warnLines.filter(function (l) {
+      return l.indexOf("malformed pubsub fan-out row") !== -1;
+    });
+    check("cluster: the three rows were delivered in one batch",
+          delivered.indexOf("\"bad\"") !== -1 && delivered.indexOf("\"ok-2\"") !== -1);
+    check("cluster: exactly one delivery failure was logged", rowLines.length === 1);
+    check("cluster: the async-rejection warning names the failing row (id=" + badId + ")",
+          badId !== null && rowLines.length === 1 &&
+          rowLines[0].indexOf("row id=" + badId + ":") !== -1);
+  } finally {
+    console.error = origConsoleError;
     await teardownTestDb(tmpDir);
   }
 }
@@ -565,6 +645,7 @@ async function run() {
   await testClosedRejectsPublishSubscribe();
   await testClusterNumericConfigValidation();
   await testClusterFanOut();
+  await testClusterAsyncRejectionNamesItsOwnRow();
   await testCacheInvalidationFanOut();
 }
 

@@ -183,6 +183,44 @@ function testVerifyNoVerifyingKey() {
         threw && /no-verifying-key/.test(threw.code || ""));
 }
 
+function testVerifyShapeCodes() {
+  var p = _pair();
+  var reg = b.mcp.toolRegistry.create({
+    tools: [{ name: "search", inputSchema: { type: "object" } }],
+    signingKey: p.privateKey, verifyingKey: p.publicKey,
+  });
+  var signed = reg.signCall({ toolName: "search", args: {} });
+  function codeOf(fn) {
+    try { fn(); return null; } catch (e) { return e.code || null; }
+  }
+  function withEnv(patch) {
+    return { envelope: Object.assign({}, signed.envelope, patch),
+      signature: signed.signature, alg: signed.alg };
+  }
+  check("verifyCall: non-object signedCall -> bad-signed-call",
+    codeOf(function () { reg.verifyCall("x"); }) === "mcp/bad-signed-call");
+  check("verifyCall: missing envelope -> bad-signed-call",
+    codeOf(function () { reg.verifyCall({ signature: "AA==" }); }) === "mcp/bad-signed-call");
+  check("verifyCall: empty signature -> bad-signature",
+    codeOf(function () { reg.verifyCall({ envelope: signed.envelope, signature: "" }); }) === "mcp/bad-signature");
+  check("verifyCall: missing envelope.tool -> bad-tool-name",
+    codeOf(function () { reg.verifyCall(withEnv({ tool: "" })); }) === "mcp/bad-tool-name");
+  check("verifyCall: missing envelope.nonce -> bad-nonce",
+    codeOf(function () { reg.verifyCall(withEnv({ nonce: 7 })); }) === "mcp/bad-nonce");
+  check("verifyCall: missing envelope.argsHash -> bad-args-hash",
+    codeOf(function () { reg.verifyCall(withEnv({ argsHash: null })); }) === "mcp/bad-args-hash");
+  check("verifyCall: missing envelope.iat -> bad-iat",
+    codeOf(function () { reg.verifyCall(withEnv({ iat: undefined })); }) === "mcp/bad-iat");
+  check("verifyCall: missing envelope.exp -> bad-exp",
+    codeOf(function () { reg.verifyCall(withEnv({ exp: "" })); }) === "mcp/bad-exp");
+  check("verifyCall: unparseable envelope.exp -> bad-exp",
+    codeOf(function () { reg.verifyCall(withEnv({ exp: "not-a-date" })); }) === "mcp/bad-exp");
+  check("verifyCall: a signature that is not base64 -> call-verify-failed",
+    codeOf(function () {
+      reg.verifyCall({ envelope: signed.envelope, signature: "%%%not base64%%%", alg: signed.alg });
+    }) === "mcp/call-verify-failed");
+}
+
 async function run() {
   testSurface();
   testCreateRefusesBadOpts();
@@ -194,6 +232,7 @@ async function run() {
   testVerifyReplay();
   testVerifyUnregisteredTool();
   testVerifyNoVerifyingKey();
+  testVerifyShapeCodes();
 }
 
 module.exports = { run: run };

@@ -301,6 +301,34 @@ async function testBeforeAfterInterceptors() {
       res.headers["x-echo-inject"] === "on");
     check("after: first hook ran", afterRan === 1);
     check("after: a throwing hook did not break the response", res.statusCode === 200);
+
+    // A before hook may return a Promise of the opts; the next hook and the
+    // request see the resolved opts, in order.
+    var order = [];
+    var res2 = await b.httpClient.request({
+      url: base + "/", method: "GET",
+      allowedProtocols: ALLOW, allowInternal: true,
+      before: [
+        function (o) {
+          order.push("first");
+          return new Promise(function (resolve) {
+            setImmediate(function () { resolve(Object.assign({}, o, { headers: { "x-inject": "async" } })); });
+          });
+        },
+        function (o) {
+          order.push("second saw " + (o && o.headers && o.headers["x-inject"]));
+          return o;
+        },
+      ],
+    });
+    check("before: an async hook's resolved opts reach the next hook",
+      order.join(",") === "first,second saw async", order.join(","));
+    check("before: an async hook's resolved opts reach the wire",
+      res2.headers["x-echo-inject"] === "async", res2.headers["x-echo-inject"]);
+    await _expectReject("before: an async hook that rejects surfaces BEFORE_THREW",
+      b.httpClient.request({ url: base + "/", allowedProtocols: ALLOW, allowInternal: true,
+        before: [function () { return Promise.reject(new Error("async pre")); }] }),
+      "http-client/before-threw");
   });
 }
 
@@ -3584,6 +3612,26 @@ async function testPinnedClient() {
   try { await guarded.request({ url: "https://10.1.2.3/t", allowInternal: ["not-a-cidr"] }); }
   catch (e) { badCidr = e; }
   check("pinnedClient: a malformed waiver entry waives nothing", badCidr !== null);
+  // The waiver compares canonical forms, as b.ssrfGuard.checkUrl does: an
+  // IPv4-mapped CIDR covers the IPv4 host, and an IPv4 CIDR covers the
+  // mapped spelling of a host in it.
+  var mappedWaivers = [
+    ["https://10.1.2.3/t",          ["::ffff:10.0.0.0/104"]],
+    ["https://10.1.2.3/t",          ["::ffff:a00:0/104"]],
+    ["https://[::ffff:10.1.2.3]/t", ["10.0.0.0/8"]],
+    ["https://[::ffff:10.1.2.3]/t", ["::ffff:10.0.0.0/104"]],
+  ];
+  for (var mw = 0; mw < mappedWaivers.length; mw++) {
+    var mwBefore = ssrfSeen.length, mwErr = null;
+    try { await guarded.request({ url: mappedWaivers[mw][0], allowInternal: mappedWaivers[mw][1] }); }
+    catch (e) { mwErr = e; }
+    check("pinnedClient: allowInternal " + JSON.stringify(mappedWaivers[mw][1]) + " waives " + mappedWaivers[mw][0],
+          mwErr === null && ssrfSeen.length === mwBefore + 1, mwErr && mwErr.message);
+  }
+  var mappedMiss = null;
+  try { await guarded.request({ url: "https://10.1.2.3/t", allowInternal: ["::ffff:192.168.0.0/112"] }); }
+  catch (e) { mappedMiss = e; }
+  check("pinnedClient: a mapped CIDR that does not cover the host waives nothing", mappedMiss !== null);
   var reachedBefore = ssrfSeen.length;
   var metaWaived = null;
   try { await guarded.request({ url: "http://169.254.169.254/x", allowInternal: true }); }

@@ -176,6 +176,36 @@ async function testFcrdnsPasses() {
   check("fcrdns matched IP",         v.fcrdns.matchedIp === "203.0.113.42");
 }
 
+// A dual-stack MX listener reports the IPv4 sender 203.0.113.42 as
+// ::ffff:203.0.113.42. Its [203.0.113.42] literal names that sender, and its
+// FCrDNS runs in in-addr.arpa against A records.
+async function testAMappedConnectionIpIsTheIpv4Sender() {
+  var spellings = ["::ffff:203.0.113.42", "::ffff:cb00:712a"];
+  for (var i = 0; i < spellings.length; i++) {
+    var lit = await b.mail.helo.evaluate({ ip: spellings[i], claimedName: "[203.0.113.42]" });
+    check("addr-lit v4 matches the mapped connection IP " + spellings[i], lit.action === "accept", lit.action);
+    var other = await b.mail.helo.evaluate({ ip: spellings[i], claimedName: "[198.51.100.99]" });
+    check("addr-lit v4 still mismatches another address from " + spellings[i],
+          other.action === "literal-mismatch", other.action);
+    var v6Same = ["[IPv6:::ffff:203.0.113.42]", "[IPv6:::ffff:cb00:712a]", "[IPv6:0:0:0:0:0:ffff:cb00:712a]"];
+    for (var s = 0; s < v6Same.length; s++) {
+      var lit6 = await b.mail.helo.evaluate({ ip: spellings[i], claimedName: v6Same[s] });
+      check("addr-lit " + v6Same[s] + " matches the mapped connection IP " + spellings[i],
+            lit6.action === "accept", lit6.action);
+    }
+    var lit6Other = await b.mail.helo.evaluate({ ip: spellings[i], claimedName: "[IPv6:::ffff:198.51.100.99]" });
+    check("addr-lit IPv6 for another mapped address mismatches from " + spellings[i],
+          lit6Other.action === "literal-mismatch", lit6Other.action);
+    var resolver = _fakeResolver({
+      "42.113.0.203.in-addr.arpa|PTR": _ptrRr("mail.example.com"),
+      "mail.example.com|A":            _aRr("203.0.113.42"),
+    });
+    var v = await b.mail.helo.evaluate({ ip: spellings[i], claimedName: "mail.example.com", resolver: resolver });
+    check("FCrDNS passes for the mapped connection IP " + spellings[i],
+          v.action === "accept" && v.fcrdns && v.fcrdns.passed === true, v.action);
+  }
+}
+
 async function testFcrdnsSoftFails() {
   var resolver = _fakeResolver({
     "42.113.0.203.in-addr.arpa|PTR": _ptrRr("rogue.example.com"),
@@ -341,6 +371,7 @@ async function run() {
   await testRefusesOversize();
   await testFcrdnsPasses();
   await testFcrdnsSoftFails();
+  await testAMappedConnectionIpIsTheIpv4Sender();
   await testFcrdnsNxRevDns();
   await testFcrdnsIpv6();
   await testFcrdnsSkippedForV6OnBalanced();

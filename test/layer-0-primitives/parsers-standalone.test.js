@@ -90,6 +90,27 @@ async function testJsonRefusesBadOpts() {
   try { await b.parsers.json(_streamReq(), { maxBytes: Infinity }); }
   catch (e) { threw2 = e.code === "body-parser/bad-max-bytes"; }
   check("parsers.json throws on non-finite maxBytes", threw2);
+
+  async function jsonCode(opts) {
+    var req = _streamReq({ headers: { "content-type": "application/json", "content-length": "2" }, body: "{}" });
+    try { await b.parsers.json(req, opts); return "resolved"; }
+    catch (e) { return e.code || String(e); }
+  }
+  var jsonCases = [
+    ["maxBytes fraction",       { maxBytes: 1.5 },         "body-parser/bad-max-bytes"],
+    ["maxBytes null",           { maxBytes: null },        "body-parser/bad-max-bytes"],
+    ["strict as a string",      { strict: "false" },       "body-parser/bad-strict"],
+    ["charset Node cannot use", { charset: "klingon" },    "body-parser/bad-charset"],
+    ["parseHook not callable",  { parseHook: "trim" },     "body-parser/bad-parse-hook"],
+    ["unknown option limit",    { limit: 10 },             "body-parser/bad-opts"],
+    ["opts not an object",      5,                         "body-parser/bad-opts"],
+  ];
+  for (var i = 0; i < jsonCases.length; i += 1) {
+    var got = await jsonCode(jsonCases[i][1]);
+    check("parsers.json: " + jsonCases[i][0] + " -> " + jsonCases[i][2] + " (got " + got + ")", got === jsonCases[i][2]);
+  }
+  check("parsers.json: valid strict, charset and parseHook are accepted",
+    await jsonCode({ strict: false, charset: "utf8", parseHook: function (v) { return v; } }) === "resolved");
 }
 
 // ---- parsers.multipart ----
@@ -353,6 +374,196 @@ async function testMultipartFilenameCharsetsOptIn() {
         optIn.files[0].filename === "résumé.txt");
 }
 
+// Every rejection b.parsers.multipart documents, driven through the
+// standalone parser with the input that produces it.
+async function testMultipartRejectionCodes() {
+  var fs = helpers.fs;
+  var B = "----blamejsrej" + Date.now();
+  var CT = "multipart/form-data; boundary=" + B;
+  function part(headers, value) {
+    return "--" + B + "\r\n" + headers + "\r\n\r\n" + value + "\r\n";
+  }
+  var END = "--" + B + "--\r\n";
+  function field(name, value) {
+    return part("Content-Disposition: form-data; name=\"" + name + "\"", value);
+  }
+  function file(name, filename, mime, value) {
+    return part("Content-Disposition: form-data; name=\"" + name + "\"; filename=\"" + filename + "\"\r\n" +
+      "Content-Type: " + mime, value);
+  }
+  async function codeOf(contentType, body, opts, mutateReq) {
+    var req = _streamReq({ headers: { "content-type": contentType }, body: body });
+    if (mutateReq) mutateReq(req);
+    try { await b.parsers.multipart(req, opts); return "resolved"; }
+    catch (e) { return e.code || String(e); }
+  }
+  var mem = { storage: "memory" };
+  var tmpRoot = fs.mkdtempSync(helpers.path.join(helpers.os.tmpdir(), "blamejs-mp-rej-"));
+  var blocker = helpers.path.join(tmpRoot, "not-a-dir");
+  fs.writeFileSync(blocker, "x");
+  var diskDir = helpers.path.join(tmpRoot, "uploads");
+
+  var cases = [
+    ["no-boundary", "multipart/form-data", END, mem],
+    ["bad-boundary", "multipart/form-data; boundary=" + "x".repeat(71), END, mem],
+    ["malformed", CT, "--" + B + "XX\r\n", mem],
+    ["headers-too-large", CT, "--" + B + "\r\nX-Long: " + "a".repeat(17 * 1024), mem],
+    ["total-too-large", CT, field("n".repeat(80), "v") + END, { storage: "memory", maxBytes: 50 }],
+    ["obs-fold", CT, part("Content-Disposition: form-data; name=\"a\"\r\n folded", "v") + END, mem],
+    ["bad-header-value", CT, part("Content-Disposition: form-data; name=\"a\"\r\nX-H: a\u0000b", "v") + END, mem],
+    ["bad-disposition", CT, part("Content-Disposition: attachment; name=\"a\"", "v") + END, mem],
+    ["poisoned-field", CT, field("constructor", "v") + END, mem],
+    ["bad-filename", CT, file("f", "..", "text/plain", "v") + END, mem],
+    ["mime-not-allowed", CT, file("f", "a.txt", "text/plain", "v") + END,
+      { storage: "memory", mimeAllowlist: ["image/png"] }],
+    ["mime-not-allowed", CT, file("f", "a.png", "image/png", "v") + END,
+      { storage: "memory", mimeAllowlist: ["image/png"], fields: { f: { mimeTypes: ["image/jpeg"] } } }],
+    ["too-many-files", CT, file("f1", "a.txt", "text/plain", "x") + file("f2", "b.txt", "text/plain", "y") + END,
+      { storage: "memory", maxFiles: 1 }],
+    ["too-many-fields", CT, field("a", "1") + field("b", "2") + END, { storage: "memory", fieldCount: 1 }],
+    ["file-filter-throw", CT, file("f", "a.txt", "text/plain", "v") + END,
+      { storage: "memory", fileFilter: function () { throw new Error("filter failed"); } }],
+    ["internal", CT, file("f", "a.txt", "text/plain", "v") + END,
+      { storage: "memory", fileFilter: function () {
+        return { get reject() { throw new Error("verdict unreadable"); } };
+      } }],
+    ["file-too-large", CT, file("f", "a.txt", "text/plain", "x".repeat(50)) + END, { storage: "memory", fileSize: 10 }],
+    ["file-too-large", CT, file("f", "a.txt", "text/plain", "x".repeat(50)) + END,
+      { storage: "memory", fields: { f: { maxBytes: 10 } } }],
+    ["field-too-large", CT, field("a", "x".repeat(50)) + END, { storage: "memory", fieldSize: 5 }],
+    ["total-too-large", CT, field("a", "x".repeat(300)) + END, { storage: "memory", maxBytes: 200 }],
+    ["truncated", CT, "--" + B + "\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nvalue", mem],
+    ["tmpdir", CT, field("a", "v") + END, { storage: "disk", tmpDir: helpers.path.join(blocker, "sub") }],
+  ];
+  for (var i = 0; i < cases.length; i += 1) {
+    var got = await codeOf(cases[i][1], cases[i][2], cases[i][3]);
+    check("parsers.multipart rejects with body-parser/multipart-" + cases[i][0] + " (case " + i + ")",
+      got === "body-parser/multipart-" + cases[i][0]);
+  }
+
+  var streamCode = await codeOf(CT, [], mem, function (req) {
+    var origEmit = req.emit;
+    req.emit = function (ev) {
+      if (ev === "end") return origEmit.call(req, "error", new Error("socket reset"));
+      return origEmit.apply(req, arguments);
+    };
+  });
+  check("parsers.multipart rejects a stream error with body-parser/multipart-stream",
+    streamCode === "body-parser/multipart-stream");
+
+  var origOpen = fs.openSync;
+  fs.openSync = function () { throw new Error("EACCES: simulated"); };
+  var openCode;
+  try { openCode = await codeOf(CT, file("f", "a.txt", "text/plain", "v") + END, { storage: "disk", tmpDir: diskDir }); }
+  finally { fs.openSync = origOpen; }
+  check("parsers.multipart rejects an unopenable tmp file with body-parser/multipart-tmp-open",
+    openCode === "body-parser/multipart-tmp-open");
+
+  var origWrite = fs.writeSync;
+  fs.writeSync = function () { throw new Error("ENOSPC: simulated"); };
+  var writeCode;
+  try { writeCode = await codeOf(CT, file("f", "a.txt", "text/plain", "v") + END, { storage: "disk", tmpDir: diskDir }); }
+  finally { fs.writeSync = origWrite; }
+  check("parsers.multipart rejects a failed tmp write with body-parser/multipart-tmp-write",
+    writeCode === "body-parser/multipart-tmp-write");
+  check("parsers.multipart removes the tmp file after a failed write",
+    fs.readdirSync(diskDir).length === 0);
+
+  var bigCode = await codeOf(CT,
+    file("ok", "ok.txt", "text/plain", "kept") + file("f", "a.txt", "text/plain", "x".repeat(50)) + END,
+    { storage: "disk", tmpDir: diskDir, fileSize: 10 });
+  check("parsers.multipart disk mode: oversize second file rejects with multipart-file-too-large",
+    bigCode === "body-parser/multipart-file-too-large");
+  check("parsers.multipart removes the tmp files it wrote when it rejects",
+    fs.readdirSync(diskDir).length === 0);
+
+  fs.rmSync(tmpRoot, { recursive: true, force: true });
+}
+
+// Every option b.parsers.multipart documents is checked at the call, so a
+// value that would switch a cap or a filter off is refused instead.
+async function testMultipartOptionValidation() {
+  var B = "----blamejsopt" + Date.now();
+  var CT = "multipart/form-data; boundary=" + B;
+  var body = "--" + B + "\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a.txt\"\r\n" +
+    "Content-Type: text/plain\r\n\r\n" + "y".repeat(5 * 1024) + "\r\n--" + B + "--\r\n";
+  async function codeOf(opts) {
+    try { await b.parsers.multipart(_streamReq({ headers: { "content-type": CT }, body: body }), opts); return "resolved"; }
+    catch (e) { return e.code || (e instanceof TypeError ? "TypeError" : String(e)); }
+  }
+  var cases = [
+    ["fileSize string",            { fileSize: "1kb" },                    "body-parser/bad-file-size"],
+    ["fileSize NaN",               { fileSize: NaN },                      "body-parser/bad-file-size"],
+    ["fileSize fraction",          { fileSize: 10.5 },                     "body-parser/bad-file-size"],
+    ["fieldSize negative",         { fieldSize: -1 },                      "body-parser/bad-field-size"],
+    ["fieldCount string",          { fieldCount: "many" },                 "body-parser/bad-field-count"],
+    ["fieldCount null",            { fieldCount: null },                   "body-parser/bad-field-count"],
+    ["maxBytes fraction",          { maxBytes: 1.5 },                      "body-parser/bad-max-bytes"],
+    ["maxBytes null",              { maxBytes: null },                     "body-parser/bad-max-bytes"],
+    ["fileFilter object",          { fileFilter: { reject: true } },       "body-parser/bad-file-filter"],
+    ["mimeAllowlist string",       { mimeAllowlist: "image/png" },         "body-parser/bad-mime-allowlist"],
+    ["mimeAllowlist with number",  { mimeAllowlist: ["image/png", 5] },    "body-parser/bad-mime-allowlist"],
+    ["filenameCharsets string",    { filenameCharsets: "utf-8" },          "body-parser/bad-filename-charsets"],
+    ["filenameCharsets unknown",   { filenameCharsets: ["windows-1252"] }, "body-parser/bad-filename-charsets"],
+    ["fields array",               { fields: [] },                         "body-parser/bad-fields"],
+    ["fields rule not an object",  { fields: { f: 5 } },                   "body-parser/bad-fields"],
+    ["fields rule maxBytes",       { fields: { f: { maxBytes: "1kb" } } }, "body-parser/bad-fields"],
+    ["fields rule mimeTypes",      { fields: { f: { mimeTypes: "a/b" } } }, "body-parser/bad-fields"],
+    ["fields rule unknown key",    { fields: { f: { maxSize: 10 } } },     "body-parser/bad-fields"],
+    ["audit without safeEmit",     { audit: { emit: function () {} } },    "body-parser/bad-audit"],
+    ["tmpDir empty",               { tmpDir: "" },                         "body-parser/bad-tmp-dir"],
+    ["unknown option totalSize",   { totalSize: 10 },                      "body-parser/bad-opts"],
+    ["misspelled maxFile",         { maxFile: 1 },                         "body-parser/bad-opts"],
+    ["opts not an object",         "memory",                               "body-parser/bad-opts"],
+  ];
+  for (var i = 0; i < cases.length; i += 1) {
+    var opts = typeof cases[i][1] === "object" && !Array.isArray(cases[i][1])
+      ? Object.assign({ storage: "memory" }, cases[i][1]) : cases[i][1];
+    var got = await codeOf(opts);
+    check("parsers.multipart: " + cases[i][0] + " -> " + cases[i][2] + " (got " + got + ")", got === cases[i][2]);
+  }
+  var ok = await b.parsers.multipart(_streamReq({ headers: { "content-type": CT }, body: body }), {
+    storage: "memory", fileSize: b.constants.BYTES.kib(8), fieldCount: 3, fieldSize: 100,
+    mimeAllowlist: ["text/plain"], filenameCharsets: ["UTF-8", "ISO-8859-1"],
+    fields: { f: { maxBytes: b.constants.BYTES.kib(8), mimeTypes: ["text/plain"] } },
+    fileFilter: function () { return true; }, audit: null, tmpDir: null,
+  });
+  check("parsers.multipart: every documented option with a valid value is accepted",
+    ok.files.length === 1 && ok.files[0].size === 5 * 1024);
+}
+
+// maxBytes counts every byte of the body: the preamble before the first
+// boundary, the boundary lines, the part headers and the part content.
+async function testMultipartWholeBodyAndHeaderLimits() {
+  var B = "----blamejslim" + Date.now();
+  var CT = "multipart/form-data; boundary=" + B;
+  var tail = "--" + B + "\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nv\r\n--" + B + "--\r\n";
+  async function codeOf(chunks, opts) {
+    try { await b.parsers.multipart(_streamReq({ headers: { "content-type": CT }, body: chunks }), opts); return "resolved"; }
+    catch (e) { return e.code || String(e); }
+  }
+  check("parsers.multipart: a 1 MiB preamble passes maxBytes 1024 -> multipart-total-too-large",
+    await codeOf(["x".repeat(b.constants.BYTES.mib(1)) + "\r\n" + tail], { storage: "memory", maxBytes: 1024 }) ===
+      "body-parser/multipart-total-too-large");
+  var drip = [];
+  for (var i = 0; i < 64; i += 1) drip.push("p".repeat(b.constants.BYTES.kib(4)));
+  drip.push("\r\n" + tail);
+  check("parsers.multipart: a preamble streamed in 4 KiB chunks past maxBytes -> multipart-total-too-large",
+    await codeOf(drip, { storage: "memory", maxBytes: b.constants.BYTES.kib(64) }) ===
+      "body-parser/multipart-total-too-large");
+  var parts = "";
+  for (var j = 0; j < 40; j += 1) parts += "--" + B + "\r\nContent-Disposition: form-data; name=\"e" + j + "\"\r\n\r\n\r\n";
+  check("parsers.multipart: boundary and header bytes of empty fields count toward maxBytes",
+    await codeOf([parts + "--" + B + "--\r\n"], { storage: "memory", maxBytes: 1024 }) ===
+      "body-parser/multipart-total-too-large");
+  check("parsers.multipart: a body under maxBytes with a short preamble still parses",
+    await codeOf(["preamble\r\n" + tail], { storage: "memory", maxBytes: 1024 }) === "resolved");
+  var bigHeaders = "--" + B + "\r\nContent-Disposition: form-data; name=\"a\"\r\nX-Pad: " +
+    "a".repeat(b.constants.BYTES.kib(40)) + "\r\n\r\nv\r\n--" + B + "--\r\n";
+  check("parsers.multipart: a 40 KiB header block arriving in one chunk -> multipart-headers-too-large",
+    await codeOf([bigHeaders], { storage: "memory" }) === "body-parser/multipart-headers-too-large");
+}
+
 async function run() {
   await testJsonParsesValidObject();
   await testJsonRefusesOverMaxBytes();
@@ -370,6 +581,9 @@ async function run() {
   await testMultipartStorageMemoryBuffersInRam();
   await testMultipartStorageRejectsBadValue();
   await testMultipartFilenameCharsetsOptIn();
+  await testMultipartRejectionCodes();
+  await testMultipartOptionValidation();
+  await testMultipartWholeBodyAndHeaderLimits();
   console.log("OK — parsers-standalone tests");
 }
 

@@ -222,6 +222,19 @@ function testRedactPrimitivePassthroughs() {
   // unchanged.
   var big = b.redact.redact({ big: 10n });
   check("redact: bigint value falls through unchanged", big.big === 10n);
+  // A number or bigint is checked by its digits, so a card number carried
+  // as a JSON number is redacted like the same digits in a string.
+  var pan = b.redact.redact({ n: 4111111111111111, nb: 4111111111111111n, s: "4111111111111111" });
+  check("redact: a numeric card number is redacted", pan.n !== 4111111111111111 && pan.n === pan.s,
+        JSON.stringify({ n: String(pan.n), s: pan.s }));
+  check("redact: a bigint card number is redacted", pan.nb === pan.s, String(pan.nb));
+  // A numeric timestamp keeps its value even when its digits pass the Luhn
+  // check, which about one 13-digit millisecond timestamp in ten does.
+  var ts = 1760000000000;
+  while (!b.redact.CLASSIFIER_PATTERNS.pan.detect(String(ts))) ts += 1;
+  var kept = b.redact.redact({ at: ts, atUs: ts * 1000 });
+  check("redact: a Luhn-valid numeric timestamp is kept", kept.at === ts && kept.atUs === ts * 1000,
+        JSON.stringify(kept));
 }
 
 function testRedactBinaryValuesAlwaysMarker() {
@@ -375,6 +388,172 @@ function testRedactIgnoresInheritedProps() {
   check("redact: own property retained", out.own === "kept");
   check("redact: inherited property not copied into output",
         !Object.prototype.hasOwnProperty.call(out, "inheritedSecret"));
+}
+
+function testRedactKeepsAnOwnProtoMemberOwn() {
+  b.redact._resetForTest();
+  // JSON.parse gives an own "__proto__" member. The redacted copy keeps it as
+  // an own member and keeps Object.prototype as its prototype.
+  var obj = JSON.parse('{"__proto__":{"password":"hunter2","n":1},"a":"x"}');
+  var out = b.redact.redact(obj);
+  check("redact: an own __proto__ member stays an own member of the copy",
+        Object.keys(out).join(",") === "__proto__,a" &&
+        Object.getPrototypeOf(out) === Object.prototype &&
+        JSON.stringify(out) === '{"__proto__":{"password":"[REDACTED]","n":1},"a":"x"}',
+        JSON.stringify(out) + " keys " + Object.keys(out).join(","));
+}
+
+// A member name is checked with the value detectors. A name that one of them
+// would replace is written as the marker, numbered from the second one in the
+// same object, and the value under it is redacted as it would be under the
+// original name.
+var CARD_A = "4111111111111111";
+var CARD_B = "5555555555554444";
+var JWT_NAME = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhIn0.c2lnbmF0dXJl";
+
+function testRedactScansMemberNames() {
+  b.redact._resetForTest();
+  var out = b.redact.redact({ "4111111111111111": 1, nested: { "123-45-6789": "x" } });
+  check("redact: a card number used as a member name is not written",
+        JSON.stringify(out) === '{"[REDACTED]":1,"nested":{"[REDACTED]":"x"}}', JSON.stringify(out));
+
+  var two = b.redact.redact(JSON.parse(
+    '{"' + CARD_A + '":"first","plain":0,"' + CARD_B + '":"second","987-65-4321":"third"}'));
+  check("redact: two redacted member names in one object do not collide, and key order is kept",
+        Object.keys(two).join(",") === "[REDACTED],plain,[REDACTED:2],[REDACTED:3]" &&
+        two["[REDACTED]"] === "first" && two["[REDACTED:2]"] === "second" &&
+        two["[REDACTED:3]"] === "third" && two.plain === 0,
+        JSON.stringify(two));
+
+  var spaced = b.redact.redact({ "4111 1111 1111 1111": "a", "4111-1111-1111-1111": "b" });
+  check("redact: card numbers written with spaces or hyphens as member names are replaced",
+        JSON.stringify(spaced) === '{"[REDACTED]":"a","[REDACTED:2]":"b"}', JSON.stringify(spaced));
+
+  var shapes = {};
+  shapes[JWT_NAME] = 1;
+  shapes["vault:sealed-blob"] = 2;
+  shapes["postgres://app:s3cr3t-pw@db.example:5432/x"] = 3;
+  shapes["AKIAIOSFODNN7EXAMPLE"] = 4;
+  shapes["https://api.example/cb?access_token=abc123"] = 5;
+  var shaped = b.redact.redact(shapes);
+  var shapedText = JSON.stringify(shaped);
+  // The last name also contains "token", a sensitive field name, so its value
+  // is replaced as it would be under the original name.
+  check("redact: every value detector applies to member names",
+        shapedText === '{"[REDACTED]":1,"[REDACTED:2]":2,"[REDACTED:3]":3,"[REDACTED:4]":4,"[REDACTED:5]":"[REDACTED]"}',
+        shapedText);
+
+  var under = b.redact.redact(JSON.parse('{"' + CARD_A + '":"123-45-6789","' + CARD_B +
+    '":{"password":"hunter2","card":"' + CARD_A + '","n":7}}'));
+  check("redact: the value under a redacted member name is redacted by the value rules",
+        JSON.stringify(under) ===
+          '{"[REDACTED]":"[REDACTED-SSN]","[REDACTED:2]":{"password":"[REDACTED]","card":"[REDACTED-CC]","n":7}}',
+        JSON.stringify(under));
+}
+
+function testRedactedMemberNamesDoNotCollideWithKeptNames() {
+  b.redact._resetForTest();
+  var before = b.redact.redact(JSON.parse('{"[REDACTED]":"kept","' + CARD_A + '":"card"}'));
+  check("redact: a kept member already named like the marker keeps its name and value",
+        Object.keys(before).join(",") === "[REDACTED],[REDACTED:2]" &&
+        before["[REDACTED]"] === "kept" && before["[REDACTED:2]"] === "card",
+        JSON.stringify(before));
+
+  var after = b.redact.redact(JSON.parse('{"' + CARD_A + '":"card","[REDACTED]":"kept","[REDACTED:2]":"also"}'));
+  check("redact: a kept member named like a later marker is not overwritten either",
+        Object.keys(after).join(",") === "[REDACTED:3],[REDACTED],[REDACTED:2]" &&
+        after["[REDACTED:3]"] === "card" && after["[REDACTED]"] === "kept" &&
+        after["[REDACTED:2]"] === "also",
+        JSON.stringify(after));
+
+  var custom = b.redact.redact(JSON.parse('{"' + CARD_A + '":1,"' + CARD_B + '":2}'), { marker: "[SCRUBBED]" });
+  check("redact: a redacted member name uses the configured marker",
+        JSON.stringify(custom) === '{"[SCRUBBED]":1,"[SCRUBBED:2]":2}', JSON.stringify(custom));
+  var plainMarker = b.redact.redact(JSON.parse('{"' + CARD_A + '":1,"' + CARD_B + '":2}'), { marker: "***" });
+  check("redact: a marker without a closing bracket takes the number after a colon",
+        JSON.stringify(plainMarker) === '{"***":1,"***:2":2}', JSON.stringify(plainMarker));
+
+  var controls = b.redact.redact({ userId: "u-1", password: "x", "order-123": 4, "1": "a", items: [{ "4111111111111111": 1 }] });
+  check("redact: ordinary member names and a sensitive name keep their names; names inside an array are checked",
+        JSON.stringify(controls) === '{"1":"a","userId":"u-1","password":"[REDACTED]","order-123":4,"items":[{"[REDACTED]":1}]}',
+        JSON.stringify(controls));
+}
+
+function testRedactAppliesRegisteredDetectorsToMemberNames() {
+  b.redact._resetForTest();
+  try {
+    b.redact.registerValueDetector("employee-id",
+      function (v) { return /^EMP-\d{6}$/.test(v); }, "[REDACTED-EMPID]");
+    var out = b.redact.redact({ "EMP-123456": { role: "admin" }, team: "EMP-654321" });
+    check("redact: a registered value detector applies to member names",
+          JSON.stringify(out) === '{"[REDACTED]":{"role":"admin"},"team":"[REDACTED-EMPID]"}',
+          JSON.stringify(out));
+  } finally {
+    b.redact._resetForTest();
+  }
+}
+
+function _captureLogger() {
+  var lines = [];
+  var log = b.log.create({ sinks: [{ stream: { write: function (l) { lines.push(l); } } }] });
+  return { log: log, lines: lines };
+}
+
+// A registered detector or replacement function that throws counts as a
+// match, so neither b.redact.redact nor b.log throws, and neither writes the
+// name or value the detector was given.
+function testThrowingDetectorCountsAsAMatch() {
+  b.redact._resetForTest();
+  try {
+    b.redact.registerValueDetector("throws-on-boom", function (v) {
+      if (v === "boom" || v === "boom-name") throw new Error("detector threw");
+      return false;
+    }, "[REDACTED-X]");
+    b.redact.registerValueDetector("replacement-throws", function (v) { return v === "EMP-1"; },
+      function () { throw new Error("replacement threw"); });
+    var input = { "boom-name": 1, note: "boom", who: "EMP-1" };
+    input[CARD_A] = CARD_B;
+    var out = null;
+    var threw = null;
+    try { out = b.redact.redact(input); } catch (e) { threw = e; }
+    var text = JSON.stringify(out);
+    check("redact: a registered detector or replacement that throws does not make redact throw",
+          threw === null, threw && threw.message);
+    check("redact: a name or value given to a throwing detector or replacement is redacted",
+          threw === null && text.indexOf("boom") === -1 && text.indexOf("EMP-1") === -1 &&
+          text.indexOf(CARD_A) === -1 && text.indexOf(CARD_B) === -1 &&
+          out.who === "[REDACTED]" && out.note === "[REDACTED-X]", text);
+
+    var cap = _captureLogger();
+    var extras = { "boom-name": 1, note: "boom" };
+    extras[CARD_A] = CARD_B;
+    var logThrew = null;
+    try { cap.log.info("lookup", extras); } catch (e) { logThrew = e; }
+    var line = cap.lines.join("");
+    check("b.log: a throwing registered detector does not make log.info throw or leak a name or value",
+          logThrew === null && cap.lines.length === 1 && line.indexOf("boom") === -1 &&
+          line.indexOf(CARD_A) === -1 && line.indexOf(CARD_B) === -1,
+          (logThrew ? "threw " + logThrew.message + " " : "") + line);
+  } finally {
+    b.redact._resetForTest();
+  }
+}
+
+function testLogOutputRedactsMemberNames() {
+  b.redact._resetForTest();
+  var cap = _captureLogger();
+  var extras = {};
+  extras[CARD_A] = "first";
+  extras.byCard = JSON.parse('{"' + CARD_B + '":"second","123-45-6789":"third"}');
+  cap.log.info("order lookup", extras);
+  var line = cap.lines.join("");
+  check("b.log: member names holding a card number or an SSN do not reach the log line",
+        cap.lines.length === 1 && line.indexOf(CARD_A) === -1 && line.indexOf(CARD_B) === -1 &&
+        line.indexOf("123-45-6789") === -1, line);
+  var parsed = JSON.parse(line);
+  check("b.log: the redacted members keep their values under numbered markers",
+        parsed["[REDACTED]"] === "first" && parsed.byCard["[REDACTED]"] === "second" &&
+        parsed.byCard["[REDACTED:2]"] === "third", line);
 }
 
 function testRedactNonStringParentKeyIsNotSensitive() {
@@ -1366,6 +1545,12 @@ async function run() {
   testRedactMaxDepthCap();
   testRedactCustomMarker();
   testRedactIgnoresInheritedProps();
+  testRedactKeepsAnOwnProtoMemberOwn();
+  testRedactScansMemberNames();
+  testRedactedMemberNamesDoNotCollideWithKeptNames();
+  testRedactAppliesRegisteredDetectorsToMemberNames();
+  testLogOutputRedactsMemberNames();
+  testThrowingDetectorCountsAsAMatch();
   testRedactNonStringParentKeyIsNotSensitive();
   testRedactSensitiveTopLevelParentKeyCollapses();
 

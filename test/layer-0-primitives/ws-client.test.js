@@ -656,11 +656,125 @@ async function _runTests() {
   await _testPostCloseSocketErrorSwallowed();
   await _testWssDialReachesTlsHandshake();
   await _testWssDialIpv6LiteralOmitsSni();
+  await _testWssServerNameFollowsTheHost();
+  await _testWssServernameMustNameTheHost();
+  await _testWssIpv6LiteralVerifiesAgainstTheIpSan();
+  await _testWssPeerClosingBeforeTheTlsHandshake();
   await _testPeerClosingTcpWithoutACloseFrameIsReported();
   await _testHandshakeFollowsThePerAttemptUrl();
   await _testCloseStillCompletesAfterCancelReconnect();
+  await _testSendTakesOneArgument();
+  await _testCloseCodesFromTheWire();
+  _testCloseRefusesForbiddenCodes();
 
   console.log("OK — ws-client tests");
+}
+
+// A frame server that records every frame the client sends it.
+async function _makeRecordingServer(afterHandshake) {
+  var received = [];
+  var server = await _makeFrameServer(function (socket, req) {
+    var fp = new wsFrame.FrameParser({ maxFrameBytes: 1024 * 1024 });
+    socket.on("data", function (chunk) {
+      var frames = fp.push(chunk) || [];
+      for (var i = 0; i < frames.length; i += 1) received.push(frames[i]);
+    });
+    if (typeof afterHandshake === "function") afterHandshake(socket, req);
+  });
+  return { server: server, received: received };
+}
+
+// send(data) takes one argument. A second argument used to be accepted and
+// never read, so send("abc", { binary: true }) went out as a TEXT frame.
+async function _testSendTakesOneArgument() {
+  var rec = await _makeRecordingServer();
+  var c = _trackedConnect("ws://127.0.0.1:" + rec.server.address().port + "/",
+    { reconnect: false, audit: false, allowInternal: true });
+  c.on("error", function () {});
+  await helpers.waitUntil(function () { return c.readyState === "open"; },
+    { timeoutMs: 5000, label: "ws-client: send-arity client opens" });
+  var thrown = null;
+  try { c.send("abc", { binary: true }); } catch (e) { thrown = e; }
+  check("send(data, opts) throws ws-client/bad-opt", thrown && thrown.code === "ws-client/bad-opt");
+  c.send("abc");
+  await helpers.waitUntil(function () {
+    return rec.received.some(function (f) { return f.opcode === 0x01; });
+  }, { timeoutMs: 5000, label: "ws-client: text frame reaches the server" });
+  var data = rec.received.filter(function (f) { return f.opcode === 0x01 || f.opcode === 0x02; });
+  check("send(\"abc\") delivers exactly one TEXT frame carrying abc",
+    data.length === 1 && data[0].opcode === 0x01 && data[0].payload.toString("utf8") === "abc");
+  try { c.close(); } catch (_e) { /* already closed */ }
+  await _sleep(30);
+  rec.server.close();
+}
+
+// The client checks the close code a server sends against the IANA WebSocket
+// Close Code Number registry. A forbidden code fails the connection with 1002
+// rather than being echoed back; an assigned code such as 1012 is reported.
+async function _testCloseCodesFromTheWire() {
+  var forbidden = [999, 1005, 1006, 1015, 2000];
+  for (var i = 0; i < forbidden.length; i += 1) {
+    var code = forbidden[i];
+    var payload = Buffer.alloc(2); payload.writeUInt16BE(code, 0);
+    var rec = await _makeRecordingServer(function (socket) {
+      socket.write(wsFrame.serializeFrame(0x08, payload, { fin: true }));
+    });
+    var c = _trackedConnect("ws://127.0.0.1:" + rec.server.address().port + "/",
+      { reconnect: false, audit: false, allowInternal: true });
+    var err = null; var closed = null;
+    c.on("error", function (e) { if (!err) err = e; });
+    c.on("close", function (cc2) { closed = cc2; });
+    await helpers.waitUntil(function () {
+      return closed !== null && rec.received.some(function (f) { return f.opcode === 0x08; });
+    }, { timeoutMs: 5000, label: "ws-client: close code " + code + " handled" });
+    var sent = rec.received.filter(function (f) { return f.opcode === 0x08; });
+    check("ws-client: server close code " + code + " fails the connection with ws-client/bad-close-code",
+      err && err.code === "ws-client/bad-close-code");
+    check("ws-client: server close code " + code + " is answered with 1002, not echoed",
+      sent.length === 1 && sent[0].payload.length >= 2 && sent[0].payload.readUInt16BE(0) === 1002);
+    check("ws-client: server close code " + code + " is reported as a failed connection (1006)",
+      closed === 1006);
+    rec.server.close();
+  }
+
+  var oneByte = await _makeRecordingServer(function (socket) {
+    socket.write(wsFrame.serializeFrame(0x08, Buffer.from([0x03]), { fin: true }));
+  });
+  var c1 = _trackedConnect("ws://127.0.0.1:" + oneByte.server.address().port + "/",
+    { reconnect: false, audit: false, allowInternal: true });
+  var err1 = null;
+  c1.on("error", function (e) { if (!err1) err1 = e; });
+  await helpers.waitUntil(function () { return err1 !== null; },
+    { timeoutMs: 5000, label: "ws-client: one-byte close payload" });
+  check("ws-client: a one-byte close payload fails the connection",
+    err1 && err1.code === "ws-client/bad-close-code");
+  oneByte.server.close();
+
+  var restartPayload = Buffer.concat([Buffer.from([0x03, 0xF4]), Buffer.from("restart", "utf8")]);
+  var rec2 = await _makeRecordingServer(function (socket) {
+    socket.write(wsFrame.serializeFrame(0x08, restartPayload, { fin: true }));
+  });
+  var c2 = _trackedConnect("ws://127.0.0.1:" + rec2.server.address().port + "/",
+    { reconnect: false, audit: false, allowInternal: true });
+  var err2 = null; var closed2 = null;
+  c2.on("error", function (e) { err2 = e; });
+  c2.on("close", function (code2, reason2) { closed2 = { code: code2, reason: reason2 }; });
+  await helpers.waitUntil(function () { return closed2 !== null; },
+    { timeoutMs: 5000, label: "ws-client: 1012 close reported" });
+  check("ws-client: server close code 1012 is reported with its reason",
+    err2 === null && closed2.code === 1012 && closed2.reason === "restart");
+  rec2.server.close();
+}
+
+function _testCloseRefusesForbiddenCodes() {
+  var c = b.wsClient.connect("ws://127.0.0.1:1", { reconnect: false, audit: false, allowInternal: true });
+  c.on("error", function () {});
+  [999, 1005, 1006, 1015, 5000, 0, null, "1000", 1000.5, NaN].forEach(function (bad) {
+    var thrown = null;
+    try { c.close(bad, "x"); } catch (e) { thrown = e; }
+    check("wsClient close(" + JSON.stringify(bad) + ") throws TypeError", thrown instanceof TypeError);
+  });
+  c.close();
 }
 
 // The client attached error, connect and data listeners to its socket and none
@@ -1257,9 +1371,221 @@ async function _testWssDialReachesTlsHandshake() {
   tcp.close();
 }
 
+// The server name a wss:// dial sends comes from b.network.tls.sniFor: a host
+// name is sent as SNI, and an IP-literal host, or an IP-literal
+// `tlsOpts.servername`, sends none. A loopback TLS listener records the SNI
+// of each ClientHello; it never answers the upgrade, so each dial ends in a
+// handshake timeout once the ClientHello has been seen.
+async function _testWssServerNameFollowsTheHost() {
+  var tls = require("node:tls");
+  var ca = await b.mtlsEngine.generateCa({ name: "ws-client-sni-test-ca" });
+  var leaf = await b.mtlsEngine.signClientCert({
+    cn: "localhost", caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem,
+    usage: "server", sans: ["DNS:localhost", "IP:127.0.0.1", "IP:::1"], validityDays: 1,
+  });
+  var sni = [];
+  var server = tls.createServer({
+    key: leaf.key, cert: leaf.cert,
+    SNICallback: function (name, cb) { sni.push(name); cb(null, null); },
+  }, function (sock) { server._wsSockets.push(sock); sock.on("error", function () {}); });
+  server._wsSockets = [];
+  var hellos = 0;
+  server.on("connection", function (raw) {
+    hellos += 1;
+    server._wsSockets.push(raw);
+    raw.on("error", function () {});
+  });
+  server.on("tlsClientError", function () { /* each dial's outcome is read from its error event */ });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  _trackServer(server);
+  var port = server.address().port;
+  var cases = [
+    { label: "IPv4 host",                     host: "127.0.0.1", sni: null },
+    { label: "IPv4 servername",               host: "127.0.0.1", servername: "127.0.0.1", sni: null },
+    { label: "host name",                     host: "localhost", sni: "localhost" },
+    { label: "explicit name on an IPv4 host", host: "127.0.0.1", servername: "localhost", sni: "localhost" },
+  ];
+  for (var i = 0; i < cases.length; i += 1) {
+    var tc = cases[i];
+    sni.length = 0;
+    var before = hellos;
+    var tlsOpts = { ca: ca.caCertPem };
+    if (tc.servername !== undefined) tlsOpts.servername = tc.servername;
+    var c = _trackedConnect("wss://" + tc.host + ":" + port + "/", {
+      reconnect: false, audit: false, allowInternal: true, handshakeTimeoutMs: 1000, tlsOpts: tlsOpts,
+    });
+    var err = null;
+    c.on("error", function (e) { if (!err) err = e; });
+    await helpers.waitUntil(function () { return err !== null; },
+      { timeoutMs: 5000, label: "ws-client-sni: " + tc.label + ": dial settles" });
+    check("ws-client-sni: " + tc.label + " reaches the TLS handshake",
+      err.code === "ws-client/handshake-timeout" && hellos > before,
+      (err.code || "") + " " + err.message);
+    var got = sni.length === 0 ? null : sni[0];
+    check("ws-client-sni: " + tc.label + " sends SNI " + JSON.stringify(tc.sni),
+      got === tc.sni && sni.length <= 1, JSON.stringify(sni));
+    try { c._teardown(b.wsClient.CLOSE_NORMAL, "", false); } catch (_e) { /* best-effort */ }
+  }
+}
+
+function _hasIpv6Loopback() {
+  var ifaces = require("node:os").networkInterfaces();
+  return Object.keys(ifaces).some(function (name) {
+    return (ifaces[name] || []).some(function (a) {
+      return (a.family === "IPv6" || a.family === 6) && a.address === "::1";
+    });
+  });
+}
+
+// A TLS listener that never answers the upgrade. A dial that it accepts ends
+// in ws-client/handshake-timeout; a certificate the client rejects ends in the
+// TLS error instead. `hellos` counts accepted TCP connections.
+async function _silentTlsListener(leaf, bindHost) {
+  var tls = require("node:tls");
+  var server = tls.createServer({ key: leaf.key, cert: leaf.cert },
+    function (sock) { server._wsSockets.push(sock); sock.on("error", function () {}); });
+  server._wsSockets = [];
+  server.hellos = 0;
+  server.on("connection", function (raw) {
+    server.hellos += 1;
+    server._wsSockets.push(raw);
+    raw.on("error", function () {});
+  });
+  server.on("tlsClientError", function () { /* each dial's outcome is read from its error event */ });
+  await new Promise(function (r) { server.listen(0, bindHost, r); });
+  _trackServer(server);
+  return server;
+}
+
+async function _dialOutcome(url, opts, label) {
+  var c = _trackedConnect(url, Object.assign({
+    reconnect: false, audit: false, allowInternal: true, handshakeTimeoutMs: 1000,
+  }, opts));
+  var err = null;
+  c.on("error", function (e) { if (!err) err = e; });
+  await helpers.waitUntil(function () { return err !== null; },
+    { timeoutMs: 5000, label: label });
+  try { c._teardown(b.wsClient.CLOSE_NORMAL, "", false); } catch (_e) { /* best-effort */ }
+  return err;
+}
+
+// An IP-literal `tlsOpts.servername` cannot be sent as SNI, and Node then
+// checks the certificate against the URL host. A servername naming an address
+// other than the host is refused, so the certificate is never checked against
+// an identity the operator did not name. A servername that is not a non-empty
+// string is refused too. The listener presents a certificate valid only for
+// the DNS name `localhost`.
+async function _testWssServernameMustNameTheHost() {
+  var ca = await b.mtlsEngine.generateCa({ name: "ws-client-ip-sni-test-ca" });
+  var leaf = await b.mtlsEngine.signClientCert({
+    cn: "localhost", caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem,
+    usage: "server", sans: ["DNS:localhost"], validityDays: 1,
+  });
+  var server = await _silentTlsListener(leaf, "127.0.0.1");
+  var port = server.address().port;
+  var refused = [
+    { label: "IPv4 servername on a host name",    host: "localhost", servername: "127.0.0.1" },
+    { label: "bracketed IPv6 servername on IPv4", host: "127.0.0.1", servername: "[::1]" },
+    { label: "different IPv4 servername",         host: "127.0.0.1", servername: "127.0.0.2" },
+    { label: "non-string servername",             host: "localhost", servername: 7 },
+    { label: "empty servername",                  host: "localhost", servername: "" },
+  ];
+  for (var i = 0; i < refused.length; i += 1) {
+    var tc = refused[i];
+    var before = server.hellos;
+    var thrown = null;
+    try {
+      _trackedConnect("wss://" + tc.host + ":" + port + "/", {
+        reconnect: false, audit: false, allowInternal: true, handshakeTimeoutMs: 1000,
+        tlsOpts: { ca: ca.caCertPem, servername: tc.servername },
+      }).on("error", function () {});
+    } catch (e) { thrown = e; }
+    check("ws-client-ip-servername: " + tc.label + " is refused at connect",
+      thrown && thrown.code === "ws-client/bad-opt" && /servername/.test(thrown.message),
+      thrown ? ((thrown.code || "") + " " + thrown.message) : "accepted");
+    await helpers.passiveObserve(50, "ws-client-ip-servername: " + tc.label + ": no dial");
+    check("ws-client-ip-servername: " + tc.label + " opens no connection",
+      server.hellos === before, String(server.hellos - before));
+  }
+
+  var before2 = server.hellos;
+  var perAttempt = await _dialOutcome("wss://localhost:" + port + "/", {
+    tlsOpts: { ca: ca.caCertPem },
+    tlsOptsFor: function () { return { servername: "127.0.0.1" }; },
+  }, "ws-client-ip-servername: tlsOptsFor dial settles");
+  check("ws-client-ip-servername: an IP servername from tlsOptsFor is refused on error",
+    perAttempt.code === "ws-client/bad-opt" && /servername/.test(perAttempt.message),
+    (perAttempt.code || "") + " " + perAttempt.message);
+  check("ws-client-ip-servername: an IP servername from tlsOptsFor opens no connection",
+    server.hellos === before2, String(server.hellos - before2));
+
+  var named = await _dialOutcome("wss://localhost:" + port + "/", {
+    tlsOpts: { ca: ca.caCertPem, servername: "localhost" },
+  }, "ws-client-ip-servername: named dial settles");
+  check("ws-client-ip-servername: a DNS servername on its own host verifies",
+    named.code === "ws-client/handshake-timeout", (named.code || "") + " " + named.message);
+
+  var sameV6 = null;
+  try {
+    _trackedConnect("wss://[::1]:" + port + "/", {
+      reconnect: false, audit: false, allowInternal: true,
+      tlsOpts: { servername: "[::1]" },
+    }).on("error", function () {});
+  } catch (e) { sameV6 = e; }
+  check("ws-client-ip-servername: the host's own IPv6 address in brackets is accepted",
+    sameV6 === null, sameV6 && sameV6.message);
+
+  // The comparison is by address, not by spelling.
+  var spelledV6 = null;
+  try {
+    _trackedConnect("wss://[::1]:" + port + "/", {
+      reconnect: false, audit: false, allowInternal: true,
+      tlsOpts: { servername: "0:0:0:0:0:0:0:1" },
+    }).on("error", function () {});
+  } catch (e) { spelledV6 = e; }
+  check("ws-client-ip-servername: the host's own IPv6 address written out in full is accepted",
+    spelledV6 === null, spelledV6 && spelledV6.message);
+}
+
+// A wss:// URL carries an IPv6 host in brackets. The dial strips them before
+// the TLS connect, so the certificate is checked against the address and an
+// IP:::1 subjectAltName matches.
+async function _testWssIpv6LiteralVerifiesAgainstTheIpSan() {
+  if (!_hasIpv6Loopback()) {
+    helpers.unavailable("ws-client: wss:// to [::1]", "no ::1 loopback on this host");
+    return;
+  }
+  var ca = await b.mtlsEngine.generateCa({ name: "ws-client-v6-test-ca" });
+  var leaf = await b.mtlsEngine.signClientCert({
+    cn: "v6", caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem,
+    usage: "server", sans: ["IP:::1"], validityDays: 1,
+  });
+  var server = await _silentTlsListener(leaf, "::1");
+  var err = await _dialOutcome("wss://[::1]:" + server.address().port + "/", {
+    tlsOpts: { ca: ca.caCertPem },
+  }, "ws-client: wss://[::1] dial settles");
+  check("wss dial: an IPv6 literal verifies against the certificate's IP SAN",
+    err.code === "ws-client/handshake-timeout", (err.code || "") + " " + err.message);
+}
+
+// A peer that closes the TCP connection before the TLS handshake completes
+// ends the dial with Node's handshake error (ECONNRESET), on every platform.
+// On Linux the FIN arrives as an 'end' event before Node raises that error,
+// and a lost-connection report taken from 'end' named the failure as a dropped
+// WebSocket session instead.
+async function _testWssPeerClosingBeforeTheTlsHandshake() {
+  var server = net.createServer(function (s) { s.destroy(); });
+  await new Promise(function (r) { server.listen(0, "127.0.0.1", r); });
+  _trackServer(server);
+  var err = await _dialOutcome("wss://127.0.0.1:" + server.address().port + "/", {},
+    "ws-client: a peer closing before the TLS handshake settles the dial");
+  check("wss dial: a peer closing before the TLS handshake reports the handshake failure (ECONNRESET)",
+    err.code === "ECONNRESET", (err.code || "") + " " + err.message);
+}
+
 // Same defense for an IPv6 literal: `parsed.hostname` keeps the brackets
 // (`[::1]`), and net.isIP only recognizes the bare form. Without stripping the
-// brackets before the IP test, the client sends SNI = "[::1]" — a bracketed IP
+// brackets before the IP test, the client sends SNI = "[::1]", a bracketed IP
 // literal, which is malformed per RFC 6066 §3 (SNI MUST be a hostname) and a
 // strict TLS server can reject. Observe the exact options handed to
 // tls.connect: for an IPv6-literal target the servername must be OMITTED (the

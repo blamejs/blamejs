@@ -118,11 +118,59 @@ function testReservedAndPrivateUseAlgorithms() {
   check("DS digest 6 SM3 current",
         d6.known === true && d6.deprecated === false && d6.name === "SM3");
 
-  // The Unassigned range (17-122) still surfaces as known:false —
+  // The Unassigned ranges (19-22, 24-122) still surface as known:false —
   // operators can decide whether unassigned == refuse.
-  var unassigned = b.network.dns.classifyDnskeyAlgorithm(17);
-  check("algo 17 unassigned surfaces known:false",
-        unassigned.known === false);
+  [19, 22, 24, 122].forEach(function (n) {
+    var unassigned = b.network.dns.classifyDnskeyAlgorithm(n);
+    check("algo " + n + " unassigned surfaces known:false",
+          unassigned.known === false && unassigned.name === "unassigned");
+  });
+}
+
+// IANA DNS Security Algorithm Numbers, retrieved 2026-10-18: 0 DELETE,
+// 17 SM2SM3 (RFC 9563), 18 MLDSA44 (draft-westerbaan-dnssec-mldsa-03) and
+// 23 ECC-GOST12 (RFC 9558) are assigned, and 123-251 are Reserved.
+function testRegistryRowsAddedSinceRfc9904() {
+  var del = b.network.dns.classifyDnskeyAlgorithm(0);
+  check("algo 0 DELETE known + deprecated (a CDS/CDNSKEY delete signal, not a signing algorithm)",
+        del.known === true && del.name === "DELETE" && del.deprecated === true);
+  var sm2 = b.network.dns.classifyDnskeyAlgorithm(17);
+  check("algo 17 SM2SM3 known, not deprecated, cites RFC 9563",
+        sm2.known === true && sm2.name === "SM2SM3" && sm2.deprecated === false && /RFC 9563/.test(sm2.reason));
+  var mldsa = b.network.dns.classifyDnskeyAlgorithm(18);
+  check("algo 18 MLDSA44 known, not deprecated",
+        mldsa.known === true && mldsa.name === "MLDSA44" && mldsa.deprecated === false &&
+        /draft-westerbaan-dnssec-mldsa/.test(mldsa.reason));
+  var gost12 = b.network.dns.classifyDnskeyAlgorithm(23);
+  check("algo 23 ECC-GOST12 known, not deprecated, cites RFC 9558",
+        gost12.known === true && gost12.name === "ECC-GOST12" && gost12.deprecated === false && /RFC 9558/.test(gost12.reason));
+  [123, 200, 251].forEach(function (n) {
+    var r = b.network.dns.classifyDnskeyAlgorithm(n);
+    check("algo " + n + " is Reserved (RFC 4034, RFC 6014)",
+          r.known === true && r.name === "Reserved" && r.deprecated === true);
+  });
+
+  var d6 = b.network.dns.classifyDsDigestType(6);
+  check("DS digest 6 SM3 cites RFC 9563", /RFC 9563/.test(d6.reason) && !/RFC 9558/.test(d6.reason));
+  check("DS digest 6 SM3 reason gives the registry's delegation MAY / validation MAY",
+        /delegation MAY, validation MAY/.test(d6.reason), d6.reason);
+  [del, sm2, mldsa, gost12, d6].forEach(function (row) {
+    check(row.name + " reason carries no em dash", row.reason.indexOf("—") === -1, row.reason);
+  });
+  [128, 200, 252].forEach(function (n) {
+    var r = b.network.dns.classifyDsDigestType(n);
+    check("DS digest " + n + " is Reserved (RFC 9904)",
+          r.known === true && r.name === "Reserved" && r.deprecated === true);
+  });
+  [253, 254].forEach(function (n) {
+    var r = b.network.dns.classifyDsDigestType(n);
+    check("DS digest " + n + " is Reserved for Private Use (RFC 9904)",
+          r.known === true && r.name === "Private Use" && r.deprecated === false);
+  });
+  [7, 127, 255].forEach(function (n) {
+    var r = b.network.dns.classifyDsDigestType(n);
+    check("DS digest " + n + " is unassigned", r.known === false && r.name === "unassigned");
+  });
 }
 
 function testUnknownAndBadInput() {
@@ -175,6 +223,7 @@ function run() {
   testCurrentAlgorithms();
   testOtherDeprecated();
   testReservedAndPrivateUseAlgorithms();
+  testRegistryRowsAddedSinceRfc9904();
   testUnknownAndBadInput();
   testDsDigestTypeClassifier();
 }

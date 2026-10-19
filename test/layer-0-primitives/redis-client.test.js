@@ -9,6 +9,7 @@
  */
 var fs = require("node:fs");
 var net = require("node:net");
+var nodeTls = require("node:tls");
 var path = require("node:path");
 var helpers = require("../helpers");
 var check = helpers.check;
@@ -64,6 +65,10 @@ async function run() {
   check("url: rediss + auth + db", u2.host === "cache.example.com" && u2.port === 6380 &&
                                     u2.tls === true && u2.username === "user" &&
                                     u2.password === "pw" && u2.db === 3);
+
+  var u2v6 = redis._parseRedisUrl("rediss://[2001:db8::1]:6380/0");
+  check("url: an IPv6 host is returned without the URL brackets, so it can be dialed",
+        u2v6.host === "2001:db8::1" && u2v6.port === 6380, u2v6.host);
 
   var u3 = redis._parseRedisUrl("redis://:secretonly@h:6379");
   check("url: legacy single-arg AUTH (empty user, password)",
@@ -742,6 +747,146 @@ async function run() {
   }
 
   await testConnectHandshakeLeavesNoArmedTimer();
+  await testASynchronousTlsConnectFailureLeavesNoArmedTimer();
+  await testTlsServerNameFollowsTheHost();
+  await testIpServernameMustNameTheHost();
+}
+
+// An IP-literal `servername` cannot be sent as SNI, and Node then checks the
+// certificate against the URL host. A `servername` naming an address other
+// than the host is refused at create, so the certificate is never checked
+// against an identity the operator did not name. The listener presents a
+// certificate valid only for the DNS name `localhost`.
+async function testIpServernameMustNameTheHost() {
+  var b = helpers.b;
+  var ca = await b.mtlsEngine.generateCa({ name: "redis-ip-sni-test-ca" });
+  var leaf = await b.mtlsEngine.signClientCert({
+    cn: "localhost", caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem,
+    usage: "server", sans: ["DNS:localhost"], validityDays: 1,
+  });
+  var refused = [
+    { label: "IPv4 servername on a host name",    urlHost: "localhost", servername: "127.0.0.1" },
+    { label: "bracketed IPv6 servername on IPv4", urlHost: "127.0.0.1", servername: "[::1]" },
+    { label: "different IPv4 servername",         urlHost: "127.0.0.1", servername: "127.0.0.2" },
+  ];
+  for (var i = 0; i < refused.length; i += 1) {
+    var tc = refused[i];
+    var srv = await _tlsListen(leaf, "127.0.0.1");
+    var c = null, err = null;
+    try {
+      c = redis.create({
+        url: "rediss://" + tc.urlHost + ":" + srv.port + "/0", servername: tc.servername,
+        ca: ca.caCertPem, connectTimeoutMs: 4000, maxReconnectAttempts: 0,
+      });
+      await c.connect();
+    } catch (e) { err = e; }
+    try {
+      check("redis-ip-servername: " + tc.label + " is refused at create",
+        c === null && err && err.code === "redis-client/bad-opts" && /servername/.test(err.message),
+        err ? ((err.code || "") + " " + err.message) : "connected");
+      check("redis-ip-servername: " + tc.label + " completes no handshake",
+        srv.sni.length === 0, JSON.stringify(srv.sni));
+    } finally {
+      if (c) await c.close();
+      await srv.close();
+    }
+  }
+  var same = redis.create({ url: "rediss://[::1]:6380/0", servername: "[::1]" });
+  check("redis-ip-servername: the host's own IPv6 address in brackets is accepted",
+    typeof same.connect === "function");
+  await same.close();
+  // The comparison is by address, not by spelling.
+  var spelled = null;
+  try { spelled = redis.create({ url: "rediss://[::1]:6380/0", servername: "0:0:0:0:0:0:0:1" }); }
+  catch (e) { spelled = e; }
+  check("redis-ip-servername: the host's own IPv6 address written out in full is accepted",
+    spelled && typeof spelled.connect === "function", spelled && spelled.message);
+  if (spelled && typeof spelled.close === "function") await spelled.close();
+}
+
+function _hasIpv6Loopback() {
+  var ifaces = require("node:os").networkInterfaces();
+  return Object.keys(ifaces).some(function (name) {
+    return (ifaces[name] || []).some(function (a) {
+      return (a.family === "IPv6" || a.family === 6) && a.address === "::1";
+    });
+  });
+}
+
+// A TLS listener that records the SNI of every completed handshake.
+function _tlsListen(leaf, bindHost) {
+  return new Promise(function (resolve) {
+    var sockets = [];
+    var sni = [];
+    var server = nodeTls.createServer({ key: leaf.key, cert: leaf.cert }, function (sock) {
+      sni.push(sock.servername || null);
+      sock.on("error", function () { /* client teardown */ });
+    });
+    server.on("connection", function (raw) { sockets.push(raw); });
+    server.on("tlsClientError", function () { /* the client check reports it */ });
+    server.listen(0, bindHost, function () {
+      resolve({
+        port: server.address().port, sni: sni,
+        close: function () {
+          sockets.forEach(function (s) { try { s.destroy(); } catch (_e) { /* best-effort */ } });
+          return new Promise(function (r) { server.close(r); });
+        },
+      });
+    });
+  });
+}
+
+// A rediss:// dial sends the host as SNI when it is a name, and no SNI when
+// the host or an explicit `servername` is an IP literal (RFC 6066 section 3;
+// Node 26 throws ERR_INVALID_ARG_VALUE from tls.connect for an address in
+// SNI). An IPv6 URL host arrives bracketed from the URL parser and still
+// dials. The certificate carries a localhost SAN and both loopback IP SANs,
+// so each connect completes with verification on.
+async function testTlsServerNameFollowsTheHost() {
+  var b = helpers.b;
+  var badSni = null;
+  try { redis.create({ url: "rediss://127.0.0.1:6380/0", servername: 7 }); } catch (e) { badSni = e; }
+  check("redis-sni: a non-string servername is refused at create",
+    badSni && badSni.code === "redis-client/bad-opts", badSni && badSni.message);
+  var ca = await b.mtlsEngine.generateCa({ name: "redis-sni-test-ca" });
+  var leaf = await b.mtlsEngine.signClientCert({
+    cn: "localhost", caCertPem: ca.caCertPem, caKeyPem: ca.caKeyPem,
+    usage: "server", sans: ["DNS:localhost", "IP:127.0.0.1", "IP:::1"], validityDays: 1,
+  });
+  var cases = [
+    { label: "IPv4 host",                     bind: "127.0.0.1", urlHost: "127.0.0.1", sni: null },
+    { label: "IPv4 servername",               bind: "127.0.0.1", urlHost: "127.0.0.1", servername: "127.0.0.1", sni: null },
+    { label: "host name",                     bind: "127.0.0.1", urlHost: "localhost", sni: "localhost" },
+    { label: "explicit name on an IPv4 host", bind: "127.0.0.1", urlHost: "127.0.0.1", servername: "localhost", sni: "localhost" },
+  ];
+  if (_hasIpv6Loopback()) {
+    cases.push({ label: "bracketed IPv6 host", bind: "::1", urlHost: "[::1]", sni: null });
+  } else {
+    helpers.unavailable("redis: rediss:// to [::1]", "no ::1 loopback on this host");
+  }
+  for (var i = 0; i < cases.length; i += 1) {
+    var tc = cases[i];
+    var srv = await _tlsListen(leaf, tc.bind);
+    var copts = {
+      url: "rediss://" + tc.urlHost + ":" + srv.port + "/0",
+      ca: ca.caCertPem, connectTimeoutMs: 4000, maxReconnectAttempts: 0,
+    };
+    if (tc.servername !== undefined) copts.servername = tc.servername;
+    var c = redis.create(copts);
+    var err = null;
+    try { await c.connect(); } catch (e) { err = e; }
+    try {
+      check("redis-sni: " + tc.label + " connects", err === null,
+        err && ((err.code || "") + " " + err.message));
+      await helpers.waitUntil(function () { return srv.sni.length >= 1; },
+        { timeoutMs: 5000, label: "redis-sni: " + tc.label + ": server completes the handshake" });
+      check("redis-sni: " + tc.label + " sends SNI " + JSON.stringify(tc.sni),
+        srv.sni.length === 1 && srv.sni[0] === tc.sni, JSON.stringify(srv.sni));
+    } finally {
+      await c.close();
+      await srv.close();
+    }
+  }
 }
 
 // The connect handshake issues AUTH (when a password is set) and SELECT (when
@@ -775,6 +920,28 @@ async function testConnectHandshakeLeavesNoArmedTimer() {
   } finally {
     await srv.close();
   }
+}
+
+// tls.connect throws synchronously for TLS options it cannot load, here a `ca`
+// that is neither a string nor a Buffer. The connect then rejects, and the
+// connect timer it armed first is cleared rather than left to keep the event
+// loop alive for connectTimeoutMs.
+async function testASynchronousTlsConnectFailureLeavesNoArmedTimer() {
+  function _timers() {
+    return process.getActiveResourcesInfo().filter(function (r) { return r === "Timeout"; }).length;
+  }
+  var before = _timers();
+  var c = redis.create({
+    url: "rediss://127.0.0.1:1/0", ca: 42, connectTimeoutMs: 60000, maxReconnectAttempts: 0,
+  });
+  var err = null;
+  try { await c.connect(); } catch (e) { err = e; }
+  check("redis: a TLS connect that throws synchronously rejects connect()",
+    err !== null, err ? err.code : "connected");
+  var after = _timers();
+  await c.close();
+  check("redis: a TLS connect that throws synchronously leaves no armed connect timer",
+    after <= before, "before=" + before + " after=" + after);
 }
 
 module.exports = { run: run };

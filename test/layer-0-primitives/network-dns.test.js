@@ -602,8 +602,11 @@ function testUseDnsOverTls() {
   _reset();
   dnsModule.useDnsOverTls({ host: "1.1.1.1" });
   var st = dnsModule._stateForTest();
-  check("useDnsOverTls: defaults port 853 + servername=host",
-    st.dot.host === "1.1.1.1" && st.dot.port === 853 && st.dot.servername === "1.1.1.1");
+  // No server name is stored for an address host: the identity comes from
+  // b.network.tls.identityFor, which gives none for an IP literal.
+  check("useDnsOverTls: defaults port 853 and stores no servername for an IP host",
+    st.dot.host === "1.1.1.1" && st.dot.port === 853 &&
+    JSON.stringify(st.dot.identity) === "{}", JSON.stringify(st.dot));
   _reset();
 }
 
@@ -652,8 +655,8 @@ function testClassifyDnskeyAlgorithm() {
   var reserved = dnsModule.classifyDnskeyAlgorithm(4);
   check("classifyDnskeyAlgorithm: 4 Reserved is deprecated+known",
     reserved && reserved.deprecated === true && reserved.known === true);
-  var unassigned = dnsModule.classifyDnskeyAlgorithm(17);
-  check("classifyDnskeyAlgorithm: 17 unassigned → known:false",
+  var unassigned = dnsModule.classifyDnskeyAlgorithm(19);
+  check("classifyDnskeyAlgorithm: 19 unassigned → known:false",
     unassigned && unassigned.known === false && unassigned.deprecated === false);
   var priv = dnsModule.classifyDnskeyAlgorithm(253);
   check("classifyDnskeyAlgorithm: 253 PRIVATEDNS known+not-deprecated",
@@ -3048,7 +3051,7 @@ function testDesignatedResolversUncodedEntryFailure() {
   check("useDesignatedResolvers: only the surviving descriptor is configured",
     okState.doh === null && okState.dot !== null &&
     okState.dot.host === "dot.example.test" && okState.dot.port === 8853 &&
-    okState.dot.servername === "dot.example.test");
+    okState.dot.identity.servername === "dot.example.test", JSON.stringify(okState.dot));
   check("useDesignatedResolvers: the retained resolver list keeps every validated entry, failures included",
     dnsModule._designatedResolversForTest().length === 2);
   _reset();

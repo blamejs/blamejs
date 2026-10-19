@@ -263,6 +263,41 @@ async function run() {
   await testWalksMultipleLists();
   await testUpstreamErrorSurfacesAsErrorEntry();
   await testCompliancePosture();
+  testReverseIpFoldsAMappedAddress();
+  await testAMappedOrTranslatedPeerIsLookedUpAsItsIpv4Address();
+}
+
+// A dual-stack MX listener reports an IPv4 sender as ::ffff:a.b.c.d. The
+// sender is listed under its IPv4 octets, so that is the name looked up.
+function testReverseIpFoldsAMappedAddress() {
+  var dotted = null, err = null;
+  try { dotted = b.mail.rbl.reverseIp("::ffff:192.0.2.99"); } catch (e) { err = e; }
+  check("reverseIp(::ffff:192.0.2.99) is the IPv4 query name",
+        dotted === "99.2.0.192", err ? err.code : dotted);
+  check("reverseIp(::ffff:c000:263) is the IPv4 query name",
+        b.mail.rbl.reverseIp("::ffff:c000:263") === "99.2.0.192");
+  check("reverseIp(::FFFF:192.0.2.99) is the IPv4 query name",
+        b.mail.rbl.reverseIp("::FFFF:192.0.2.99") === "99.2.0.192");
+}
+
+async function testAMappedOrTranslatedPeerIsLookedUpAsItsIpv4Address() {
+  var peers = ["::ffff:192.0.2.99", "::ffff:c000:263", "64:ff9b::c000:263", "2002:c000:263::1"];
+  for (var i = 0; i < peers.length; i++) {
+    var resolver = _fakeResolver({ "99.2.0.192.bl.example.com|A": _aResponse("127.0.0.2") });
+    var rbl = b.mail.rbl.create({ resolver: resolver, blocklists: ["bl.example.com"] });
+    var v = null, err = null;
+    try { v = await rbl.query(peers[i]); } catch (e) { err = e; }
+    check("a listed IPv4 sender reported as " + peers[i] + " is listed",
+          v !== null && v.listed.length === 1 && v.listed[0].list === "bl.example.com",
+          err ? err.code : JSON.stringify(v));
+  }
+  var v6Resolver = _fakeResolver({});
+  var v6 = await b.mail.rbl.create({ resolver: v6Resolver, blocklists: ["bl.example.com"] })
+    .query("64:ff9b::c000:263");
+  check("a NAT64 sender is also looked up under its IPv6 name",
+        v6Resolver._calls.some(function (c) { return /\.b\.9\.f\.f\.4\.6\.0\.0\.bl\.example\.com$/.test(c.name); }) &&
+        v6.neutral.length >= 1,
+        JSON.stringify(v6Resolver._calls));
 }
 
 module.exports = { run: run };

@@ -201,6 +201,26 @@ async function run() {
   check("checkUrl: allowInternal CIDR list rejects out-of-range",
         threw && threw.code === "ssrf-guard/blocked-private");
 
+  // An address resolved or written in its IPv4-mapped spelling is waived by
+  // the IPv4 CIDR naming it, and an IPv4-mapped CIDR waives the IPv4 address.
+  var mappedWaivers = [
+    { url: "http://[::ffff:10.0.5.1]/", list: ["10.0.0.0/8"] },
+    { url: "http://10.0.5.1/",          list: ["::ffff:10.0.0.0/104"] },
+    { url: "http://x.test/",            list: ["10.0.0.0/8"], lookup: _stubLookup("::ffff:10.0.5.1", 6) },
+  ];
+  for (var mw = 0; mw < mappedWaivers.length; mw += 1) {
+    threw = null;
+    try {
+      await ssrf.checkUrl(mappedWaivers[mw].url, {
+        allowInternal: mappedWaivers[mw].list,
+        dnsLookup:     mappedWaivers[mw].lookup,
+      });
+    } catch (e) { threw = e; }
+    check("checkUrl: allowInternal " + JSON.stringify(mappedWaivers[mw].list) + " waives " +
+          mappedWaivers[mw].url + (mappedWaivers[mw].lookup ? " (resolved ::ffff:10.0.5.1)" : ""),
+          threw === null, threw ? threw.code : "");
+  }
+
   // ---- checkUrl: external IP passes ----
   var r2 = await ssrf.checkUrl("https://example.com/", {
     dnsLookup: _stubLookup("93.184.216.34"),
@@ -383,6 +403,142 @@ async function _testCreateAllowlist() {
   try { await casedAllow.assert("https://api.partner.example.com/x"); }
   catch (e) { allowOk = (e.code === "ssrf-guard/not-on-allowlist") ? false : true; }
   check("createAllowlist: mixed-case/trailing-dot allow entry admits the host", allowOk === true);
+
+  // A URL writes an IPv6 host in brackets (`http://[fd00::5]/` has hostname
+  // `[fd00::5]`), and a CIDR entry is compared with the address. A deny CIDR
+  // that missed the bracketed host let the host through, and an allow CIDR
+  // refused it.
+  async function outcome(list, url) {
+    try { await b.ssrfGuard.createAllowlist(list).assert(url); return "allowed"; }
+    catch (e) { return e.code; }
+  }
+  var v6Deny = await outcome({ allow: ["[fd00::5]"], deny: ["fd00::/8"] }, "http://[fd00::5]/");
+  check("createAllowlist: an IPv6 deny CIDR blocks a bracketed IPv6 URL host",
+        v6Deny === "ssrf-guard/on-denylist", v6Deny);
+  var v6Allow = await outcome({ allow: ["fd00::/8"] }, "http://[fd00::5]/");
+  check("createAllowlist: an IPv6 allow CIDR admits a bracketed IPv6 URL host",
+        v6Allow === "allowed", v6Allow);
+  var v6Outside = await outcome({ allow: ["fd00::/8"] }, "http://[fe00::5]/");
+  check("createAllowlist: an IPv6 address outside the allow CIDR is refused",
+        v6Outside === "ssrf-guard/not-on-allowlist", v6Outside);
+
+  // An IPv4 address has an IPv4-mapped IPv6 spelling (::ffff:10.0.0.1) and
+  // a NAT64 spelling (64:ff9b::a00:1). A deny entry written in one family
+  // blocks the address in every spelling, and an allow entry written as an
+  // IPv4-mapped CIDR admits the address it names.
+  var everyAddr = ["0.0.0.0/0", "::/0"];
+  var mappedDenyCases = [
+    { deny: ["::ffff:10.0.0.0/104"], url: "http://[::ffff:10.0.0.1]/" },
+    { deny: ["::ffff:10.0.0.0/104"], url: "http://10.0.0.1/" },
+    { deny: ["::ffff:0:0/96"],       url: "http://10.0.0.1/" },
+    { deny: ["::ffff:0:0/96"],       url: "http://[::ffff:a00:1]/" },
+    { deny: ["::/0"],                url: "http://10.0.0.1/" },
+    { deny: ["::ffff:10.0.0.1"],     url: "http://10.0.0.1/" },
+    { deny: ["10.0.0.0/8"],          url: "http://[64:ff9b::a00:1]/" },
+    { deny: ["10.0.0.0/8"],          url: "http://[64:ff9b::10.0.0.1]/" },
+    { deny: ["::ffff:10.0.0.0/104"], url: "http://[64:ff9b::a00:1]/" },
+    { deny: ["10.0.0.1"],            url: "http://[64:ff9b::a00:1]/" },
+    { deny: ["10.0.0.0/8"],          url: "http://[2002:a00:1::1]/" },
+  ];
+  for (var mi = 0; mi < mappedDenyCases.length; mi += 1) {
+    var mc = mappedDenyCases[mi];
+    var got = await outcome({ allow: everyAddr, deny: mc.deny }, mc.url);
+    check("createAllowlist: deny " + JSON.stringify(mc.deny) + " blocks " + mc.url,
+          got === "ssrf-guard/on-denylist", got);
+  }
+  var mappedAllow = await outcome({ allow: ["::ffff:10.0.0.0/104"] }, "http://10.0.0.1/");
+  check("createAllowlist: an IPv4-mapped allow CIDR admits the IPv4 address it names",
+        mappedAllow === "allowed", mappedAllow);
+  var mappedAllowBracket = await outcome({ allow: ["::ffff:10.0.0.0/104"] }, "http://[::ffff:10.0.0.1]/");
+  check("createAllowlist: an IPv4-mapped allow CIDR admits the mapped spelling",
+        mappedAllowBracket === "allowed", mappedAllowBracket);
+  // Controls: an allow entry does not widen to other families, and an
+  // unrelated deny entry does not block.
+  var v6AllowV4 = await outcome({ allow: ["::/0"] }, "http://10.0.0.1/");
+  check("createAllowlist: an IPv6 allow-all does not admit an IPv4 host",
+        v6AllowV4 === "ssrf-guard/not-on-allowlist", v6AllowV4);
+  var nat64Allow = await outcome({ allow: ["10.0.0.0/8"] }, "http://[64:ff9b::a00:1]/");
+  check("createAllowlist: an IPv4 allow CIDR does not admit a NAT64 host",
+        nat64Allow === "ssrf-guard/not-on-allowlist", nat64Allow);
+  var otherDeny = await outcome({ allow: everyAddr, deny: ["::ffff:10.0.0.0/104", "10.0.0.0/8"] },
+    "http://[64:ff9b::b00:1]/");
+  check("createAllowlist: a NAT64 host outside the IPv4 deny CIDR is not blocked by it",
+        otherDeny !== "ssrf-guard/on-denylist", otherDeny);
+  // An IPv6 deny CIDR that contains ::ffff:0:0/96 denies every IPv4 host.
+  var reservedV6Deny = await outcome({ allow: ["0.0.0.0/0"], deny: ["::/8"] }, "http://8.8.8.8/");
+  check("createAllowlist: deny ['::/8'] covers ::ffff:0:0/96 and blocks an IPv4 host",
+        reservedV6Deny === "ssrf-guard/on-denylist", reservedV6Deny);
+  var narrowV6Deny = await outcome({ allow: ["0.0.0.0/0"], deny: ["2001:db8::/32"] }, "http://8.8.8.8/");
+  check("createAllowlist: an IPv6 deny CIDR outside ::ffff:0:0/96 does not block an IPv4 host",
+        narrowV6Deny !== "ssrf-guard/on-denylist", narrowV6Deny);
+}
+
+// A deny entry applies to the addresses a host name resolves to, not only to
+// a literal address in the URL. Without that, allow ["localhost"] with deny
+// ["127.0.0.0/8", "::1/128"] reached loopback.
+async function _testCreateAllowlistDenyAppliesToResolvedAddresses() {
+  async function outcome(list, url) {
+    try { await b.ssrfGuard.createAllowlist(list).assert(url); return "allowed"; }
+    catch (e) { return e.code + (e.ip ? " " + e.ip : ""); }
+  }
+  var loopbackDenies = [
+    ["127.0.0.0/8", "::1/128"],
+    ["::ffff:127.0.0.0/104", "::1"],
+    ["::ffff:0:0/96", "::1/128"],
+  ];
+  for (var i = 0; i < loopbackDenies.length; i += 1) {
+    var got = await outcome({ allow: ["localhost"], deny: loopbackDenies[i] }, "http://localhost:8080/");
+    check("createAllowlist: deny " + JSON.stringify(loopbackDenies[i]) +
+          " blocks a host name that resolves into it",
+          got.indexOf("ssrf-guard/on-denylist ") === 0, got);
+  }
+  var unrelated = await outcome({ allow: ["localhost"], deny: ["10.0.0.0/8", "fd00::/8"] },
+    "http://localhost:8080/");
+  check("createAllowlist: a deny CIDR the resolved addresses are outside does not block",
+        unrelated === "allowed", unrelated);
+}
+
+// Entries are checked when the allowlist is built. A malformed deny entry
+// used to match nothing, so the denylist failed open, and a non-string entry
+// threw a TypeError from every assert() call.
+function _testCreateAllowlistRefusesMalformedEntries() {
+  function buildCode(opts) {
+    try { b.ssrfGuard.createAllowlist(opts); return "built"; }
+    catch (e) { return e.code || e.message; }
+  }
+  var bad = [
+    "10.0.0.0/33", "10.0.0/8", "010.0.0.0/8", "10.0.0.0/-1", " 10.0.0.0/8", "10.0.0.0/8 ",
+    "10.0.0.0/08", "10.0.0.0/", "/8", "10.0.0.0/8/8", "fd00::/129", "[fd00::]/8", "fd00::/1e2",
+    "", "10.0.0", "010.0.0.1", " evil.example.com", "api.example.com:443", "user@evil.example.com",
+    "evil.example.com/path", "bücher.example", 123, null, {},
+  ];
+  for (var i = 0; i < bad.length; i += 1) {
+    var label = JSON.stringify(bad[i]);
+    var denyGot = buildCode({ allow: ["0.0.0.0/0"], deny: [bad[i]] });
+    check("createAllowlist: deny entry " + label + " is refused at create time",
+          denyGot === "ssrf-guard/bad-entry", denyGot);
+    var allowGot = buildCode({ allow: [bad[i]] });
+    check("createAllowlist: allow entry " + label + " is refused at create time",
+          allowGot === "ssrf-guard/bad-entry", allowGot);
+  }
+  var notArray = buildCode({ allow: ["0.0.0.0/0"], deny: "10.0.0.0/8" });
+  check("createAllowlist: a deny value that is not an array is refused",
+        notArray === "ssrf-guard/bad-entry", notArray);
+  var allowNotArray = buildCode({ allow: "10.0.0.0/8" });
+  check("createAllowlist: an allow value that is not an array is refused",
+        allowNotArray === "ssrf-guard/bad-entry", allowNotArray);
+  var unknownKey = buildCode({ allow: ["0.0.0.0/0"], denied: ["10.0.0.0/8"] });
+  check("createAllowlist: an unknown option is refused",
+        unknownKey !== "built", unknownKey);
+  var good = [
+    "10.0.0.1/8", "0.0.0.0/0", "::/0", "fd00::/8", "::ffff:10.0.0.0/104", "10.0.0.1",
+    "::ffff:10.0.0.1", "fd00::5", "[fd00::5]", "API.Partner.Example.com.", "xn--bcher-kva.example",
+    "localhost",
+  ];
+  for (var g = 0; g < good.length; g += 1) {
+    var built = buildCode({ allow: [good[g]], deny: [good[g]] });
+    check("createAllowlist: entry " + JSON.stringify(good[g]) + " is accepted", built === "built", built);
+  }
 }
 
 // checkUrl built every refusal as `new ErrorClass(message, code, ctx)`, which
@@ -438,9 +594,43 @@ async function _testRefusalCarriesTheCodeForAnyErrorClass() {
     malformed ? JSON.stringify(String(malformed.message)).slice(0, 70) : "no throw");
 }
 
+// An IPv6 address with a dotted IPv4 tail and a zone id parsed the zone into
+// the IPv4 tail, so ::ffff:10.0.0.1%eth0 canonicalized to 0.0.0.0 and
+// 2001:db8::10.0.0.1%1 to 2001:db8::. A peer list then compared the wrong
+// address: deniedCidrs 10.0.0.0/8 missed it and an exact 0.0.0.0 matched it.
+function _testAZoneIdDoesNotChangeTheAddress() {
+  var cases = [
+    ["::ffff:10.0.0.1%eth0",  "10.0.0.1"],
+    ["2001:db8::10.0.0.1%1",  "2001:db8::a00:1"],
+    ["::ffff:a00:1%eth0",     "10.0.0.1"],
+    ["fe80::1%eth0",          "fe80::1"],
+  ];
+  for (var i = 0; i < cases.length; i++) {
+    var got = ssrf.canonicalizeHost(cases[i][0]);
+    check("canonicalizeHost(" + cases[i][0] + ") is " + cases[i][1], got === cases[i][1], got);
+  }
+  check("classify(::ffff:10.0.0.1%eth0) is private",
+    ssrf.classify("::ffff:10.0.0.1%eth0") === "private", ssrf.classify("::ffff:10.0.0.1%eth0"));
+  check("a 10.0.0.0/8 list matches ::ffff:10.0.0.1%eth0",
+    ssrf._listMatches(["10.0.0.0/8"], "::ffff:10.0.0.1%eth0", true) === true);
+  check("::ffff:10.0.0.1%eth0 is not the address 0.0.0.0",
+    ssrf._sameAddress("::ffff:10.0.0.1%eth0", "0.0.0.0") === false);
+  check("fe80::1%eth0 and fe80::1%eth1 are different addresses",
+    ssrf._sameAddress("fe80::1%eth0", "fe80::1%eth1") === false);
+  check("fe80::1%eth0 is the same address as FE80::0:1%eth0",
+    ssrf._sameAddress("fe80::1%eth0", "FE80::0:1%eth0") === true);
+  check("fe80::1%eth0 is the same address as [fe80::1%eth0]",
+    ssrf._sameAddress("fe80::1%eth0", "[fe80::1%eth0]") === true);
+  check("the control: a zone-free mapped peer is its IPv4 address",
+    ssrf._sameAddress("::ffff:10.0.0.1", "10.0.0.1") === true);
+}
+
 module.exports = { run: async function () {
   await run();
+  _testAZoneIdDoesNotChangeTheAddress();
   await _testCreateAllowlist();
+  await _testCreateAllowlistDenyAppliesToResolvedAddresses();
+  _testCreateAllowlistRefusesMalformedEntries();
   await _testRefusalCarriesTheCodeForAnyErrorClass();
 } };
 

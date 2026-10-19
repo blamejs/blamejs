@@ -161,8 +161,62 @@ function testRrHeaderTamper() {
   check("tampered TSIG TTL is rejected", code(function () { tsig.verify(tt, { keys: { "test.key.": { secret: SECRET } }, now: V1.time }); }) === "tsig/bad-rr");
 }
 
+// An RFC 8945 4.3.3 signer written out by hand, independent of tsig.sign, so a
+// wrong algorithm name in the module cannot also be the expected one.
+function _nameWire(name) {
+  var parts = String(name).replace(/\.$/, "").split(".");
+  var bufs = parts.map(function (l) { return Buffer.concat([Buffer.from([l.length]), Buffer.from(l, "ascii")]); });
+  bufs.push(Buffer.from([0]));
+  return Buffer.concat(bufs);
+}
+function _u16(n) { var x = Buffer.alloc(2); x.writeUInt16BE(n, 0); return x; }
+function _u32(n) { var x = Buffer.alloc(4); x.writeUInt32BE(n, 0); return x; }
+function _handSign(unsigned, keyName, algName, hash, time, fudge) {
+  var t48 = Buffer.alloc(6); t48.writeUIntBE(time, 0, 6);
+  var vars = Buffer.concat([_nameWire(keyName.toLowerCase()), _u16(255), _u32(0),
+    _nameWire(algName.toLowerCase()), t48, _u16(fudge), _u16(0), _u16(0)]);
+  var mac = require("node:crypto").createHmac(hash, Buffer.from(SECRET, "base64"))
+    .update(Buffer.concat([unsigned, vars])).digest();
+  var rdata = Buffer.concat([_nameWire(algName), t48, _u16(fudge), _u16(mac.length), mac,
+    unsigned.slice(0, 2), _u16(0), _u16(0)]);
+  var rr = Buffer.concat([_nameWire(keyName), _u16(250), _u16(255), _u32(0), _u16(rdata.length), rdata]);
+  var msg = Buffer.concat([unsigned, rr]);
+  msg.writeUInt16BE(msg.readUInt16BE(10) + 1, 10);
+  return msg;
+}
+
+// The IANA TSIG Algorithm Names registry lists HMAC-MD5 as
+// HMAC-MD5.SIG-ALG.REG.INT (RFC 8945 6); there is no bare "hmac-md5".
+function testHmacMd5UsesTheRegisteredName() {
+  check("hand signer reproduces the dnspython SHA-256 vector (control)",
+    _handSign(V1.unsigned, "test.key.", "hmac-sha256", "sha256", V1.time, 300).equals(V1.signed));
+
+  var s = tsig.sign(V1.unsigned, { keyName: KEY, secret: SECRET, algorithm: "hmac-md5",
+    allowLegacy: true, time: V1.time, fudge: 300 });
+  var expected = _handSign(V1.unsigned, "test.key.", "hmac-md5.sig-alg.reg.int", "md5", V1.time, 300);
+  check("sign 'hmac-md5' writes the registered name hmac-md5.sig-alg.reg.int.",
+    s.wire.includes(_nameWire("hmac-md5.sig-alg.reg.int")));
+  check("sign 'hmac-md5' matches an RFC 8945 HMAC-MD5 message byte-for-byte", s.wire.equals(expected));
+
+  var peer = _handSign(V1.unsigned, "test.key.", "HMAC-MD5.SIG-ALG.REG.INT", "md5", V1.time, 300);
+  var r1 = tsig.verify(peer, { keyName: KEY, secret: SECRET, allowLegacy: true, now: V1.time });
+  check("verify accepts a peer's HMAC-MD5.SIG-ALG.REG.INT message", r1.valid === true && r1.macValid === true);
+  var r2 = tsig.verify(peer, { keyName: KEY, secret: SECRET, algorithm: "hmac-md5", allowLegacy: true, now: V1.time });
+  check("verify with key algorithm 'hmac-md5' accepts the registered name", r2.valid === true);
+  var r3 = tsig.verify(s.wire, { keyName: KEY, secret: SECRET, algorithm: "hmac-md5", allowLegacy: true, now: V1.time });
+  check("sign 'hmac-md5' then verify 'hmac-md5' round-trips", r3.valid === true);
+  check("the registered name is still legacy-gated",
+    code(function () {
+      tsig.sign(V1.unsigned, { keyName: KEY, secret: SECRET, algorithm: "HMAC-MD5.SIG-ALG.REG.INT" });
+    }) === "tsig/legacy-algorithm");
+  var bare = _handSign(V1.unsigned, "test.key.", "hmac-md5", "md5", V1.time, 300);
+  var r4 = tsig.verify(bare, { keyName: KEY, secret: SECRET, allowLegacy: true, now: V1.time });
+  check("a message naming the unregistered 'hmac-md5.' is not accepted", r4.valid === false);
+}
+
 async function run() {
   testSurface();
+  testHmacMd5UsesTheRegisteredName();
   testSignMatchesDnspython();
   testVerifyAcceptsDnspython();
   testVerifyRejects();

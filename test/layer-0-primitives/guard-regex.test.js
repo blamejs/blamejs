@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) blamejs contributors
 "use strict";
+// SMOKE_RUN_SOLO: growth checks here compare wall-clock time across input sizes, which a CPU shared with the smoke pool distorts.
 /**
  * b.guardRegex — ReDoS screening for operator-supplied patterns. Covers the
  * nested-quantifier detector's true positives AND the linear shapes it must NOT
@@ -36,12 +37,31 @@ function testLinearShapesAccepted() {
     "^(a+)?$",                     // optional quantified group — repeats 0..1
     "(?:[-+][0-9A-Za-z.-]+)?",     // optional group with inner quantifier (#429)
     "(?:[-+][0-9A-Za-z.-]{1,64})?",
-    "v\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?-linux-x64",
+    "^v\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?-linux-x64$",
   ];
   linear.forEach(function (src) {
     check("assertSafe accepts linear " + JSON.stringify(src), assertSafeAccepts(src));
     check("sanitize accepts linear " + JSON.stringify(src), sanitizeAccepts(src));
   });
+  // Unanchored, the same pattern is retried from every `v` in a run of
+  // "v1.1.1-", and the optional group's run walks the rest of the subject
+  // from each of them. It is not a nested quantifier, so the permissive
+  // profile accepts it, and the unanchored-scan check refuses it.
+  var unanchored = "v\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?-linux-x64";
+  var permissive = null;
+  try { b.guardRegex.sanitize(unanchored, { profile: "permissive" }); }
+  catch (e) { permissive = e.code; }
+  check("the unanchored release-asset pattern is not a nested quantifier (got " + permissive + ")",
+        permissive === null);
+  var strict = null;
+  try { b.guardRegex.assertSafe(new RegExp(unanchored), "x"); }
+  catch (e) { strict = e.code; }
+  check("the unanchored release-asset pattern is refused as an unanchored scan (got " + strict + ")",
+        strict === "regex.unanchored-scan");
+  check("control: the unanchored release-asset pattern is superlinear as a search",
+        helpers.looksSuperlinear(function (n) {
+          new RegExp(unanchored).test("v1.1.1-".repeat(Math.floor(n / 7)));
+        }, { small: 8000, large: 32000, threshold: 8, label: "control: release-asset search" }) === true);
 }
 
 // ---- genuine nested-UNBOUNDED shapes must still be REFUSED ----
@@ -335,7 +355,10 @@ function testRegExpFlagsReachTheAnalysis() {
     catch (_e) { return false; }
   };
   check("a declared i flag refuses the overlap on a raw string", accWith("^(a|A)+$", "i") === false);
-  check("the v flag declines the suppression outright", accWith("^(?:b|c)+$", "v") === false);
+  check("a declared v flag is judged as u: a disjoint alternation is proven",
+        accWith("^(?:b|c)+$", "v") === accWith("^(?:b|c)+$", "u") && accWith("^(?:b|c)+$", "v"));
+  check("a declared v flag is judged as u: an overlap is refused",
+        accWith("^(a|a)+$", "v") === false && accWith("^\\s*\\s*!", "v") === false);
 }
 function assertSafeAccepts2(re) {
   try { b.guardRegex.assertSafe(re, "x"); return true; } catch (_e) { return false; }
@@ -484,14 +507,20 @@ function testEverySpellingOfAmbiguityIsRefused() {
     "^(?:\\d{1,3}\\.){3}\\d{1,3}:\\d+$",           // with a port
     "^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$",      // mac address
     "^(?:GET|POST|PUT|DELETE)$",
-    "^\\w+\\s*=\\s*.*$",                           // a config line
-    "^\\s*[-*+]\\s+.*$",                           // a list item
+    "^\\w+\\s*=\\s*(?:\\S.*)?$",                   // a config line
+    "^\\s*[-*+]\\s+\\S.*$",                        // a list item
     "^a*b*c*d*!$",                                 // adjacent, over characters they do not share
     "^v\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?-linux-x64$",
     "^(?:b|c)+(?:d|e)+$",                          // neither group can start on the other's characters
   ];
   ordinary.forEach(function (src) {
     check("accepts " + JSON.stringify(src), assertSafeAccepts(src));
+  });
+  // The same two lines written with `\s*.*` and `\s+.*` split the whitespace
+  // between the two positions every way the engine can, and "k=" + 8,000
+  // spaces + "x\n!" costs 19ms, four times more for each doubling.
+  ["^\\w+\\s*=\\s*.*$", "^\\s*[-*+]\\s+.*$"].forEach(function (src) {
+    check("refuses the quadratic spelling " + JSON.stringify(src), assertSafeAccepts(src) === false);
   });
 
   // A lookaround consumes nothing, so it takes no characters from what follows
@@ -535,12 +564,15 @@ function testEverySpellingOfAmbiguityIsRefused() {
   // Two positions repeating over characters they share, with nothing after them
   // but an anchor. The engine still comes back to try another split whenever
   // the match can fail, and it can fail on any character neither position
-  // accepts — which is the difference between these and the linear
-  // `^\s*.*$`, where between them they accept everything.
+  // accepts. Between them `\s` and `.` accept every character, but not in
+  // order: `.` stops at a line terminator that only `\s` takes, so
+  // `^\s*.*$` against spaces, `x` and a newline tries every split of the
+  // spaces and costs 1.6ms at 2,000 and 20ms at 8,000.
   var anchored = [
     ["^a*a*$", false], ["^a*a*a*$", false], ["^[a-z]*[a-z0-9]*$", false],
     ["^(?:a*)(?:a*)$", false],
-    ["^\\s*.*$", true], ["^\\w+\\s*=\\s*.*$", true],
+    ["^\\s*.*$", false], ["^\\w+\\s*=\\s*.*$", false],
+    ["^\\s*[\\s\\S]*$", true], ["^\\w+\\s*=\\s*\\S.*$", true],
     ["^a*b*c*d*!$", true],
   ];
   anchored.forEach(function (pair) {
@@ -586,23 +618,23 @@ function testEverySpellingOfAmbiguityIsRefused() {
 
   // An assertion consumes nothing but can still refuse, and a refusal is what
   // sends the engine back for another split. Only a start-or-end anchor after a
-  // pair that covers every character is safe, and only because the greedy first
-  // attempt already reached the end.
+  // pair one of whose terms takes every character is safe, and only because the
+  // greedy first attempt already reached the end.
   check("a never-matching lookahead after the pair is a failure point",
-        assertSafeAccepts("^\\s*.*(?!)$") === false);
+        assertSafeAccepts("^\\s*[\\s\\S]*(?!)$") === false);
   check("so is a word boundary",
-        assertSafeAccepts("^\\s*.*\\b$") === false);
+        assertSafeAccepts("^\\s*[\\s\\S]*\\b$") === false);
   // A group hides what comes after it: the pair inside sees only the rest of
   // its own sequence, so the `!` beyond the closing parenthesis went unnoticed.
   check("a failure point outside the group still reaches the pair inside it",
-        assertSafeAccepts("^(?:\\s*.*)!$") === false);
+        assertSafeAccepts("^(?:\\s*[\\s\\S]*)!$") === false);
   check("and the same group with nothing fallible after it is still linear",
-        assertSafeAccepts("^(?:\\s*.*)$"));
+        assertSafeAccepts("^(?:\\s*[\\s\\S]*)$"));
 
   check("a trailing START anchor is a failure point, unlike an end anchor",
-        assertSafeAccepts("^\\s*.*^$") === false);
+        assertSafeAccepts("^\\s*[\\s\\S]*^$") === false);
   check("the same pair with only an end anchor is still linear",
-        assertSafeAccepts("^\\s*.*$"));
+        assertSafeAccepts("^\\s*[\\s\\S]*$"));
 
   // The engine decides which characters are one under `i`. A lower/upper pass
   // does not compute the fold class: the Kelvin sign folds to `k`, but `k`
@@ -1318,7 +1350,533 @@ async function testOperatorRegexSitesScreenAndTypeCheck() {
         JSON.stringify(b.structuredFields.parseTagList("a=1; b=2", { sep: /;\s*/ })));
 }
 
+// Two adjacent positions that share a character can be split over a run of it
+// in every possible way. That costs nothing when the rest of the match cannot
+// fail, which is the case only when ONE term from the pair onward takes every
+// character by itself. Taking every character between them is not the same:
+// in `\s+(.+)\s*$` the `.` stops at a newline that only the `\s` takes, the
+// trailing `\s*` stops at the `!` after it, and "a" + spaces + "x\n!" costs
+// 0.8s at 2,000 spaces and 6s at 4,000.
+function testTheRestOfTheMatchMustBeTakenByOneTerm() {
+  function verdict(re) {
+    try { b.guardRegex.assertSafe(re, "x"); return null; } catch (e) { return e.code; }
+  }
+  var refused = [
+    /^a\s+(.+)\s*$/,
+    /^a(?:\s+(.+))?\s*$/,
+    /^\s*([a-z]+)\s+eq(?:\s+(.+))?\s*$/,
+    /^\s*([a-zA-Z][a-zA-Z0-9._-]*)\s+(eq|ne|co|sw|ew|pr|gt|ge|lt|le)(?:\s+(.+))?\s*$/,
+    /^a\s*.*\s*$/,
+    /^a\s+(.+)$/,
+    /^(\S+)\s+\(UNCHANGEDSINCE\s+(\d+)\)\s+(.+)$/i,
+    /^AUTH\s+([A-Za-z0-9_-]{1,32})(?:\s+(.*))?$/i,
+    // A lookbehind body runs right to left: the `a` to the left of the pair
+    // is matched after it, whatever follows the lookbehind.
+    /^[\s\S]*(?<=a\s*\s*)[\s\S]*$/,
+    /^[\s\S]*(?<!a\s*\s*)[\s\S]*$/,
+    // A lazy term that matches everything gives the run away first, so it
+    // does not absorb the nullable term after it.
+    /^\s*([\s\S]*?)\s*$/,
+    /^[\s\S]*?\s*$/,
+    /^(.*?)\s*$/s,
+    /^a[\s\S]*?\s*$/,
+    // The engine backtracks through the first branch before it tries the
+    // one that takes everything.
+    /^(?:\s*|[\s\S]*)\s*$/,
+  ];
+  refused.forEach(function (re) {
+    var code = verdict(re);
+    check("refuses " + String(re) + " (got " + code + ")", code === "regex.nested-quantifier");
+  });
+  var lookbehindCubic = helpers.looksSuperlinear(function (n) {
+    /^[\s\S]*(?<=a\s*\s*)[\s\S]*$/.test(" ".repeat(n) + "!");
+  }, { small: 200, large: 800, threshold: 6, label: "control: a pair inside a lookbehind is superlinear" });
+  check("control: a pair inside a lookbehind really is superlinear", lookbehindCubic === true);
+  var lazyQuadratic = helpers.looksSuperlinear(function (n) {
+    /^\s*([\s\S]*?)\s*$/.test("x" + " ".repeat(n) + "!");
+  }, { small: 4000, large: 16000, threshold: 6, label: "control: a lazy absorbing term is superlinear" });
+  check("control: a lazy term followed by a nullable pair really is superlinear", lazyQuadratic === true);
+
+  var accepted = [
+    /^a\s+[\s\S]+$/,
+    /^a\s+\S.*$/,
+    /^a\s+[\s\S]+\s*$/,
+    /^a\s+[\s\S]*\s*$/,
+    /^a\s+([\s\S]*)$/,
+    /^a\s+([^]*)$/,
+    /^a\s+(.+)\s*$/s,
+    /^a\s+([\d\D]+)$/,
+    /^a(?:\s+(.+))?[\s\S]*$/,
+    /^([a-zA-Z][a-zA-Z0-9._-]*)\s+(eq|ne|co|sw|ew|pr|gt|ge|lt|le)(?:\s+(\S.*))?$/i,
+    /^(\S+)\s+\(UNCHANGEDSINCE\s+(\d+)\)\s+(\S.*)$/i,
+    /^AUTH\s+([A-Za-z0-9_-]{1,32})(?:\s+(\S.*)?)?$/i,
+    /^a\s*[\s\S]*?$/,
+    /^(?=a\s*[\s\S]*)[\s\S]*$/,
+    /^(?:[\s\S]*|\s*)\s*$/,
+  ];
+  accepted.forEach(function (re) {
+    var code = verdict(re);
+    check("accepts " + String(re) + " (got " + code + ")", code === null);
+  });
+
+  // What each accepted pattern costs on the input that breaks the refused
+  // ones. A verdict of "safe" has to mean the pattern really runs linearly.
+  accepted.forEach(function (re) {
+    var plain = new RegExp(re.source, re.flags.replace(/[gy]/g, ""));
+    var slow = helpers.looksSuperlinear(function (n) {
+      plain.test("a" + " ".repeat(n) + "x\n!");
+      plain.test("a" + " ".repeat(n) + "x\u2028!");
+    }, { small: 2000, large: 8000, threshold: 6, label: "accepted " + String(re) });
+    check("an accepted pattern runs linearly on a split whitespace run " + String(re), slow === false);
+  });
+  var cubic = helpers.looksSuperlinear(function (n) {
+    /^a\s+(.+)\s*$/.test("a" + " ".repeat(n) + "x\n!");
+  }, { small: 256, large: 1024, threshold: 6, label: "control: the refused shape is superlinear" });
+  check("control: the refused shape really is superlinear on the same input", cubic === true);
+}
+
+// Runs of space, tab, newline and CRLF behind the prefixes the patterns below
+// start with, each followed by an ending that one term of a pair takes and the
+// other does not.
+function hostileWhitespaceSubjects(n) {
+  var out = [];
+  ["", "a", "key:", "Bearer", "x"].forEach(function (prefix) {
+    [" ", "\t", "\n", "\r\n"].forEach(function (run) {
+      ["", "\n", "!", "\n!", "x\n\n", "x\n!"].forEach(function (ending) {
+        out.push(prefix + run.repeat(Math.floor(n / run.length)) + ending);
+      });
+    });
+  });
+  return out;
+}
+
+function runsLinearly(re, label) {
+  var plain = new RegExp(re.source, re.flags.replace(/[gy]/g, ""));
+  return helpers.looksSuperlinear(function (n) {
+    var subjects = hostileWhitespaceSubjects(n);
+    for (var i = 0; i < subjects.length; i += 1) plain.test(subjects[i]);
+  }, { small: 4000, large: 16000, threshold: 8, label: label }) === false;
+}
+
+// A lookaround consumes nothing, but its body runs again at every position the
+// repetition before it gives back. In `^(.*?)(?=\s*$)` the `\s*` in the body
+// scans the rest of a whitespace run once per split of it, and "a" + 64 KiB of
+// spaces + "!" costs 1.7s, the same as the refused `^(.*?)\s*$`.
+function testALookaroundAfterARepetitionIsTheSecondHalfOfAPair() {
+  function verdict(re) {
+    try { b.guardRegex.assertSafe(re, "x"); return null; } catch (e) { return e.code; }
+  }
+  var refused = [
+    /^(.*?)(?=\s*$)/,
+    /^([\s\S]*?)(?=\s*$)/,
+    /^\S.*(?=\s*$)/,
+    /^(?:[^=]*)(?=\s*=)/,
+    /^(.*)(?=\s*)$/,
+    /^(.*?)(?=\s*?$)/,
+    /^(.*?)(?:(?=\s*$))/,
+    /^\s*(?=\s*)$/,
+    /^(.*?)(?!\s*$)/,
+    /^(.*)(?<=\s*)$/,
+    /^(.*?)(?<=\s*)$/,
+    /^(.*?)(?=\s\s*$)/,
+    /^(.*?)(?= \s*$)/,
+    /^(.*?)(?=\s{2}\s*$)/,
+    /^(.*?)(?=(?:\s)\s*$)/,
+    /^(.*?)(?=(?=\s*$))/,
+    /^(.*?)(?=(?:(?=\s*$)))/,
+    /^[^=]*(?=  *=)/,
+    /^[^=]*(?=[ ] *=)/,
+    /^(.*?)(?! \s*$)/,
+    /^(.*?)(?!\s\s*$)/,
+    /^(.*?)(?!(?=\s*$))/,
+    /^\S.*(?= \s*$)/,
+    /^\S.*(?=\s\s*$)/,
+  ];
+  refused.forEach(function (re) {
+    var code = verdict(re);
+    check("refuses " + String(re) + " (got " + code + ")", code === "regex.nested-quantifier");
+  });
+  var accepted = [
+    /^(.*?)(?=\s*)/,
+    /^(.*?)(?=\s*?)/,
+    /^(.*)(?=\s*)/,
+    /^[\s\S]*(?=\s*)$/,
+    /^\w+(?=\s*=)/,
+    /^key:(?=\s*\S)\s*(\S.*)$/,
+    /^(?=a\s*[\s\S]*)[\s\S]*$/,
+  ];
+  accepted.forEach(function (re) {
+    var code = verdict(re);
+    check("accepts " + String(re) + " (got " + code + ")", code === null);
+    check("an accepted lookaround pattern runs linearly " + String(re), runsLinearly(re, "accepted " + String(re)));
+  });
+  check("control: a lookahead scanning the run after a lazy repetition is superlinear",
+        helpers.looksSuperlinear(function (n) {
+          /^(.*?)(?=\s*$)/.test("a" + " ".repeat(n) + "!");
+        }, { small: 4000, large: 16000, threshold: 8, label: "control: lookahead pair" }) === true);
+  check("control: a lookbehind scanning back over the run is superlinear",
+        helpers.looksSuperlinear(function (n) {
+          /^(.*)(?<=\s*)$/.test("a" + "\t".repeat(n) + "\n");
+        }, { small: 4000, large: 16000, threshold: 8, label: "control: lookbehind pair" }) === true);
+  check("control: a lookahead body that starts with a character of the run is superlinear",
+        helpers.looksSuperlinear(function (n) {
+          /^(.*?)(?=\s\s*$)/.test("a" + " ".repeat(n) + "!");
+        }, { small: 4000, large: 16000, threshold: 8, label: "control: crossed body character" }) === true);
+  check("control: a lookahead nested in a lookahead is superlinear",
+        helpers.looksSuperlinear(function (n) {
+          /^(.*?)(?=(?=\s*$))/.test("a" + " ".repeat(n) + "!");
+        }, { small: 4000, large: 16000, threshold: 8, label: "control: nested lookahead" }) === true);
+}
+
+// Without an end anchor the match ends as soon as the second term of a pair
+// has matched, so the pair costs one pass over the run. JSON Schema `pattern`,
+// JSONPath `search()`, bot-guard agents, skipPaths, ignorePaths, flag
+// targeting and safeSchema `regex()` run the pattern as written, and b.forms
+// runs it as `^(?:pattern)$` without the `m` flag, so each screens what it runs.
+async function testTheEndOfAPatternIsJudgedTheWayItsConsumerRunsIt() {
+  function verdict(re) {
+    try { b.guardRegex.assertSafe(re, "x"); return null; } catch (e) { return e.code; }
+  }
+  async function codeOf(fn) {
+    try { await fn(); return null; }
+    catch (e) { return (e && e.code) || ("threw without a code: " + (e && e.message)); }
+  }
+  var accepted = [
+    /^Bearer\s+(.+)/,
+    /^[A-Za-z]+:\s*.*/,
+    /^key:\s*(.*)/,
+    /^key:\s+(.+)/,
+    /^\s*(.*)/,
+    /^curl\/\S*\s*.*/,
+    /^\/health\/?.*/,
+    /a\s+(.+)\s*/,
+    /^key:\s*(.*)$/m,
+    /^key:\s+(.+)$/m,
+    /^Bearer\s+(.+)$/m,
+    /^\w+\s*=\s*.*$/m,
+    /^key:\s*(.*)\s*$/m,
+    /^key:(.*)\s*$/m,
+    /^a\s+(.+)\s*$/m,
+  ];
+  accepted.forEach(function (re) {
+    var code = verdict(re);
+    check("accepts " + String(re) + " (got " + code + ")", code === null);
+    check("an accepted pattern runs linearly as written " + String(re), runsLinearly(re, "as written " + String(re)));
+  });
+  var refused = [
+    /^\w+\s*=\s*.*$/,
+    /^key:\s+(.+)$/,
+    /^a\s*(\s*!)+/,
+    /^(.*?)\s*$/m,
+    /^key:(.*?)\s*$/m,
+  ];
+  refused.forEach(function (re) {
+    var code = verdict(re);
+    check("refuses " + String(re) + " (got " + code + ")", code === "regex.nested-quantifier");
+  });
+  check("control: a second term that scans before it can fail is superlinear without an end anchor",
+        helpers.looksSuperlinear(function (n) {
+          /^a\s*(\s*!)+/.test("a" + "\t".repeat(n) + "\n");
+        }, { small: 4000, large: 16000, threshold: 8, label: "control: slow second term" }) === true);
+  check("control: a lazy line run before a nullable term is superlinear under m",
+        helpers.looksSuperlinear(function (n) {
+          /^(.*?)\s*$/m.test("a" + " ".repeat(n) + "!");
+        }, { small: 4000, large: 16000, threshold: 8, label: "control: lazy line run under m" }) === true);
+
+  var logger = { info: function () {}, warn: function () {}, error: function () {}, debug: function () {} };
+  var tracer = b.observability.tracer.create({ service: "test", onEnd: function () {} });
+  var got;
+  got = await codeOf(function () {
+    if (b.jsonSchema.isValid({ type: "string", pattern: "^Bearer\\s+(.+)" }, "Bearer abc") !== true) throw new Error("no match");
+  });
+  check("b.jsonSchema runs pattern ^Bearer\\s+(.+) as a search (got " + got + ")", got === null);
+  got = await codeOf(function () {
+    if (b.jsonSchema.isValid({ type: "string", pattern: "^[A-Za-z]+:\\s*.*" }, "key: value") !== true) throw new Error("no match");
+  });
+  check("b.jsonSchema runs pattern ^[A-Za-z]+:\\s*.* as a search (got " + got + ")", got === null);
+  got = await codeOf(function () {
+    var hits = b.jsonPath.query({ a: [{ h: "Bearer x" }, { h: "Basic y" }] }, "$.a[?search(@.h, '^Bearer\\\\s+.+')]");
+    if (JSON.stringify(hits) !== JSON.stringify([{ h: "Bearer x" }])) throw new Error("wrong hits " + JSON.stringify(hits));
+  });
+  check("b.jsonPath search() runs ^Bearer\\s+.+ (got " + got + ")", got === null);
+  got = await codeOf(function () { b.middleware.botGuard({ blockedAgents: [/^curl\/\S*\s*.*/] }); });
+  check("b.middleware.botGuard accepts blockedAgents /^curl\\/\\S*\\s*.*/ (got " + got + ")", got === null);
+  got = await codeOf(function () { b.middleware.requestLog({ logger: logger, skipPaths: [/^\/health\/?.*/] }); });
+  check("b.middleware.requestLog accepts skipPaths /^\\/health\\/?.*/ (got " + got + ")", got === null);
+  got = await codeOf(function () { b.middleware.spanHttpServer({ tracer: tracer, ignorePaths: [/^\/health\/?.*/] }); });
+  check("b.middleware.spanHttpServer accepts ignorePaths /^\\/health\\/?.*/ (got " + got + ")", got === null);
+  got = await codeOf(function () {
+    var rules = b.flag.targeting.validateRules([
+      { variant: "on", conditions: [{ attribute: "plan", op: "regex", value: "^beta\\s*.*" }] },
+    ]);
+    if (b.flag.targeting.evaluateRules(rules, { plan: "beta 2" }, "off").variant !== "on") throw new Error("no match");
+  });
+  check("b.flag accepts regex targeting ^beta\\s*.* (got " + got + ")", got === null);
+  got = await codeOf(function () { b.safeSchema.string().regex(/^Bearer\s+(.+)/); });
+  check("b.safeSchema string().regex() accepts /^Bearer\\s+(.+)/ (got " + got + ")", got === null);
+
+  // b.forms anchors the pattern at both ends and drops `m`, so it must refuse
+  // what is quadratic in that form even when the pattern as written is not.
+  function formsCode(re) {
+    try { b.forms.validate({ fields: [{ type: "text", name: "p", pattern: re }] }, { p: "a b" }); return null; }
+    catch (e) { return (e && e.code) || (e && e.message) || "threw"; }
+  }
+  [/a\s+(.+)\s*/, /^key:\s+(.+)$/m, /^\w+\s*=\s*.*/, /^(.*?)(?=\s*)/].forEach(function (re) {
+    var code = formsCode(re);
+    check("b.forms refuses " + String(re) + ", quadratic as ^(?:...)$ (got " + code + ")", code !== null);
+  });
+  check("control: /a\\s+(.+)\\s*/ is superlinear as b.forms runs it",
+        helpers.looksSuperlinear(function (n) {
+          /^(?:a\s+(.+)\s*)$/.test("a" + " ".repeat(n) + "x\n!");
+        }, { small: 1000, large: 4000, threshold: 8, label: "control: forms wrapping" }) === true);
+  [/^[a-z]+$/, /^\S+(?:\s+\S+)*$/, /^\w+\s*=\s*\S.*$/].forEach(function (re) {
+    var code = formsCode(re);
+    check("b.forms accepts " + String(re) + " (got " + code + ")", code === null);
+  });
+}
+
+// A character both halves of a pair can match does not pin the split between
+// them: in `^.+@.+$` every `@` in a run of them is a place the first `.+` can
+// stop, and the second `.+` then scans to the newline before `$` fails, so
+// 20,000 `@` and a newline cost 100ms. An assertion between the halves stops
+// the first from taking the whole subject: in `^[\s\S]*\b.*$` the `\b` fails
+// at the end of a subject that ends in a space.
+function testAPairIsJudgedAcrossWhatLiesBetweenItsHalves() {
+  function verdict(re) {
+    try { b.guardRegex.assertSafe(re, "x"); return null; } catch (e) { return e.code; }
+  }
+  function linearOnRuns(re) {
+    var plain = new RegExp(re.source, re.flags.replace(/[gy]/g, ""));
+    return helpers.looksSuperlinear(function (n) {
+      ["@", ",", "a", ".", "x", " ", "\n"].forEach(function (c) {
+        ["", "\n", "!", " ", "\n!"].forEach(function (ending) { plain.test(c.repeat(n) + ending); });
+      });
+    }, { small: 4000, large: 16000, threshold: 8, label: "runs " + String(re) }) === false;
+  }
+  var refused = [
+    /^.+@.+$/,
+    /^.*a.*$/,
+    /^.*\S.*$/,
+    /^[a-z]*a[a-z]*$/,
+    /^.*,.*$/,
+    /^.+@.+\..+$/,
+    /^.*a(?=.*$)/,
+    /^[\s\S]*\b.*$/,
+    /^[\s\S]*\b(?=[\s\S]*)$/,
+    /^(?:[\s\S]*)?\b(?:[\s\S]*?a)?$/,
+  ];
+  refused.forEach(function (re) {
+    var code = verdict(re);
+    check("refuses " + String(re) + " (got " + code + ")", code === "regex.nested-quantifier");
+  });
+  var accepted = [
+    /^.*,[^,]*$/,
+    /^[^@]+@[^@]+$/,
+    /^.+@[^@]+$/,
+    /^.*\.(?:jpg|png)$/,
+    /^\w+@\w+\.\w+$/,
+    /^\s*\S\s*$/,
+    /^a*ba*$/,
+    /^[\s\S]*\b$/,
+    /^[\s\S]*,.*/,
+  ];
+  accepted.forEach(function (re) {
+    var code = verdict(re);
+    check("accepts " + String(re) + " (got " + code + ")", code === null);
+    check("an accepted pattern runs linearly on runs of one character " + String(re), linearOnRuns(re));
+  });
+  check("control: ^.+@.+$ is superlinear on a run of @",
+        helpers.looksSuperlinear(function (n) { /^.+@.+$/.test("@".repeat(n) + "\n"); },
+          { small: 4000, large: 16000, threshold: 8, label: "control: separated pair" }) === true);
+  check("control: ^[\\s\\S]*\\b.*$ is superlinear when the subject ends in a space",
+        helpers.looksSuperlinear(function (n) { /^[\s\S]*\b.*$/.test("a ".repeat(n / 2) + "\n "); },
+          { small: 4000, large: 16000, threshold: 8, label: "control: assertion between the halves" }) === true);
+}
+
+// A search retries the pattern at every position, so a pair that can fail
+// after one pass over a run costs one pass per position that reaches the run.
+// `a+(?!a)a+` fails on a run of `a` at every split, and 32,000 of them cost
+// 741ms through b.jsonSchema. A pattern whose start is pinned to one position
+// (`^` without `m`, or the `y` flag), or whose pair is reached only after a
+// character the first half cannot match, pays for the pass once.
+async function testASearchRetriesAPairThatCanFailAtEveryPosition() {
+  function verdict(re) {
+    try { b.guardRegex.assertSafe(re, "x"); return null; } catch (e) { return e.code; }
+  }
+  [
+    /a+(?!a)a+/,
+    /.*(?!a).+/,
+    /.+(?!a)(.+)/,
+    /\w+(?!\d)\w+/,
+    /^(?:a\s)*(?!a)[^@]+/m,
+    /^(?:\s+a)?(?<!\s)[^@]+/m,
+    /(?=a+(?!a)a+)/,
+    /x?\s+(.+)/,
+  ].forEach(function (re) {
+    var code = verdict(re);
+    check("refuses the search " + String(re) + " (got " + code + ")", code === "regex.nested-quantifier");
+    var permissive = null;
+    try { b.guardRegex.sanitize(re.source, { profile: "permissive", regexFlags: re.flags }); }
+    catch (e) { permissive = e.code; }
+    check("the permissive profile refuses the search " + String(re) + " (got " + permissive + ")",
+          permissive !== null);
+  });
+  [
+    /^a+(?!a)a+/,
+    /a+(?!a)a+/y,
+    /^Bearer\s+(.+)$/m,
+    /^key:\s+(.+)$/m,
+    /^ *(?!x)\S+/m,
+    /a\s+(.+)\s*/,
+    /Bearer\s+(.+)/,
+    /^\w+\s*=\s*.*$/m,
+  ].forEach(function (re) {
+    var code = verdict(re);
+    check("accepts " + String(re) + " (got " + code + ")", code === null);
+    var asRun = new RegExp(re.source, re.flags.replace(/g/g, ""));
+    function runAt0(s) { asRun.lastIndex = 0; asRun.test(s); }
+    check("an accepted search runs linearly " + String(re),
+          helpers.looksSuperlinear(function (n) {
+            hostileWhitespaceSubjects(n).forEach(runAt0);
+            ["a", "a\n", "a ", " a", "\n"].forEach(function (unit) {
+              runAt0(unit.repeat(n / unit.length));
+              runAt0(unit.repeat(n / unit.length) + "!");
+            });
+          }, { small: 4000, large: 16000, threshold: 8, label: "runs " + String(re) }) === false);
+  });
+  check("control: a+(?!a)a+ is superlinear as a search on a run of a",
+        helpers.looksSuperlinear(function (n) { /a+(?!a)a+/.test("a".repeat(n)); },
+          { small: 4000, large: 16000, threshold: 8, label: "control: search pair" }) === true);
+  check("control: ^(?:a\\s)*(?!a)[^@]+ under m is superlinear on lines of a",
+        helpers.looksSuperlinear(function (n) { /^(?:a\s)*(?!a)[^@]+/m.test("a\n".repeat(n / 2)); },
+          { small: 4000, large: 16000, threshold: 8, label: "control: line-start search pair" }) === true);
+
+  var compiled = null;
+  try { b.jsonSchema.compile({ type: "string", pattern: "a+(?!a)a+" }); }
+  catch (e) { compiled = e.code || e.message; }
+  check("b.jsonSchema refuses pattern a+(?!a)a+ (got " + compiled + ")", compiled !== null);
+
+  // A runaway term inside an optional group is still reached from every
+  // position that can begin it: `a(?:@.+)?$` walks the rest of the line from
+  // every `a` in a run of "a@".
+  [
+    /a(?:@.+)?$/,
+    /a(?:@.+)?\s+/,
+    /\s+(?:a\s)*(?!a)/,
+    /.*(?!a)[\s\S]+?/,
+    /a(?:@.+)*$/,
+    /a+(?=a)(?!a)/,
+    /a{2,}(?=a)(?!a)/,
+    /\b(?=\s*@)\w+/,
+    /^\b(?=\s*@)\w+/m,
+    /\b(?=a+$)\s+/,
+    /\b(?!a*@)\s+/,
+  ].forEach(function (re) {
+    var code = verdict(re);
+    check("refuses the search " + String(re) + " (got " + code + ")", code !== null);
+  });
+  check("control: a+(?=a)(?!a) is superlinear as a search on a run of a",
+        helpers.looksSuperlinear(function (n) { /a+(?=a)(?!a)/.test("x" + "a".repeat(n)); },
+          { small: 4000, large: 16000, threshold: 8, label: "control: contradicting lookaheads" }) === true);
+  // V8 reads `\b` before a term that must start with `\w` as "the previous
+  // character is not a word character", and before a term that must start
+  // with `\W` as "the previous character is a word character", so a lookahead
+  // between them runs at every position of a run on the other side.
+  check("control: \\b(?=\\s*@)\\w+ is superlinear as a search on a run of tabs",
+        helpers.looksSuperlinear(function (n) { /\b(?=\s*@)\w+/.test("x" + "\t".repeat(n)); },
+          { small: 4000, large: 16000, threshold: 8, label: "control: boundary before a lookahead" }) === true);
+  check("control: \\b(?=a+$)\\s+ is superlinear as a search on a run of a",
+        helpers.looksSuperlinear(function (n) { /\b(?=a+$)\s+/.test("a".repeat(n) + " "); },
+          { small: 4000, large: 16000, threshold: 8, label: "control: boundary before a lookahead, word run" }) === true);
+  check("control: a(?:@.+)?$ is superlinear as a search on a run of a@",
+        helpers.looksSuperlinear(function (n) { /a(?:@.+)?$/.test("a@".repeat(n / 2) + "\n"); },
+          { small: 4000, large: 16000, threshold: 8, label: "control: optional runaway" }) === true);
+  check("control: \\s+(?:a\\s)*(?!a) is superlinear as a search",
+        helpers.looksSuperlinear(function (n) { /\s+(?:a\s)*(?!a)/.test(" a".repeat(n / 2)); },
+          { small: 4000, large: 16000, threshold: 8, label: "control: group run before a lookahead" }) === true);
+}
+
+// The v flag changes how a class is written, not how a repetition backtracks,
+// so a pattern with v is judged as it is with u. A class that can match a
+// string of several characters (`[\p{RGI_Emoji}]`) cannot be judged as one
+// character and is refused. An escape is judged as the one atom the engine
+// reads: in `\p{L}+` the `+` repeats the property, not the closing brace.
+function testTheVFlagAndEveryEscapeAreJudgedAsTheEngineReadsThem() {
+  function verdict(re) {
+    try { b.guardRegex.assertSafe(re, "x"); return null; } catch (e) { return e.code; }
+  }
+  [
+    /^\s*\s*!/v,
+    /^\s+(.+)$/v,
+    /^.+@.+$/v,
+    /^(.*?)(?=\s*$)/v,
+    /^key:\s+(.+)$/v,
+    /^(a+)+$/v,
+    /^[\p{RGI_Emoji}]+$/v,
+    /^\p{RGI_Emoji}+$/v,
+    /^[\p{Basic_Emoji}x]+$/v,
+    /^\p{L}+\w+$/u,
+    /^\P{N}+\s+$/u,
+    /^\x61+a+!/,
+    /^a+a+!/,
+    /^\u{61}+a+!/u,
+    /^(?<x>\s)\k<x>*\s*!/,
+  ].forEach(function (re) {
+    var code = verdict(re);
+    check("refuses " + String(re) + " (got " + code + ")", code === "regex.nested-quantifier");
+  });
+  [
+    /^[a-z]+$/v,
+    /^\p{L}+$/v,
+    /^[\p{L}\d]+$/v,
+    /^Bearer\s+(.+)/v,
+    /^\p{Lu}\p{Ll}+$/u,
+    /^\x41+$/,
+    /^\u{1F600}+$/u,
+  ].forEach(function (re) {
+    var code = verdict(re);
+    check("accepts " + String(re) + " (got " + code + ")", code === null);
+  });
+  // A class the analysis cannot spell out is "some characters", not "every
+  // character", so it cannot prove that the run before it always gives way.
+  [/a+[\p{Lu}]/u, /a+\p{Lu}/u, /a+[^\W]/i].forEach(function (re) {
+    var code = verdict(re);
+    check("refuses the search " + String(re) + " (got " + code + ")", code !== null);
+  });
+  check("control: a+[\\p{Lu}] is superlinear as a search on a run of a",
+        helpers.looksSuperlinear(function (n) { /a+[\p{Lu}]/u.test("a".repeat(n)); },
+          { small: 4000, large: 16000, threshold: 8, label: "control: uncharacterized class" }) === true);
+  check("control: ^\\s*\\s*! with v is superlinear",
+        helpers.looksSuperlinear(function (n) { /^\s*\s*!/v.test(" ".repeat(n)); },
+          { small: 4000, large: 16000, threshold: 8, label: "control: v pair" }) === true);
+  check("control: ^\\p{L}+\\w+$ is superlinear",
+        helpers.looksSuperlinear(function (n) { /^\p{L}+\w+$/u.test("a".repeat(n) + "!"); },
+          { small: 4000, large: 16000, threshold: 8, label: "control: property pair" }) === true);
+  var unit = "\u{1F44D}\u{1F3FD}";
+  var emoji = /^[\p{RGI_Emoji}]+$/v;
+  function fastest(count) {
+    var best = Infinity;
+    for (var attempt = 0; attempt < 3; attempt += 1) {
+      var started = process.hrtime.bigint();
+      emoji.test(unit.repeat(count) + "!");
+      best = Math.min(best, Number(process.hrtime.bigint() - started));
+    }
+    return best;
+  }
+  fastest(8);
+  var small = fastest(12);
+  var large = fastest(17);
+  check("control: a class of emoji strings repeated is exponential (" + small + "ns -> " + large + "ns)",
+        large > small * 8);
+}
+
 async function run() {
+  await testASearchRetriesAPairThatCanFailAtEveryPosition();
+  testTheVFlagAndEveryEscapeAreJudgedAsTheEngineReadsThem();
+  testAPairIsJudgedAcrossWhatLiesBetweenItsHalves();
+  testALookaroundAfterARepetitionIsTheSecondHalfOfAPair();
+  await testTheEndOfAPatternIsJudgedTheWayItsConsumerRunsIt();
+  testTheRestOfTheMatchMustBeTakenByOneTerm();
   await testOperatorRegexSitesRefuseStatefulFlags();
   await testOperatorRegexSitesScreenAndTypeCheck();
   testLinearShapesAccepted();

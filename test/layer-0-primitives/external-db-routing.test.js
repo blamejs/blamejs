@@ -109,6 +109,109 @@ async function run() {
   check("connectAs: applicationName single-quotes escaped per SQL standard",
         d2.seen.some(function (s) { return s === "SET application_name TO 'wiki''with''quotes'"; }));
 
+  // A client whose session SETs fail is disposed, not leaked and not
+  // recycled. SET ROLE succeeds, SET search_path is rejected: the client now
+  // carries a half-configured session, so it must be destroyed. pg-pool
+  // destroys a connection when release() receives a truthy argument.
+  function _failingSetDriver() {
+    var st = { released: [], ended: 0, closed: [] };
+    st.client = {
+      release: function (arg) { st.released.push(arg); },
+      end:     async function () { st.ended += 1; },
+    };
+    st.connect = async function () { return st.client; };
+    st.setErr = new Error('schema "nope" does not exist');
+    st.setErr.code = "3F000";
+    st.query = async function (_c, sql) {
+      if (/^SET search_path/.test(sql)) throw st.setErr;
+      return { rows: [], rowCount: 0 };
+    };
+    return st;
+  }
+  var fd1 = _failingSetDriver();
+  var wcFail = b.externalDb.adapters.connectAs(fd1.connect, {
+    query: fd1.query, role: "analytics_user", searchPath: ["nope"],
+  });
+  var fail1 = null;
+  try { await wcFail(); } catch (e) { fail1 = e; }
+  check("connectAs: a failed SET rejects with the SET error", fail1 === fd1.setErr);
+  check("connectAs: a client whose SET failed is released exactly once with a truthy argument",
+        fd1.released.length === 1 && !!fd1.released[0], JSON.stringify(fd1.released));
+  check("connectAs: release(err) is used rather than end() when the client has release",
+        fd1.ended === 0);
+
+  var fd2 = _failingSetDriver();
+  var closeCalls = [];
+  var wcClose = b.externalDb.adapters.connectAs(fd2.connect, {
+    query: fd2.query, role: "analytics_user", searchPath: ["nope"],
+    close: function (client, err) { closeCalls.push({ client: client, err: err }); },
+  });
+  var fail2 = null;
+  try { await wcClose(); } catch (e) { fail2 = e; }
+  check("connectAs: opts.close receives (client, err) for a client whose SET failed",
+        closeCalls.length === 1 && closeCalls[0].client === fd2.client &&
+        closeCalls[0].err === fd2.setErr && fail2 === fd2.setErr);
+  check("connectAs: opts.close replaces the default release(err)",
+        fd2.released.length === 0 && fd2.ended === 0);
+
+  var fd3 = _failingSetDriver();
+  var wcCloseThrows = b.externalDb.adapters.connectAs(fd3.connect, {
+    query: fd3.query, searchPath: ["nope"],
+    close: async function () { throw new Error("close failed"); },
+  });
+  var fail3 = null;
+  try { await wcCloseThrows(); } catch (e) { fail3 = e; }
+  check("connectAs: a throwing opts.close does not replace the SET error", fail3 === fd3.setErr);
+
+  var fd4 = _failingSetDriver();
+  delete fd4.client.release;
+  var wcEnd = b.externalDb.adapters.connectAs(fd4.connect, { query: fd4.query, searchPath: ["nope"] });
+  var fail4 = null;
+  try { await wcEnd(); } catch (e) { fail4 = e; }
+  check("connectAs: a client with no release() is ended", fail4 === fd4.setErr && fd4.ended === 1);
+
+  // Disposal does not hold back the rejection: a client whose end() never
+  // settles, or an operator close() that never settles, still lets the
+  // wrapped connect reject with the SET error.
+  async function _settlesWithin(promise, ms) {
+    var outcome = { settled: false, err: null };
+    promise.then(function () { outcome.settled = true; },
+      function (e) { outcome.settled = true; outcome.err = e; });
+    try {
+      await helpers.waitUntil(function () { return outcome.settled; },
+        { timeoutMs: ms, label: "connectAs: wrapped connect settles" });
+    } catch (_e) { /* outcome.settled stays false */ }
+    return outcome;
+  }
+  var fd5 = _failingSetDriver();
+  delete fd5.client.release;
+  fd5.client.end = function () { fd5.ended += 1; return new Promise(function () {}); };
+  var hung5 = await _settlesWithin(
+    b.externalDb.adapters.connectAs(fd5.connect, { query: fd5.query, searchPath: ["nope"] })(), 2000);
+  check("connectAs: a client whose end() never settles does not hold back the SET error",
+        hung5.settled && hung5.err === fd5.setErr && fd5.ended === 1, JSON.stringify(hung5));
+  var fd6 = _failingSetDriver();
+  var hung6 = await _settlesWithin(b.externalDb.adapters.connectAs(fd6.connect, {
+    query: fd6.query, searchPath: ["nope"],
+    close: function () { return new Promise(function () {}); },
+  })(), 2000);
+  check("connectAs: an opts.close that never settles does not hold back the SET error",
+        hung6.settled && hung6.err === fd6.setErr, JSON.stringify(hung6));
+  var fd7 = _failingSetDriver();
+  var fail7 = null;
+  try {
+    await b.externalDb.adapters.connectAs(fd7.connect, {
+      query: fd7.query, searchPath: ["nope"],
+      close: function () { throw new Error("close threw synchronously"); },
+    })();
+  } catch (e) { fail7 = e; }
+  check("connectAs: an opts.close that throws synchronously does not replace the SET error",
+        fail7 === fd7.setErr, fail7 && fail7.message);
+
+  rejectsCa("non-function close",
+    function () { b.externalDb.adapters.connectAs(rawConnect,
+      { query: rawQuery, close: "nope" }); }, /external-db\/invalid-config/);
+
   // ---- Read-replica routing ----
   // Two replicas + primary. read.query must round-robin across replicas.
   b.externalDb._resetForTest();
@@ -355,6 +458,58 @@ async function run() {
   await rejectsTx("null value",         { "app.x": null },        /external-db\/invalid-session-gucs/);
   await rejectsTx("Infinity number",    { "app.x": Infinity },    /external-db\/invalid-session-gucs/);
   await rejectsTx("object value",       { "app.x": { y: 1 } },    /external-db\/invalid-session-gucs/);
+
+  // ---- default BEGIN / COMMIT / ROLLBACK use the transaction's own backend ----
+  // Two backends, neither supplying beginTx / commit / rollback. Every
+  // transaction statement must go through the chosen backend's query function
+  // with that backend's client, including the defaults built for it.
+  b.externalDb._resetForTest();
+  var txRows = [];
+  function _ownedDriver(label) {
+    return {
+      connect: async function () { return { owner: label }; },
+      query:   async function (client, sql) {
+        txRows.push({ via: label, client: client && client.owner, sql: sql });
+        return { rows: [], rowCount: 0 };
+      },
+      close:   async function () {},
+    };
+  }
+  var txPrimary   = _ownedDriver("primary");
+  var txAnalytics = _ownedDriver("analytics");
+  b.externalDb.init({
+    backends: {
+      primary:   { connect: txPrimary.connect,   query: txPrimary.query,   close: txPrimary.close },
+      analytics: { connect: txAnalytics.connect, query: txAnalytics.query, close: txAnalytics.close },
+    },
+    defaultBackend: "primary",
+  });
+  async function _txOn(backendName) {
+    txRows.length = 0;
+    await b.externalDb.transaction(async function (tx) {
+      await tx.query("SELECT 1");
+    }, { backend: backendName });
+    try {
+      await b.externalDb.transaction(async function (tx) {
+        await tx.query("SELECT 2");
+        throw new Error("abort");
+      }, { backend: backendName });
+    } catch (_e) { void _e; }
+    return txRows.slice();
+  }
+  var primaryRows = await _txOn("primary");
+  var primaryCtl = primaryRows.filter(function (r) { return /^(BEGIN|COMMIT|ROLLBACK)$/.test(r.sql); });
+  check("default tx hooks: BEGIN, COMMIT and ROLLBACK all issued on primary",
+        primaryCtl.map(function (r) { return r.sql; }).join(",") === "BEGIN,COMMIT,BEGIN,ROLLBACK",
+        JSON.stringify(primaryRows));
+  check("default tx hooks: every statement of a primary transaction goes through primary's query function",
+        primaryRows.every(function (r) { return r.via === "primary" && r.client === "primary"; }),
+        JSON.stringify(primaryRows));
+  var analyticsRows = await _txOn("analytics");
+  check("default tx hooks: every statement of an analytics transaction goes through analytics' query function",
+        analyticsRows.length > 0 &&
+        analyticsRows.every(function (r) { return r.via === "analytics" && r.client === "analytics"; }),
+        JSON.stringify(analyticsRows));
 
   // ---- v0.6.7: role-tagged metrics + 42501 denied detection ----
   b.externalDb._resetForTest();

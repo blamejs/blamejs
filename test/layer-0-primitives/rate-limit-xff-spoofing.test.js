@@ -138,6 +138,35 @@ async function run() {
   check("per-route: distinct route paths keep distinct buckets",
         r1.next === true && r2.next === true);
 
+  // One IPv4 client reaching two listeners, one bound to 0.0.0.0 and one to
+  // :: (which reports it as ::ffff:a.b.c.d), or spelled ::ffff:a00:9 by a
+  // proxy, is one client with one bucket under the default exact key.
+  var spellMw = b.middleware.rateLimit({ backend: "memory", burst: 1, refillPerSecond: 0.001 });
+  var s1 = await _runMw(spellMw, _req("10.0.0.9"));
+  var s2 = await _runMw(spellMw, _req("::ffff:10.0.0.9"));
+  var s3 = await _runMw(spellMw, _req("::ffff:a00:9"));
+  check("exact key: the first request from 10.0.0.9 is allowed", s1.next === true);
+  check("exact key: the same client as ::ffff:10.0.0.9 shares its bucket (blocked)", s2.next === false);
+  check("exact key: the same client as ::ffff:a00:9 shares its bucket (blocked)", s3.next === false);
+  var s4 = await _runMw(spellMw, _req("::ffff:10.0.0.10"));
+  check("exact key: a different mapped client keeps its own bucket", s4.next === true);
+
+  // The same holds when the operator's clientIpResolver supplies the address.
+  var resolverMw = b.middleware.rateLimit({
+    backend: "memory", burst: 1, refillPerSecond: 0.001,
+    clientIpResolver: function (req) { return req.headers["x-client"]; },
+  });
+  function _resolvedReq(addr) {
+    return { url: "/x", pathname: "/x", method: "GET", socket: { remoteAddress: "198.51.100.1" },
+      headers: { "x-client": addr }, requestId: "r" };
+  }
+  var t1 = await _runMw(resolverMw, _resolvedReq("10.0.0.9"));
+  var t2 = await _runMw(resolverMw, _resolvedReq("::ffff:10.0.0.9"));
+  var t3 = await _runMw(resolverMw, _resolvedReq("::ffff:10.0.0.10"));
+  check("clientIpResolver: the first request from 10.0.0.9 is allowed", t1.next === true);
+  check("clientIpResolver: the same client as ::ffff:10.0.0.9 shares its bucket (blocked)", t2.next === false);
+  check("clientIpResolver: a different mapped client keeps its own bucket", t3.next === true);
+
   console.log("[rate-limit-xff-spoofing] OK — " + helpers.getChecks() + " checks passed");
 }
 

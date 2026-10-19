@@ -157,6 +157,129 @@ async function run() {
   var defFence = b.middleware.networkAllowlist({ paths: ["/admin"], allowedCidrs: ["203.0.113.0/24"] });
   var rDefSpoof = await _runMw(defFence, _xffReq("198.51.100.66", "203.0.113.7"));
   check("default: forged XFF ignored, attacker socket blocked", rDefSpoof.next === false);
+
+  await testEverySpellingOfADeniedAddressIsDenied(_runMw);
+  await testAMappedEntryOrPeerMatchesItsIpv4Form(_runMw);
+  testAMalformedCidrIsRefusedAtConstruction();
+  await testADualStackListenerDeniesAnIpv4Client();
+}
+
+function _peerReq(addr) {
+  var rq = _mockReq({ url: "/admin/x", method: "GET" });
+  rq.pathname = "/admin/x";
+  rq.socket = { remoteAddress: addr };
+  return rq;
+}
+
+// A dual-stack listener reports an IPv4 client as ::ffff:a.b.c.d, and NAT64
+// (64:ff9b::/96) and 6to4 (2002::/16) addresses carry an IPv4 address too.
+// Each is the denied address, so each is denied.
+async function testEverySpellingOfADeniedAddressIsDenied(_runMw) {
+  var fence = b.middleware.networkAllowlist({
+    paths:        ["/admin"],
+    allowedCidrs: ["0.0.0.0/0", "::/0"],
+    deniedCidrs:  ["10.0.0.0/8"],
+  });
+  var spellings = ["10.0.0.1", "::ffff:10.0.0.1", "::FFFF:10.0.0.1", "::ffff:a00:1",
+                   "0:0:0:0:0:ffff:a00:1", "64:ff9b::a00:1", "2002:a00:1::1"];
+  for (var i = 0; i < spellings.length; i++) {
+    var r = await _runMw(fence, _peerReq(spellings[i]));
+    check("deniedCidrs 10.0.0.0/8 denies the peer " + spellings[i], r.next === false);
+  }
+  var rOther = await _runMw(fence, _peerReq("::ffff:11.0.0.1"));
+  check("deniedCidrs 10.0.0.0/8 passes the mapped peer 11.0.0.1", rOther.next === true);
+  var rV6 = await _runMw(fence, _peerReq("2001:db8::1"));
+  check("deniedCidrs 10.0.0.0/8 passes an unrelated IPv6 peer", rV6.next === true);
+
+  var mappedDeny = b.middleware.networkAllowlist({
+    paths:        ["/admin"],
+    allowedCidrs: ["0.0.0.0/0", "::/0"],
+    deniedCidrs:  ["::ffff:10.0.0.0/104"],
+  });
+  var rPlain = await _runMw(mappedDeny, _peerReq("10.0.0.1"));
+  check("deniedCidrs ::ffff:10.0.0.0/104 denies the IPv4 peer 10.0.0.1", rPlain.next === false);
+}
+
+async function testAMappedEntryOrPeerMatchesItsIpv4Form(_runMw) {
+  var v4Allow = b.middleware.networkAllowlist({ paths: ["/admin"], allowedCidrs: ["10.0.0.0/8"] });
+  var rMapped = await _runMw(v4Allow, _peerReq("::ffff:10.0.0.1"));
+  check("allowedCidrs 10.0.0.0/8 admits the dual-stack peer ::ffff:10.0.0.1", rMapped.next === true);
+  var rNat64 = await _runMw(v4Allow, _peerReq("64:ff9b::a00:1"));
+  check("allowedCidrs 10.0.0.0/8 does not admit the NAT64 peer 64:ff9b::a00:1", rNat64.next === false);
+
+  var mappedAllow = b.middleware.networkAllowlist({ paths: ["/admin"], allowedCidrs: ["::ffff:10.0.0.0/104"] });
+  var rPlain = await _runMw(mappedAllow, _peerReq("10.0.0.1"));
+  check("allowedCidrs ::ffff:10.0.0.0/104 admits the IPv4 peer 10.0.0.1", rPlain.next === true);
+  var rOut = await _runMw(mappedAllow, _peerReq("11.0.0.1"));
+  check("allowedCidrs ::ffff:10.0.0.0/104 does not admit 11.0.0.1", rOut.next === false);
+}
+
+function testAMalformedCidrIsRefusedAtConstruction() {
+  var bad = ["10.0.0.0/33", "10.0.0/8", "010.0.0.0/8", "10.0.0.0/8x", "10.0.0.0/08",
+             "10.0.0.0/", "/8", "10.0.0.1", "::/129", "10.0.0.0/-1", " 10.0.0.0/8", "", 42, null];
+  ["deniedCidrs", "allowedCidrs"].forEach(function (field) {
+    for (var i = 0; i < bad.length; i++) {
+      var o = { paths: ["/admin"], allowedCidrs: ["10.0.0.0/8"] };
+      o[field] = [bad[i]];
+      var code = null;
+      try { b.middleware.networkAllowlist(o); } catch (e) { code = e.code; }
+      check(field + " " + JSON.stringify(bad[i]) + " is refused with network-allowlist/bad-opt",
+            code === "network-allowlist/bad-opt", String(code));
+    }
+  });
+  var notArray = null;
+  try {
+    b.middleware.networkAllowlist({ paths: ["/admin"], allowedCidrs: ["0.0.0.0/0"], deniedCidrs: "10.0.0.0/8" });
+  } catch (e) { notArray = e.code; }
+  check("deniedCidrs given as a bare string is refused rather than ignored",
+        notArray === "network-allowlist/bad-opt", String(notArray));
+}
+
+// The real listener path: on "::" with IPv6-only off, Node reports an IPv4
+// client's address as ::ffff:127.0.0.1.
+async function testADualStackListenerDeniesAnIpv4Client() {
+  var http = require("node:http");
+  var seen = null;
+  var fence = b.middleware.networkAllowlist({
+    paths:        ["/admin"],
+    allowedCidrs: ["0.0.0.0/0", "::/0"],
+    deniedCidrs:  ["127.0.0.0/8"],
+  });
+  var server = http.createServer(function (req, res) {
+    seen = req.socket.remoteAddress;
+    fence(req, res, function () { res.writeHead(200); res.end("passed"); });
+  });
+  try {
+    await new Promise(function (resolve, reject) {
+      server.once("error", reject);
+      server.listen({ host: "::", port: 0, ipv6Only: false }, resolve);
+    });
+  } catch (e) {
+    helpers.unavailable("network-allowlist dual-stack listener", "cannot listen on :: (" + e.code + ")");
+    return;
+  }
+  try {
+    var port = server.address().port;
+    var status;
+    try {
+      status = await new Promise(function (resolve, reject) {
+        var rq = http.get({ host: "127.0.0.1", port: port, path: "/admin/x", agent: false }, function (res) {
+          res.resume();
+          res.on("end", function () { resolve(res.statusCode); });
+        });
+        rq.on("error", reject);
+      });
+    } catch (e) {
+      helpers.unavailable("network-allowlist dual-stack listener", "IPv4 connect to :: refused (" + e.code + ")");
+      return;
+    }
+    check("the dual-stack listener reported the IPv4 client in its mapped form",
+          typeof seen === "string" && seen.toLowerCase().indexOf("::ffff:") === 0, String(seen));
+    check("deniedCidrs 127.0.0.0/8 denies an IPv4 client of a dual-stack listener",
+          status === 404, String(status));
+  } finally {
+    await new Promise(function (resolve) { server.close(function () { resolve(); }); });
+  }
 }
 
 module.exports = { run: run };

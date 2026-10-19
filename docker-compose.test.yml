@@ -348,6 +348,83 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # NTS (RFC 8915) servers on the same chrony image. Each runs chronyd
+  # directly with -x (no clock control, so no SYS_TIME) and serves NTS-KE on
+  # 4460/tcp inside the container, published on a host port of its own.
+  # chrony advertises its NTP port in an NTPv4 Port record, so the NTP port
+  # is the same inside and outside the container.
+  #   nts           default AEAD list; local reference, so it is synchronized
+  #   nts-gcmsiv    accepts only AEAD 30 (AES-128-GCM-SIV)
+  #   nts-unsynced  no reference: replies carry LI=3 and stratum 0
+  nts:
+    image: cturra/ntp:latest
+    container_name: blamejs-test-nts
+    entrypoint: ["/usr/sbin/chronyd", "-d", "-x", "-u", "chrony", "-L", "0", "-f", "/etc/chrony/nts.conf"]
+    ports:
+      - "127.0.0.1:14460:4460"
+      - "[::1]:14460:4460"
+      - "127.0.0.1:12301:12301/udp"
+      - "[::1]:12301:12301/udp"
+    volumes:
+      - certs:/certs:ro
+      - ./docker/nts/chrony-nts.conf:/etc/chrony/nts.conf:ro
+    depends_on:
+      pki-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "chronyc", "-n", "tracking"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+    restart: unless-stopped
+
+  nts-gcmsiv:
+    image: cturra/ntp:latest
+    container_name: blamejs-test-nts-gcmsiv
+    entrypoint: ["/usr/sbin/chronyd", "-d", "-x", "-u", "chrony", "-L", "0", "-f", "/etc/chrony/nts.conf"]
+    ports:
+      - "127.0.0.1:14461:4460"
+      - "[::1]:14461:4460"
+      - "127.0.0.1:12302:12302/udp"
+      - "[::1]:12302:12302/udp"
+    volumes:
+      - certs:/certs:ro
+      - ./docker/nts/chrony-nts-gcmsiv.conf:/etc/chrony/nts.conf:ro
+    depends_on:
+      pki-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "chronyc", "-n", "tracking"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+    restart: unless-stopped
+
+  nts-unsynced:
+    image: cturra/ntp:latest
+    container_name: blamejs-test-nts-unsynced
+    entrypoint: ["/usr/sbin/chronyd", "-d", "-x", "-u", "chrony", "-L", "0", "-f", "/etc/chrony/nts.conf"]
+    ports:
+      - "127.0.0.1:14462:4460"
+      - "[::1]:14462:4460"
+      - "127.0.0.1:12303:12303/udp"
+      - "[::1]:12303:12303/udp"
+    volumes:
+      - certs:/certs:ro
+      - ./docker/nts/chrony-nts-unsynced.conf:/etc/chrony/nts.conf:ro
+    depends_on:
+      pki-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "chronyc", "-n", "tracking"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+    restart: unless-stopped
+
   mailpit:
     image: axllent/mailpit:latest
     container_name: blamejs-test-mailpit
@@ -629,11 +706,14 @@ services:
       disable: true
     restart: unless-stopped
 
-  # OpenTelemetry Collector (contrib) — receives OTLP/HTTP logs over TLS (test
-  # CA) on :4318/v1/logs and writes each received batch as NDJSON to
-  # ./docker/otel/export/otlp-logs.json so a test can read it back and assert
-  # secrets/PII were redacted before egress. scratch image (no shell) →
-  # host-side probe of the health_check extension on :13133.
+  # OpenTelemetry Collector (contrib). It receives OTLP/HTTP logs and traces
+  # over TLS (test CA) on :4318/v1/logs and :4318/v1/traces, and writes each
+  # received batch as NDJSON to ./docker/otel/export/otlp-logs.json (logs) or
+  # ./docker/otel/export/otlp-traces.json (traces), where a test reads it back
+  # and asserts that secrets and PII were redacted before egress. The image is
+  # built from scratch and has no shell, so the compose healthcheck is
+  # disabled and scripts/check-services.js probes the health_check extension
+  # on :13133 from the host.
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.153.0
     container_name: blamejs-test-otel-collector

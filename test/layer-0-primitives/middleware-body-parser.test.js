@@ -626,8 +626,7 @@ async function testMultipartTotalTooLarge413() {
   var rv  = await _run({ multipart: { storage: "memory", fieldSize: BYTES.mib(1), totalSize: BYTES.bytes(120) } }, req);
   check("multipart total request over totalSize → 413",
         rv.nexted === false && rv.status === 413 &&
-        (_bodyJson(rv).code === "body-parser/multipart-total-too-large" ||
-         _bodyJson(rv).code === "body-parser/multipart-too-large"));
+        _bodyJson(rv).code === "body-parser/multipart-total-too-large");
 }
 
 async function testMultipartTruncated400() {
@@ -768,6 +767,58 @@ function testCreateRejectsBadStorage() {
   try { b.middleware.bodyParser({ multipart: { storage: "s3" } }); }
   catch (e) { threw = e instanceof TypeError; }
   check("multipart.storage other than disk/memory throws TypeError", threw === true);
+}
+
+// Every sub-parser option is checked when the middleware is built, so a value
+// that would switch a cap or a filter off is refused before any request.
+function testCreateRejectsBadSubParserOpts() {
+  function codeOf(o) {
+    try { b.middleware.bodyParser(o); return "built"; }
+    catch (e) { return e.code || (e instanceof TypeError ? "TypeError" : String(e)); }
+  }
+  var cases = [
+    ["json slot is a number",           { json: 5 },                                  "body-parser/bad-opts"],
+    ["json unknown key",                { json: { maxBytes: 10 } },                   "body-parser/bad-opts"],
+    ["json limit string",               { json: { limit: "1kb" } },                   "body-parser/bad-limit"],
+    ["json strict string",              { json: { strict: "yes" } },                  "body-parser/bad-strict"],
+    ["json charset unknown",            { json: { charset: "klingon" } },             "body-parser/bad-charset"],
+    ["json parseHook not callable",     { json: { parseHook: 5 } },                   "body-parser/bad-parse-hook"],
+    ["json contentTypes string",        { json: { contentTypes: "application/json" } }, "body-parser/bad-content-types"],
+    ["urlencoded arrayLimit string",    { urlencoded: { arrayLimit: "x" } },          "body-parser/bad-array-limit"],
+    ["urlencoded limit zero",           { urlencoded: { limit: 0 } },                 "body-parser/bad-limit"],
+    ["text charset unknown",            { text: { charset: "klingon" } },             "body-parser/bad-charset"],
+    ["raw limit NaN",                   { raw: { limit: NaN } },                      "body-parser/bad-limit"],
+    ["multipart fileSize string",       { multipart: { fileSize: "1kb" } },           "body-parser/bad-file-size"],
+    ["multipart totalSize NaN",         { multipart: { totalSize: NaN } },            "body-parser/bad-total-size"],
+    ["multipart fileCount fraction",    { multipart: { fileCount: 1.5 } },            "body-parser/bad-file-count"],
+    ["multipart fieldCount string",     { multipart: { fieldCount: "many" } },        "body-parser/bad-field-count"],
+    ["multipart fieldSize negative",    { multipart: { fieldSize: -1 } },             "body-parser/bad-field-size"],
+    ["multipart fileFilter object",     { multipart: { fileFilter: { reject: true } } }, "body-parser/bad-file-filter"],
+    ["multipart mimeAllowlist string",  { multipart: { mimeAllowlist: "image/png" } }, "body-parser/bad-mime-allowlist"],
+    ["multipart filenameCharsets bad",  { multipart: { filenameCharsets: ["windows-1252"] } }, "body-parser/bad-filename-charsets"],
+    ["multipart fields rule bad",       { multipart: { fields: { f: { maxBytes: "x" } } } }, "body-parser/bad-fields"],
+    ["multipart audit bad",             { multipart: { audit: true } },               "body-parser/bad-audit"],
+    ["multipart tmpDir empty",          { multipart: { tmpDir: "" } },                "body-parser/bad-tmp-dir"],
+    ["multipart unknown key",           { multipart: { maxBytes: 10 } },              "body-parser/bad-opts"],
+    ["keepRawBody string",              { keepRawBody: "yes" },                       "body-parser/bad-keep-raw-body"],
+  ];
+  for (var i = 0; i < cases.length; i += 1) {
+    var got = codeOf(cases[i][1]);
+    check("bodyParser(" + cases[i][0] + ") -> " + cases[i][2] + " (got " + got + ")", got === cases[i][2]);
+  }
+  check("bodyParser accepts true for a sub-parser (its defaults)",
+    codeOf({ json: true, urlencoded: true, text: false, multipart: { storage: "memory" } }) === "built");
+  check("bodyParser unknown top-level option -> body-parser/bad-opts",
+    codeOf({ jsn: {} }) === "body-parser/bad-opts");
+  function rawCodeOf(o) {
+    try { b.middleware.bodyParser.raw(o); return "built"; }
+    catch (e) { return e.code || String(e); }
+  }
+  check("bodyParser.raw unknown option -> body-parser/bad-opts", rawCodeOf({ limt: 5 }) === "body-parser/bad-opts");
+  check("bodyParser.raw limit string -> body-parser/bad-limit", rawCodeOf({ limit: "1mb" }) === "body-parser/bad-limit");
+  check("bodyParser.raw contentTypes string -> body-parser/bad-content-types",
+    rawCodeOf({ contentTypes: "*/*" }) === "body-parser/bad-content-types");
+  check("bodyParser.raw with valid options builds", rawCodeOf({ limit: 1024, contentTypes: ["*/*"] }) === "built");
 }
 
 // ---- raw() convenience factory ----
@@ -925,10 +976,11 @@ async function testMultipartTotalTooLargeInHeaders413() {
     { headers: { "Content-Disposition": 'form-data; name="f"' }, body: "x" },
   ]);
   var req = _bodyReq("POST", _mpHeaders(bd, { "content-length": String(body.length) }), body);
-  // totalSize smaller than the first part's header bytes → trip in MP_HEADERS.
+  // totalSize smaller than the first part's header bytes: every received byte
+  // counts, so the request is refused before the headers are parsed.
   var rv  = await _run({ multipart: { storage: "memory", totalSize: BYTES.bytes(10) } }, req);
-  check("multipart header bytes alone over totalSize → 413 (headers-phase guard)",
-        rv.nexted === false && rv.status === 413 && _bodyJson(rv).code === "body-parser/multipart-too-large");
+  check("multipart header bytes alone over totalSize → 413 total",
+        rv.nexted === false && rv.status === 413 && _bodyJson(rv).code === "body-parser/multipart-total-too-large");
 }
 
 async function testMultipartFileBodyTotalTooLarge413() {
@@ -1134,6 +1186,7 @@ async function run() {
     // config-time validation
     testCreateRejectsUnknownOpt();
     testCreateRejectsBadStorage();
+    testCreateRejectsBadSubParserOpts();
 
     // raw factory
     await testRawFactoryCapturesAnyType();

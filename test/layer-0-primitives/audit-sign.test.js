@@ -141,8 +141,16 @@ async function testPlaintextLoadAndCorrupt() {
     check("corrupt plaintext key file -> KEY_FILE_CORRUPT",
       (await _codeOf(function () { return as.init({ dataDir: dCorrupt, mode: "plaintext" }); })) === "audit-sign/key-file-corrupt");
 
-    // A schema-valid key file that omits the required `algorithm` field.
+    // A schema-valid key file whose key does not parse is corrupt too.
     var pair = _genPair(ALG);
+    fs.writeFileSync(_plaintextPath(dCorrupt),
+      JSON.stringify({ algorithm: ALG, publicKey: pair.publicKey, privateKey: "not a key" }, null, 2));
+    as._resetForTest();
+    var unparsedCode = await _codeOf(function () { return as.init({ dataDir: dCorrupt, mode: "plaintext" }); });
+    check("plaintext key file holding an unparseable key -> KEY_FILE_CORRUPT",
+      unparsedCode === "audit-sign/key-file-corrupt", unparsedCode);
+
+    // A schema-valid key file that omits the required `algorithm` field.
     fs.writeFileSync(_plaintextPath(dNoAlg),
       JSON.stringify({ publicKey: pair.publicKey, privateKey: pair.privateKey }, null, 2));
     as._resetForTest();

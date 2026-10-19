@@ -44,10 +44,12 @@ function testSurface() {
         typeof b.frameworkError.MailBimiError === "function");
   check("BIMI_EKU OID surface",
         b.mail.bimi.BIMI_EKU_MARK_VERIFICATION === "1.3.6.1.5.5.7.3.31");
-  check("VMC policy OID surface",
-        b.mail.bimi.VMC_POLICY_OID === "1.3.6.1.4.1.53087.1.1");
-  check("CMC policy OID surface",
-        b.mail.bimi.CMC_POLICY_OID === "1.3.6.1.4.1.53087.1.2");
+  check("Mark Certificate General Policy OID surface",
+        b.mail.bimi.MC_GENERAL_POLICY_OID === "1.3.6.1.4.1.53087.1.1");
+  check("subject:markType attribute OID surface",
+        b.mail.bimi.MARK_TYPE_OID === "1.3.6.1.4.1.53087.1.13");
+  check("no CMC policy OID is exported (the MC Requirements define none)",
+        b.mail.bimi.CMC_POLICY_OID === undefined && b.mail.bimi.VMC_POLICY_OID === undefined);
 }
 
 function testRecordShape() {
@@ -313,6 +315,37 @@ function _certPoliciesExtDer(oids) {
     build.sequence(oids.map(function (o) { return build.sequence([build.oid(o)]); })));
 }
 
+// MC Requirements 7.1.2.3(a): a Subscriber Mark Certificate carries the CA's
+// CPS policy identifier and then the Mark Certificate General Policy
+// Identifier 1.3.6.1.4.1.53087.1.1. 7.1.4(r): subject:markType
+// (1.3.6.1.4.1.53087.1.13) is Required and names the certificate type.
+// Written out here rather than read from b.mail.bimi, so a wrong value in the
+// module cannot also be the expected value.
+var MC_GENERAL_POLICY_FIXTURE_OID = "1.3.6.1.4.1.53087.1.1";
+var MARK_TYPE_FIXTURE_OID = "1.3.6.1.4.1.53087.1.13";
+var CA_CPS_FIXTURE_OID = "1.3.6.1.4.1.99999.7.1";
+var OID_COMMON_NAME = "2.5.4.3";
+
+function _leafPolicyOids(opts) {
+  if (opts.policyOids !== undefined) return opts.policyOids;
+  return [CA_CPS_FIXTURE_OID, MC_GENERAL_POLICY_FIXTURE_OID];
+}
+
+// The leaf subject as Name DER: CN=<cn> plus one RDN per markType value.
+// opts.markType null omits the attribute; opts.markTypes lists several.
+function _leafSubject(cn, opts) {
+  var markTypes;
+  if (opts.markTypes !== undefined) markTypes = opts.markTypes;
+  else if (opts.markType === null) markTypes = [];
+  else markTypes = [opts.markType || "Registered Mark"];
+  var rdns = [build.set([build.sequence([build.oid(OID_COMMON_NAME), build.utf8(cn)])])];
+  markTypes.forEach(function (mt) {
+    var value = opts.markTypePrintable ? build.printable(mt) : build.utf8(mt);
+    rdns.push(build.set([build.sequence([build.oid(MARK_TYPE_FIXTURE_OID), value])]));
+  });
+  return Buffer.from(build.sequence(rdns));
+}
+
 // DER length octets. Under 128 is one byte; 128 and above take the long form,
 // 0x80 | byteCount followed by the big-endian count. These fixtures used to
 // cap themselves below 128 so they could emit the short form unconditionally,
@@ -375,14 +408,16 @@ function _buildLeafExtensions(opts) {
       ext.extendedKeyUsage = [BIMI_EKU_OID];
       ext.extendedKeyUsageCritical = false;
     }
-    if (opts.policyOid) ext.certificatePolicies = [opts.policyOid];
+    var policies = _leafPolicyOids(opts);
+    if (policies.length > 0) ext.certificatePolicies = policies.slice();
     return ext;
   }
 
   var arr = [_bcLeafExtDer(), _kuExtDer([0])];   // digitalSignature = bit 0
   if (sanEntries) arr.push(_sanExtDer(sanEntries));
   if (includeBimiEku) arr.push(_ekuExtDer([BIMI_EKU_OID]));
-  if (opts.policyOid) arr.push(_certPoliciesExtDer([opts.policyOid]));
+  var arrPolicies = _leafPolicyOids(opts);
+  if (arrPolicies.length > 0) arr.push(_certPoliciesExtDer(arrPolicies));
   if (opts.logoSvg) arr.push(_logotypeExtension(opts.logoSvg));
   if (opts.logotypeExt) arr.push(opts.logotypeExt);
   return arr;
@@ -428,7 +463,7 @@ async function _generateTestChain(opts) {
     ? { pem: true, profile: "none" }
     : { pem: true };
   var leafPem = await pki.x509.sign({
-    subject:          sanDomain,
+    subject:          _leafSubject(sanDomain, opts),
     subjectPublicKey: leafSpki,
     serialNumber:     "0x02",
     notBefore:        leafNotBefore,
@@ -486,7 +521,7 @@ async function _generateTestChainWithRawLogotype(innerDer) {
   var placeholder = Buffer.concat([Buffer.from([0x04, innerDer.length - 2]),
                                    Buffer.alloc(innerDer.length - 2, 0x5A)]);
   var leafDer = await pki.x509.sign({
-    subject:          "example.com",
+    subject:          _leafSubject("example.com", {}),
     subjectPublicKey: leafSpki,
     serialNumber:     "0x02",
     notBefore:        now,
@@ -544,12 +579,13 @@ async function _generateThreeLevelChain() {
   }, { cert: rootPem, key: rootKeyPem }, { pem: true });
 
   var leafPem = await pki.x509.sign({
-    subject: "example.com", subjectPublicKey: leafSpki, serialNumber: "0x03",
+    subject: _leafSubject("example.com", {}), subjectPublicKey: leafSpki, serialNumber: "0x03",
     notBefore: now, notAfter: far,
     extensions: {
       basicConstraints: { cA: false, critical: true },
       subjectAltName:   [{ dNSName: "example.com" }],
       extendedKeyUsage: [BIMI_EKU_OID], extendedKeyUsageCritical: false,
+      certificatePolicies: _leafPolicyOids({}),
     },
   }, { cert: interPem, key: interKeyPem }, { pem: true });
 
@@ -626,20 +662,61 @@ async function testFetchAndVerifyMarkSuccess() {
         rv.certificate && typeof rv.certificate.notAfter === "string");
 }
 
-async function testFetchAndVerifyMarkCmc() {
-  var chain = await _generateTestChain({
-    sanDomain: "example.com",
-    policyOid: b.mail.bimi.CMC_POLICY_OID,
-  });
-  var rv = await b.mail.bimi.fetchAndVerifyMark({
-    domain:           "example.com",
-    vmcUrl:           "https://example.com/cert.pem",
-    trustAnchorsPem:  chain.rootPem,
-    httpClient:       _stubHttpClient(chain.leafPem),
-  });
-  check("fetchAndVerifyMark: CMC policy OID surfaces vmcType=cmc",
-        rv.ok === true && rv.vmcType === "cmc" &&
-        rv.certificate.policyOids.indexOf(b.mail.bimi.CMC_POLICY_OID) !== -1);
+async function _fetchMarkWith(chainOpts) {
+  var chain = await _generateTestChain(Object.assign({ sanDomain: "example.com" }, chainOpts));
+  var rv = null;
+  var threw = null;
+  try {
+    rv = await b.mail.bimi.fetchAndVerifyMark({
+      domain:           "example.com",
+      cmcUrl:           "https://example.com/cert.pem",
+      trustAnchorsPem:  chain.rootPem,
+      httpClient:       _stubHttpClient(chain.leafPem),
+    });
+  } catch (e) { threw = e; }
+  return { rv: rv, threw: threw };
+}
+
+// MC Requirements 7.1.4(r): the subject:markType value decides the
+// certificate type. Registered Mark and Government Mark are Verified Mark
+// Certificates; Prior Use Mark, Modified Registered Mark and Provisional Mark
+// are Common Mark Certificates.
+async function testFetchAndVerifyMarkTypeFromMarkType() {
+  var table = [
+    ["Registered Mark",          "vmc"],
+    ["Government Mark",          "vmc"],
+    ["Prior Use Mark",           "cmc"],
+    ["Modified Registered Mark", "cmc"],
+    ["Provisional Mark",         "cmc"],
+  ];
+  for (var i = 0; i < table.length; i += 1) {
+    var res = await _fetchMarkWith({ markType: table[i][0] });
+    check("fetchAndVerifyMark: markType '" + table[i][0] + "' yields vmcType " + table[i][1],
+          res.threw === null && res.rv && res.rv.ok === true &&
+          res.rv.vmcType === table[i][1] && res.rv.markType === table[i][0],
+          res.threw && res.threw.message);
+  }
+  var printable = await _fetchMarkWith({ markType: "Prior Use Mark", markTypePrintable: true });
+  check("fetchAndVerifyMark: a PrintableString markType is read",
+        printable.threw === null && printable.rv && printable.rv.vmcType === "cmc");
+}
+
+async function testFetchAndVerifyMarkRequiresMcPolicyAndMarkType() {
+  var noPolicy = await _fetchMarkWith({ policyOids: [CA_CPS_FIXTURE_OID] });
+  check("fetchAndVerifyMark: a leaf without 53087.1.1 in certificatePolicies is refused",
+        noPolicy.threw && noPolicy.threw.code === "bimi/vmc-policy-oid-missing");
+  var noPolicies = await _fetchMarkWith({ policyOids: [] });
+  check("fetchAndVerifyMark: a leaf with no certificatePolicies is refused",
+        noPolicies.threw && noPolicies.threw.code === "bimi/vmc-policy-oid-missing");
+  var noMark = await _fetchMarkWith({ markType: null });
+  check("fetchAndVerifyMark: a leaf without subject:markType is refused",
+        noMark.threw && noMark.threw.code === "bimi/vmc-mark-type-invalid");
+  var lower = await _fetchMarkWith({ markType: "registered mark" });
+  check("fetchAndVerifyMark: a markType outside the five exact values is refused",
+        lower.threw && lower.threw.code === "bimi/vmc-mark-type-invalid");
+  var two = await _fetchMarkWith({ markTypes: ["Registered Mark", "Prior Use Mark"] });
+  check("fetchAndVerifyMark: a leaf with two markType values is refused",
+        two.threw && two.threw.code === "bimi/vmc-mark-type-invalid");
 }
 
 async function testFetchAndVerifyMarkChainInvalid() {
@@ -1707,12 +1784,13 @@ async function _generateFourLevelChain() {
   }, { cert: interAPem, key: interAKeyPem }, { pem: true });
 
   var leafPem = await pki.x509.sign({
-    subject: "example.com", subjectPublicKey: await _spki(leafKeys.publicKey),
+    subject: _leafSubject("example.com", {}), subjectPublicKey: await _spki(leafKeys.publicKey),
     serialNumber: "0x04", notBefore: now, notAfter: far,
     extensions: {
       basicConstraints: { cA: false, critical: true },
       subjectAltName:   [{ dNSName: "example.com" }],
       extendedKeyUsage: [BIMI_EKU_OID], extendedKeyUsageCritical: false,
+      certificatePolicies: _leafPolicyOids({}),
     },
   }, { cert: interBPem, key: interBKeyPem }, { pem: true });
 
@@ -1895,7 +1973,7 @@ async function _generateDeepChain(depth) {
 
   var i1KeyPem = await _keyPem(interKeys[0].privateKey);
   var leafPem = await pki.x509.sign({
-    subject:          "example.com",
+    subject:          _leafSubject("example.com", {}),
     subjectPublicKey: await _spki(leafKeys.publicKey),
     serialNumber:     "0x4a",
     notBefore:        now,
@@ -1904,6 +1982,7 @@ async function _generateDeepChain(depth) {
       basicConstraints: { cA: false, critical: true },
       subjectAltName:   [{ dNSName: "example.com" }],
       extendedKeyUsage: [BIMI_EKU_OID], extendedKeyUsageCritical: false,
+      certificatePolicies: _leafPolicyOids({}),
     },
   }, { cert: interPems[0], key: i1KeyPem }, { pem: true });
 
@@ -2105,7 +2184,8 @@ async function run() {
   testTinyPsSvgBareUnquotedAttrs();
 
   await testFetchAndVerifyMarkSuccess();
-  await testFetchAndVerifyMarkCmc();
+  await testFetchAndVerifyMarkTypeFromMarkType();
+  await testFetchAndVerifyMarkRequiresMcPolicyAndMarkType();
   await testFetchAndVerifyMarkChainInvalid();
   await testFetchAndVerifyMarkDomainMismatch();
   await testFetchAndVerifyMarkMissingEku();

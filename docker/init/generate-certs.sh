@@ -1,8 +1,9 @@
 #!/bin/sh
 # One-shot cert generator. Runs in a tiny alpine + openssl container at
 # stack startup, populates /certs with a self-signed Ed25519 CA plus
-# per-service leaf certs. Idempotent — re-runs short-circuit if /certs/ca.crt
-# already exists.
+# per-service leaf certs. A re-run on a completed volume exits without changes
+# when every service in SERVICES already has a leaf, and otherwise issues the
+# missing leaves from the existing CA.
 #
 # Why Ed25519: it's the closest to the framework's PQC-first posture
 # that the external services in this stack actually accept. ML-DSA / SLH-DSA
@@ -17,9 +18,23 @@ set -eu
 CERT_DIR="${CERT_DIR:-/certs}"
 DAYS="${DAYS:-3650}"
 
+# Service list. Each service gets a leaf cert covering the docker-network
+# hostname, the host-bind 127.0.0.1 / [::1], and localhost.
+SERVICES="redis postgres mysql mongo minio rabbitmq nats syslog mailpit haproxy caddy nginx mitmproxy squid coredns azurite gcs otel localstack nts"
+
+# A completed volume is left alone only when every listed service already has
+# its leaf. A service added to the list later gets its leaf issued from the
+# existing CA on the next run.
 if [ -f "$CERT_DIR/ca.crt" ] && [ -f "$CERT_DIR/.complete" ]; then
-  echo "[pki-init] /certs/ca.crt already present — skipping regen"
-  exit 0
+  MISSING=""
+  for SVC in $SERVICES; do
+    [ -f "$CERT_DIR/$SVC.crt" ] || MISSING="$MISSING $SVC"
+  done
+  if [ -z "$MISSING" ]; then
+    echo "[pki-init] /certs/ca.crt and every service leaf present; skipping regen"
+    exit 0
+  fi
+  echo "[pki-init] issuing leaf certs missing from a completed volume:$MISSING"
 fi
 
 mkdir -p "$CERT_DIR"
@@ -36,10 +51,6 @@ else
   openssl req -x509 -new -key ca.key -out ca.crt -days "$DAYS" \
     -subj "/CN=blamejs-test-ca/O=blamejs-test/C=US"
 fi
-
-# Service list — each gets a leaf cert covering the docker-network
-# hostname, the host-bind 127.0.0.1 / [::1], and localhost.
-SERVICES="redis postgres mysql mongo minio rabbitmq nats syslog mailpit haproxy caddy nginx mitmproxy squid coredns azurite gcs otel localstack"
 
 for SVC in $SERVICES; do
   if [ -f "$CERT_DIR/$SVC.crt" ]; then

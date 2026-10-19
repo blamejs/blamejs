@@ -327,6 +327,32 @@ async function testCreateRequireFlushHardFails() {
   } finally { _rm(data); _rm(root); }
 }
 
+// flushBeforeBackup is `false` (no flush), a function (the flush to run), or
+// omitted (flush the framework database). Any other value is refused when the
+// engine is built: `"false"` or `0` read as "omitted" and flushed anyway.
+function testCreateRefusesFlushBeforeBackupOutsideItsContract() {
+  var data = _tmp("fbb-data");
+  var root = _tmp("fbb-root");
+  try {
+    var bad = ["false", 0, 1, true, null, {}];
+    for (var i = 0; i < bad.length; i++) {
+      var threw = null;
+      try { b.backup.create(_createOpts(data, root, { flushBeforeBackup: bad[i] })); }
+      catch (e) { threw = e; }
+      check("create: flushBeforeBackup " + JSON.stringify(bad[i]) + " refused with backup/bad-opts",
+        threw !== null && threw.code === "backup/bad-opts", threw && (threw.code + " " + threw.message));
+    }
+    var okValues = [false, function () {}, undefined];
+    for (var j = 0; j < okValues.length; j++) {
+      var built = null;
+      try { built = b.backup.create(_createOpts(data, root, { flushBeforeBackup: okValues[j] })); }
+      catch (e) { built = e; }
+      check("create: flushBeforeBackup " + (typeof okValues[j]) + " " + String(okValues[j]).slice(0, 12) +
+        " constructs", built && typeof built.run === "function", built && built.message);
+    }
+  } finally { _rm(data); _rm(root); }
+}
+
 function testCreateHipaaRefusesUnencrypted() {
   var data = _tmp("hip-data");
   var root = _tmp("hip-root");
@@ -2245,6 +2271,7 @@ async function run() {
   testCreateScheduleRequiresScheduler();
   testCreateScheduleArgValidation();
   await testCreateRequireFlushHardFails();
+  testCreateRefusesFlushBeforeBackupOutsideItsContract();
   testCreateHipaaRefusesUnencrypted();
 
   testVerifyManifestSignatureBadTarget();

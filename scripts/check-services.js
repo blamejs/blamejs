@@ -11,14 +11,16 @@
  * fails fast.
  *
  * Probe types per service:
- *   - tcp   — net.connect, expect immediate accept
- *   - tls   — tls.connect, full handshake + cipher suite captured
- *   - http  — TCP + GET to a /healthz-style endpoint
- *   - sntp  — UDP SNTPv4 query, expect a 48-byte reply with a
- *             non-zero transmit timestamp
- *   - redis — TCP + send PING, expect +PONG (catches the case where
- *             the server is up but still LOADING)
- *   - smtp  — TCP + read 220 banner, send QUIT, expect 221
+ *   - tcp:   net.connect, expect immediate accept
+ *   - tls:   tls.connect, full handshake + cipher suite captured
+ *   - ntske: tls.connect offering ALPN "ntske/1"; the handshake must
+ *            negotiate it (an NTS-KE listener, RFC 8915)
+ *   - http:  TCP + GET to a /healthz-style endpoint
+ *   - sntp:  UDP SNTPv4 query, expect a 48-byte reply with a
+ *            non-zero transmit timestamp
+ *   - redis: TCP + send PING, expect +PONG (catches the case where
+ *            the server is up but still LOADING)
+ *   - smtp:  TCP + read 220 banner, send QUIT, expect 221
  *
  * Exit codes:
  *   0  — every probe passed
@@ -71,6 +73,10 @@ var BASE_SERVICES = [
   // which is what test suites should validate end-to-end.
   { name: "coredns-dot",  port:  1853, kind: "tls",   label: "TLS handshake (DoT)", group: "tls"   },
   { name: "coredns-doh",  port:  8053, kind: "tls",   label: "TLS handshake (DoH)", group: "tls"   },
+  // NTS-KE (RFC 8915): the handshake must negotiate ALPN "ntske/1".
+  { name: "nts",          port: 14460, kind: "ntske", label: "TLS ALPN ntske/1",    group: "tls"   },
+  { name: "nts-gcmsiv",   port: 14461, kind: "ntske", label: "TLS ALPN ntske/1",    group: "tls"   },
+  { name: "nts-unsynced", port: 14462, kind: "ntske", label: "TLS ALPN ntske/1",    group: "tls"   },
 
   // ---- proxies + DPI ----
   { name: "haproxy",      port:  8443, kind: "tls",   label: "TLS handshake",       group: "proxy" },
@@ -165,10 +171,10 @@ function probeTcp(host, port, timeoutMs) {
   });
 }
 
-function probeTls(host, port, timeoutMs) {
+function probeTls(host, port, timeoutMs, alpn) {
   return new Promise(function (resolve) {
     var done = false;
-    var sock = tls.connect({
+    var connectOpts = {
       host: host,
       port: port,
       family: _family(host),
@@ -176,7 +182,9 @@ function probeTls(host, port, timeoutMs) {
       // SNI is only legal for hostnames, not IP literals — both 127.0.0.1
       // and ::1 must omit it.
       servername: undefined,
-    });
+    };
+    if (alpn) connectOpts.ALPNProtocols = [alpn];
+    var sock = tls.connect(connectOpts);
     var timer = setTimeout(function () {
       if (done) return;
       done = true;
@@ -189,8 +197,14 @@ function probeTls(host, port, timeoutMs) {
       clearTimeout(timer);
       var protocol = sock.getProtocol() || "?";
       var cipher = (sock.getCipher() && sock.getCipher().name) || "?";
+      var negotiated = sock.alpnProtocol;
       try { sock.end(); } catch (_e) {}
-      resolve({ ok: true, detail: protocol + "/" + cipher });
+      if (alpn && negotiated !== alpn) {
+        resolve({ ok: false, reason: "tls: ALPN " + JSON.stringify(alpn) + " not negotiated (got " +
+          JSON.stringify(negotiated) + ")" });
+        return;
+      }
+      resolve({ ok: true, detail: protocol + "/" + cipher + (alpn ? " alpn=" + negotiated : "") });
     });
     sock.once("error", function (err) {
       if (done) return;
@@ -418,6 +432,7 @@ async function probeService(svc, timeoutMs) {
   switch (svc.kind) {
     case "tcp":     return await probeTcp(svc.host, svc.port, timeoutMs);
     case "tls":     return await probeTls(svc.host, svc.port, timeoutMs);
+    case "ntske":   return await probeTls(svc.host, svc.port, timeoutMs, "ntske/1");
     case "http":    return await probeHttp(svc.httpUrl, timeoutMs);
     case "redis":   return await probeRedis(svc.host, svc.port, timeoutMs);
     case "smtp":    return await probeSmtp(svc.host, svc.port, timeoutMs);
