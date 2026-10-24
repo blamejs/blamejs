@@ -246,6 +246,29 @@ async function testOperatorSignerVerifiesUnderItsOwnKey() {
         (await _code(outage.resign(aPem))) === "agent-snapshot/signer-key-unreadable");
 }
 
+// The key a load verifies under is judged, not only the row's sigPubKey: an
+// operator signer that reports a compromised key refuses a row signed by it
+// even when the row names an ordinary sigPubKey.
+async function testOperatorSignerKeyItselfIsJudged() {
+  var bad = ck.ecKeyPair("prime256v1", 1n);
+  var ordinary = ck.ecKeyPair("prime256v1", ck.labelScalar("prime256v1", "agent-snapshot decoy sigPubKey"));
+  var backend = _backend();
+  var id = await _plantWithSigPubKey(backend, bad.privateKey, FORMS.pem.repr(ordinary.publicKey));
+  var loader = b.agent.snapshot.create({ orchestrator: _orch(), backend: backend, sealer: _sealer(),
+    signer: _formSigner(bad, "pem") });
+  check("agent-snapshot operator signer: a compromised current key refuses a row that names an ordinary sigPubKey",
+        (await _code(loader.loadById(id))) === "agent-snapshot/compromised-key");
+  check("agent-snapshot operator signer: resign() refuses a handle whose signer key is compromised",
+        (await _code(loader.resign(FORMS.pem.repr(ordinary.publicKey)))) === "agent-snapshot/compromised-key");
+  var control = ck.ecKeyPair("prime256v1", ck.labelScalar("prime256v1", "agent-snapshot operator control"));
+  var cBackend = _backend();
+  var cId = await _plantWithSigPubKey(cBackend, control.privateKey, FORMS.pem.repr(ordinary.publicKey));
+  var cLoader = b.agent.snapshot.create({ orchestrator: _orch(), backend: cBackend, sealer: _sealer(),
+    signer: _formSigner(control, "pem") });
+  check("agent-snapshot operator signer control: an ordinary current key loads the row it signed",
+        (await _code(cLoader.loadById(cId))) === "NO-THROW");
+}
+
 async function testOperatorSignerJudgesEveryKeyFormAtLoad() {
   var cases = [
     ["prime256v1", "pem"], ["secp384r1", "pem"], ["prime256v1", "pem-with-unreadable-tail"],
@@ -268,7 +291,8 @@ async function testOperatorSignerJudgesEveryKeyFormAtLoad() {
     var bBackend = _backend();
     var bId = await _plantWithSigPubKey(bBackend, bad.privateKey, FORMS[form].repr(bad.publicKey));
     var bLoader = b.agent.snapshot.create({
-      orchestrator: _orch(), backend: bBackend, sealer: _sealer(), signer: _formSigner(bad, form),
+      orchestrator: _orch(), backend: bBackend, sealer: _sealer(),
+      signer: Object.assign({}, _formSigner(bad, form), { getPublicKey: function () { return null; } }),
     });
     check("agent-snapshot compromised key: a stored " + label + " scalar-1 sigPubKey is refused",
           (await _code(bLoader.loadById(bId))) === "agent-snapshot/bad-signature");
@@ -320,16 +344,22 @@ async function testOperatorSignerUnreadableKey() {
   var lBackend = _backend();
   var cId = await _plantWithSigPubKey(lBackend, pair.privateKey, null);
   var loader = b.agent.snapshot.create({ orchestrator: _orch(), backend: lBackend, sealer: _sealer(), signer: opaque });
-  check("agent-snapshot unreadable key control: a row with no sigPubKey verifies under the operator signer",
-        (await _code(loader.loadById(cId))) === "NO-THROW");
+  check("agent-snapshot unreadable key: a load under a signer key compromisedKey cannot read throws " +
+        "agent-snapshot/signer-key-unreadable, even for a row with no sigPubKey",
+        (await _code(loader.loadById(cId))) === "agent-snapshot/signer-key-unreadable");
+  var nullKey = b.agent.snapshot.create({ orchestrator: _orch(), backend: lBackend, sealer: _sealer(),
+    signer: Object.assign({}, opaque, { getPublicKey: function () { return null; } }) });
+  check("agent-snapshot unreadable key control: a signer that reports no key verifies a row with no sigPubKey",
+        (await _code(nullKey.loadById(cId))) === "NO-THROW");
   var uId = await _plantWithSigPubKey(lBackend, pair.privateKey, "kms-key-7");
   check("agent-snapshot unreadable key: a stored sigPubKey compromisedKey cannot read is refused",
-        (await _code(loader.loadById(uId))) === "agent-snapshot/bad-signature");
+        (await _code(nullKey.loadById(uId))) === "agent-snapshot/bad-signature");
 }
 
 async function run() {
   await testDefaultSignerRefusesForeignKey();
   await testOperatorSignerVerifiesUnderItsOwnKey();
+  await testOperatorSignerKeyItselfIsJudged();
   await testOperatorSignerJudgesEveryKeyFormAtLoad();
   await testOperatorSignerRefusesCompromisedKeyAtPersist();
   await testOperatorSignerUnreadableKey();
