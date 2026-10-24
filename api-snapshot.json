@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.21.3",
-  "createdAt": "2026-10-19T17:23:29.507Z",
+  "frameworkVersion": "0.21.4",
+  "createdAt": "2026-10-24T17:37:40.604Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -15215,6 +15215,14 @@
         "assertKeyType": {
           "type": "function",
           "arity": 3
+        },
+        "assertNotCompromised": {
+          "type": "function",
+          "arity": 2
+        },
+        "compromisedKey": {
+          "type": "function",
+          "arity": 1
         },
         "decrypt": {
           "type": "function",
@@ -49222,6 +49230,10 @@
             "certificateCompressionAlgorithms": {
               "type": "function",
               "arity": 0
+            },
+            "checkClientChains": {
+              "type": "function",
+              "arity": 1
             },
             "checkServerIdentity9525": {
               "type": "function",

@@ -35,6 +35,12 @@ function _peerCertObject(fixture, cn, san) {
   };
 }
 
+// Node calls checkServerIdentity as a method of the dial options. The
+// self-signed fixture is the dial's ca, so the chain reaches a trust anchor.
+function _verifyAsDial(verify, fixture, host, certObj) {
+  return verify.call({ checkServerIdentity: verify, ca: [fixture.pem] }, host, certObj);
+}
+
 function testSpkiPinShape() {
   var fixture = _makeEcCert("pin-shape.example", "P-256");
   var pin = b.crypto.spkiPin(fixture.certDer);
@@ -85,7 +91,18 @@ function testVerifierMatchingCert() {
   var verify = b.crypto.spkiPinVerifier({ pins: [correctPin, backupPin] });
   var certObj = _peerCertObject(fixture, "verify-ok.example", "DNS:verify-ok.example");
   check("verifier: undefined for matching pin + matching hostname",
-        verify("verify-ok.example", certObj) === undefined);
+        _verifyAsDial(verify, fixture, "verify-ok.example", certObj) === undefined);
+}
+
+function testVerifierChainWithoutAnchor() {
+  var fixture = _makeEcCert("verify-noanchor.example", "P-256");
+  var correctPin = b.crypto.spkiPin(fixture.certDer).sha256;
+  var backupPin = b.crypto.spkiPin(_makeEcCert("backup-noanchor.example", "P-256").certDer).sha256;
+  var verify = b.crypto.spkiPinVerifier({ pins: [correctPin, backupPin] });
+  var certObj = _peerCertObject(fixture, "verify-noanchor.example", "DNS:verify-noanchor.example");
+  var res = verify("verify-noanchor.example", certObj);
+  check("verifier: a matching pin on a certificate that reaches no trust anchor is refused",
+        res instanceof Error && res.code === "tls/server-chain-unverifiable");
 }
 
 function testVerifierNonMatchingPin() {
@@ -95,7 +112,7 @@ function testVerifierNonMatchingPin() {
   var wrong2 = b.crypto.spkiPin(_makeEcCert("other-2.example", "P-256").certDer).sha256;
   var verify = b.crypto.spkiPinVerifier({ pins: [wrong1, wrong2] });
   var certObj = _peerCertObject(fixture, "verify-badpin.example", "DNS:verify-badpin.example");
-  var res = verify("verify-badpin.example", certObj);
+  var res = _verifyAsDial(verify, fixture, "verify-badpin.example", certObj);
   check("verifier: Error when peer pin matches no configured pin",
         res instanceof Error && res.code === "crypto/spki-pin-mismatch");
 }
@@ -109,7 +126,7 @@ function testVerifierHostnameMismatchWinsOverPin() {
   // different host — the identity (hostname/SAN) check must refuse FIRST,
   // even though the SPKI pin itself would match.
   var certObj = _peerCertObject(fixture, "verify-host.example", "DNS:verify-host.example");
-  var res = verify("wrong-host.example", certObj);
+  var res = _verifyAsDial(verify, fixture, "wrong-host.example", certObj);
   check("verifier: hostname/SAN error precedes the pin match",
         res instanceof Error &&
         typeof res.code === "string" && res.code.indexOf("tls/pkix") === 0);
@@ -127,7 +144,7 @@ function testVerifierHostnameOptOverride() {
   });
   var certObj = _peerCertObject(fixture, "verify-opt.example", "DNS:verify-opt.example");
   check("verifier: opts.hostname override accepts a matching cert",
-        verify("ignored-by-override.example", certObj) === undefined);
+        _verifyAsDial(verify, fixture, "ignored-by-override.example", certObj) === undefined);
 }
 
 function testVerifierBadOpts() {
@@ -169,6 +186,7 @@ function run() {
   testSpkiPinPemDerAgreement();
   testSpkiPinBadInput();
   testVerifierMatchingCert();
+  testVerifierChainWithoutAnchor();
   testVerifierNonMatchingPin();
   testVerifierHostnameMismatchWinsOverPin();
   testVerifierHostnameOptOverride();

@@ -347,7 +347,7 @@ This is the minimum-viable security posture for a production deployment. The fra
 
 **Audit chain**
 - [ ] Run `blamejs audit verify-chain --db <path> --public-key <pem> --archive-dir <path>` weekly via cron — walks the live audit chain end-to-end and reports tampering with `breakAt` / `breakRowId` / expected-vs-actual prevHash. Pass both flags: without `--public-key` the command holds no key and exits 3 rather than checking the purge anchor that licenses any deleted rows, and without `--archive-dir` it cannot confirm the archive those rows went into still exists — it names the archive and reports it unresolved instead of claiming otherwise
-- [ ] Rotate the audit signing key annually (or per compliance schedule)
+- [ ] Rotate the audit signing key annually (or per compliance schedule). After `b.auditSign.rotateSigningKey()`, call `resign(rotation.previousPublicKey)` on every `b.configDrift` detector and `b.agent.snapshot` handle: both verify only under the live key, so a baseline or snapshot signed before the rotation is refused until it is signed again. Do not resign when the previous key may have been exposed
 - [ ] Archive old audit rows monthly: `blamejs audit archive --before <date> --out ./audit-archives/`
 - [ ] Back up the audit-archive bundles to a separate location with a different passphrase
 - [ ] Place `audit_log` under dual control (`b.db.declareRequireDualControl`) so a physical purge requires a two-authorizer m-of-n grant in addition to a verified archive — one operator cannot erase the chain alone
@@ -381,6 +381,7 @@ This is the minimum-viable security posture for a production deployment. The fra
 - [ ] After superseding a CA generation, `revokeGeneration(n)` to revoke every certificate issued under the older roots rather than waiting on lifetime expiry
 - [ ] Wire the CA into the gate — `b.middleware.requireMtls({ revocationSource: caHandle })` — so `revoke()` / `revokeGeneration()` are enforced per request (fingerprint-keyed, generation-independent, fail-closed) without mirroring the registry into `denyList`
 - [ ] Distribute the CA cert to clients via `blamejs mtls show-cert --data-dir ./data` rather than copying files around — reduces "wrong-cert-trusted" mistakes
+- [ ] On a `tls.Server`, `https.Server` or HTTP/2 secure server you build yourself with `requestCert`, call `b.network.tls.checkClientChains(server)` before it accepts connections. List every CA certificate that issues client certificates in the listener's `ca`, intermediates included: the check walks each client chain to a certificate in that `ca` and refuses a chain that reaches none with `tls/client-chain-unverifiable`, and on Node 24 a listener sees only the client's leaf certificate
 - [ ] If `fingerprintAllowList` is built from configuration rather than written as a literal, assert it is non-empty before boot. A list that computes to empty now admits NO peer, which is what an empty allowlist asks for; before v0.18.55 the same list admitted every peer, so a deployment that has been running on a silently-empty pin is relying on an inversion and will start refusing once it is fixed. Omitting the option remains the way to apply no fingerprint pin at all
 
 **Pipeline**

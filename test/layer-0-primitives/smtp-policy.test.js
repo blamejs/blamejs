@@ -14,6 +14,7 @@ var b       = helpers.b;
 var check   = helpers.check;
 var nodeCrypto = require("crypto");
 var pki     = require("../../lib/vendor/blamejs-pki.cjs");
+var ck      = require("../helpers/compromised-keys");
 
 // Mints a real ECDSA chain [leaf, root] (root a self-signed CA that signed the
 // leaf), returning cert.raw DER buffers. A DANE-TA (RFC 7672 §3.1.1) match must
@@ -111,9 +112,9 @@ function testDaneVerifyChainNoMatch() {
 
 function testDaneVerifyChainDaneEeFullCert() {
   // DANE-EE / Cert / Full — exact DER match against the leaf cert.
-  // The leaf cert can be any DER because mtype=0 (Full) does a
-  // byte-identical comparison.
-  var dummyLeaf = Buffer.from("any bytes at all", "utf8");
+  // mtype=0 (Full) does a byte-identical comparison. The leaf is a real
+  // certificate so the compromised-key check can read its key.
+  var dummyLeaf = ck.TLS_CONTROL_LEAF_DER;
   var rec = {
     usage:    3,                                                                 // DANE-EE
     selector: 0,                                                                 // Cert (full DER)
@@ -128,7 +129,7 @@ function testDaneVerifyChainDaneEeFullCert() {
 
 function testDaneVerifyChainDaneEeSha256() {
   var nc = require("crypto");
-  var dummyLeaf = Buffer.from("predictable cert bytes for test", "utf8");
+  var dummyLeaf = ck.TLS_CONTROL_LEAF_DER;
   var sha256Hex = nc.createHash("sha256").update(dummyLeaf).digest("hex");
   var rec = { usage: 3, selector: 0, mtype: 1, dataHex: sha256Hex };
   var rv = b.network.smtp.dane.verifyChain([dummyLeaf], [rec]);

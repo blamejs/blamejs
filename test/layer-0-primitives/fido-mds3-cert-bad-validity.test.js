@@ -86,7 +86,9 @@ function _futureDateString(daysFromNow) {
 }
 
 // Make every freshly-parsed X509Certificate report an unparseable
-// validFrom (Date.parse -> NaN) while keeping all real cert behaviour.
+// validFrom (Date.parse -> NaN) while keeping all real cert behaviour,
+// including `instanceof nodeCrypto.X509Certificate` while the wrapper is
+// installed.
 async function _withUnparseableValidFrom(fn) {
   var realX509 = nodeCrypto.X509Certificate;
   function Wrapped(arg) {
@@ -97,6 +99,7 @@ async function _withUnparseableValidFrom(fn) {
     });
     return c;
   }
+  Wrapped.prototype = realX509.prototype;
   nodeCrypto.X509Certificate = Wrapped;
   try { return await fn(); }
   finally { nodeCrypto.X509Certificate = realX509; }

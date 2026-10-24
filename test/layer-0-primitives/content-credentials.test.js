@@ -35,7 +35,14 @@ var OID_RSA_ENCRYPTION = "1.2.840.113549.1.1.1";
 function _utcTime(d) { var s = d.toISOString().replace(/[-:T]/g, "").slice(2, 14) + "Z"; return asn1.writeNode(0x17, Buffer.from(s, "ascii")); }
 function _genTime(d) { var s = d.toISOString().replace(/[-:T]/g, "").slice(0, 14) + "Z"; return asn1.writeNode(0x18, Buffer.from(s, "ascii")); }
 function _algId(oid, n) { return n ? asn1.writeSequence([asn1.writeOid(oid), asn1.writeNull()]) : asn1.writeSequence([asn1.writeOid(oid)]); }
-function _certName(cn) { return asn1.writeSequence([asn1.writeSet([asn1.writeSequence([asn1.writeOid("2.5.4.3"), asn1.writeUtf8String(cn)])])]); }
+// `extra` is a list of [oid, value] attributes after the commonName, each in
+// its own RDN.
+function _certName(cn, extra) {
+  var rdns = [[ "2.5.4.3", cn ]].concat(extra || []).map(function (atv) {
+    return asn1.writeSet([asn1.writeSequence([asn1.writeOid(atv[0]), asn1.writeUtf8String(atv[1])])]);
+  });
+  return asn1.writeSequence(rdns);
+}
 
 function _makeTsaCert() {
   var kp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -60,10 +67,15 @@ function _makeTsaCert() {
 // self-signed (issuer null). Used to assemble a real [leaf, intermediate,
 // root] chain so the identity-assertion chain walk is exercised through
 // an intermediate CA, not only a direct-root / self-signed leaf.
+// `val.subjectKey` (a public KeyObject or PEM) puts that key in the
+// certificate instead of a fresh RSA key, and `val.attrs` adds subject
+// attributes after the commonName.
 function _makeCert(cn, issuer, isCa, val) {
   var kp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
-  var spki = kp.publicKey.export({ type: "spki", format: "der" });
-  var subjName  = _certName(cn);
+  var spki = val && val.subjectKey
+    ? nodeCrypto.createPublicKey(val.subjectKey).export({ type: "spki", format: "der" })
+    : kp.publicKey.export({ type: "spki", format: "der" });
+  var subjName  = _certName(cn, val && val.attrs);
   var issuerName = issuer ? issuer.name : subjName;
   var issuerKey  = issuer ? issuer.key  : kp.privateKey;
   var sigAlgId = _algId("1.2.840.113549.1.1.11", true);
@@ -92,6 +104,14 @@ function _makeCert(cn, issuer, isCa, val) {
   var tbsSig = nodeCrypto.sign("sha256", tbs, issuerKey);
   var certDer = asn1.writeSequence([tbs, sigAlgId, asn1.writeBitString(tbsSig, 0)]);
   return { name: subjName, key: kp.privateKey, pem: new nodeCrypto.X509Certificate(certDer).toString() };
+}
+
+// A root CA and a leaf it issued that carries `subjectKey` under the subject
+// `cn` plus `attrs`, for an identity assertion signed with that key.
+function _identityChain(subjectKey, cn, attrs) {
+  var root = _makeCert("Identity Test Root", null, true);
+  var leaf = _makeCert(cn, { name: root.name, key: root.key }, false, { subjectKey: subjectKey, attrs: attrs });
+  return { leafPem: leaf.pem, rootPem: root.pem };
 }
 
 function _makeTsToken(o) {
@@ -504,9 +524,8 @@ async function runAuditOnPaths() {
     cc.verifyIdentityAssertion(ia, otherPair.publicKey, { referencedAssertions: refs });                               // wrong key → denied
     cc.verifyIdentityAssertion(ia, pair.publicKey, { referencedAssertions: [{ label: "x", data: { other: 1 } }] });    // transplant → denied
     // x509 chained to a trusted anchor → verified:true, audit outcome "success".
-    var trustCert = _makeTsaCert();
-    var trustPem = new nodeCrypto.X509Certificate(trustCert.certDer).toString();
-    var iaVerified = cc.verifyIdentityAssertion(ia, pair.publicKey, { referencedAssertions: refs, identityCertChainPem: trustPem, identityTrustAnchorsPem: trustPem });
+    var trustChain = _identityChain(pair.publicKey, "Acme Newsroom");
+    var iaVerified = cc.verifyIdentityAssertion(ia, pair.publicKey, { referencedAssertions: refs, identityCertChainPem: trustChain.leafPem, identityTrustAnchorsPem: trustChain.rootPem });
     check("audit-on identity verified:true (x509 chained)", iaVerified.verified === true);
 
     await b.audit.flush();
@@ -902,7 +921,8 @@ async function runX509ChainErrorBranches() {
   // — the [leaf, intermediate] chain verifies to the array-form root anchor.
   var arrRoot  = _makeCert("Array Anchor Root", null, true);
   var arrInter = _makeCert("Array Anchor Intermediate", { name: arrRoot.name, key: arrRoot.key }, true);
-  var arrLeaf  = _makeCert("Array Anchor Leaf", { name: arrInter.name, key: arrInter.key }, false);
+  var arrLeaf  = _makeCert("Acme Newsroom", { name: arrInter.name, key: arrInter.key }, false,
+    { subjectKey: pair.publicKey });
   var vArr = _vi({ identityCertChainPem: [arrLeaf.pem, arrInter.pem], identityTrustAnchorsPem: [arrRoot.pem] });
   check("verifyIdentity array-form trust anchor verifies", vArr.valid === true && vArr.verified === true);
 
@@ -1142,21 +1162,35 @@ async function run() {
   check("verifyIdentityAssertion: self-asserted valid", iaSelf.valid === true);
   check("verifyIdentityAssertion: self-asserted NOT verified (no anchor)", iaSelf.verified === false && iaSelf.reason === "no-trust-anchor");
 
-  // x509 chained to a supplied trust anchor → verified:true. Reuse the
-  // mock TSA cert as a self-signed leaf==anchor.
-  var orgCert = _makeTsaCert();
-  var orgPem = new nodeCrypto.X509Certificate(orgCert.certDer).toString();
+  // x509 chained to a supplied trust anchor → verified:true. The leaf
+  // certificate carries the claim key and certifies every subject field.
+  var orgAttrs = [["2.5.4.10", "Acme Media"], ["2.5.4.5", "acme-001"]];
+  var orgChain = _identityChain(orgPair.publicKey, "Acme Newsroom", orgAttrs);
+  var orgPem = orgChain.rootPem;
   var iaTrusted = b.contentCredentials.verifyIdentityAssertion(ia, orgPair.publicKey, {
-    referencedAssertions: refs, identityCertChainPem: orgPem, identityTrustAnchorsPem: orgPem, audit: false,
+    referencedAssertions: refs, identityCertChainPem: orgChain.leafPem, identityTrustAnchorsPem: orgPem, audit: false,
   });
   check("verifyIdentityAssertion: x509 chained → verified", iaTrusted.valid === true && iaTrusted.verified === true);
+  var orgSelf = _makeCert("Acme Newsroom", null, true, { subjectKey: orgPair.publicKey, attrs: orgAttrs });
+  var iaSelfAnchored = b.contentCredentials.verifyIdentityAssertion(ia, orgPair.publicKey, {
+    referencedAssertions: refs, identityCertChainPem: orgSelf.pem, identityTrustAnchorsPem: orgSelf.pem, audit: false,
+  });
+  check("verifyIdentityAssertion: a leaf certificate that is itself the anchor → verified",
+    iaSelfAnchored.verified === true && iaSelfAnchored.reason === "x509-chain-verified");
+  var tsaPem = new nodeCrypto.X509Certificate(_makeTsaCert().certDer).toString();
+  var iaOtherLeaf = b.contentCredentials.verifyIdentityAssertion(ia, orgPair.publicKey, {
+    referencedAssertions: refs, identityCertChainPem: tsaPem, identityTrustAnchorsPem: tsaPem, audit: false,
+  });
+  check("verifyIdentityAssertion: a trusted leaf certificate that carries another key → not verified",
+    iaOtherLeaf.valid === true && iaOtherLeaf.verified === false && iaOtherLeaf.reason === "leaf-key-mismatch");
 
   // x509 chain through an INTERMEDIATE CA: chain [leaf, intermediate]
   // with the root as the trust anchor must verify — the chain walk uses
   // chain[1..], not only a direct leaf-vs-anchor test.
   var caRoot  = _makeCert("CAWG Test Root", null, true);
   var caInter = _makeCert("CAWG Test Intermediate", { name: caRoot.name, key: caRoot.key }, true);
-  var caLeaf  = _makeCert("Acme Newsroom Leaf", { name: caInter.name, key: caInter.key });
+  var caLeaf  = _makeCert("Acme Newsroom", { name: caInter.name, key: caInter.key }, false,
+    { subjectKey: orgPair.publicKey, attrs: orgAttrs });
   var iaChain = b.contentCredentials.verifyIdentityAssertion(ia, orgPair.publicKey, {
     referencedAssertions: refs,
     identityCertChainPem: [caLeaf.pem, caInter.pem],
