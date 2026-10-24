@@ -1053,7 +1053,7 @@ async function testFinalizeNetworkBranches() {
   await _withHttp(_finalizeHandler({ status: 400, body: { title: "bad CSR" } }), async function () {
     await acme2.fetchDirectory();
     check("finalize non-2xx -> acme/finalize",
-          (await _acode(acme2.finalize(order, Buffer.from([0x30, 0x03, 0x02, 0x01, 0x00])))) === "acme/finalize");
+          (await _acode(acme2.finalize(order, csr))) === "acme/finalize");
   });
   check("finalize failure audit extracts RFC 7807 title",
         sink2.events.some(function (e) { return e.action === "acme.order.finalize" && e.outcome === "failure" && e.metadata.reason === "bad CSR"; }));

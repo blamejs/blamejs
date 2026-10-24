@@ -1739,10 +1739,9 @@ async function testDkimVerifySingleSignatureGuards() {
 }
 
 async function testDkimVerifyCryptoThrowsPath() {
-  // a=rsa-sha256 (digest sha256) but the published key is an Ed25519 key
-  // with no k= tag, so the k= guard is skipped and node:crypto.verify is
-  // invoked with a digest the key type rejects → it THROWS, and the
-  // verifier maps the throw to a permerror rather than crashing.
+  // a=rsa-sha256 but the published key is an Ed25519 key with no k= tag.
+  // The k= label check passes (an absent k= reads as rsa), and the key type
+  // check refuses the key with a permerror before node:crypto.verify runs.
   var edKp = _ed25519Keypair();
   var edB64 = _spkiPemToB64(edKp.publicKey);
   var body = "throws body\r\n";
@@ -1752,9 +1751,9 @@ async function testDkimVerifyCryptoThrowsPath() {
     _messageWithSig(["v=1", "a=rsa-sha256", "c=relaxed/relaxed",
       "d=throws.example", "s=s", "h=from", "bh=" + bh, "b=AAAA"], body),
     { dnsLookup: async function () { return [["v=DKIM1; p=" + edB64]]; } });
-  check("verify: node:crypto.verify throw is caught → permerror",
+  check("verify: an Ed25519 key under a=rsa-sha256 with no k= tag → permerror on the key type",
         rv[0] && rv[0].result === "permerror" &&
-        /verify threw/.test((rv[0].errors || []).join(",")));
+        /type ed25519 does not match a=rsa-sha256/.test((rv[0].errors || []).join(",")));
 }
 
 // ---- verify(): key cache expiry + eviction ----

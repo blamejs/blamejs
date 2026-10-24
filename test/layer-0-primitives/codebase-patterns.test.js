@@ -13364,6 +13364,463 @@ function testOutboundTlsMergesSharedPosture() {
   _report("outbound TLS constructions merge b.network.tls.outboundPosture()", bad);
 }
 
+// ---- Pattern 48c: outbound TLS constructions run the compromised-key chain check ----
+
+var CHAIN_CHECK_MODULE_SPEC_RE = /^(["'])(?:node:)?(?:tls|https|http2)\1$/;
+var TLS_MODULE_REQUIRE_RE = /require\(\s*["'](?:node:)?(?:tls|https|http2)["']\s*\)/;
+var TLS_DIAL_METHODS = { connect: 1, request: 1, get: 1 };
+var TLS_DIAL_CLASSES = { Agent: 1, TLSSocket: 1 };
+var CLIENT_ROLE_RE = /^(["'])client\1$/;
+
+// Outbound TLS constructions that dial without the chain check, each keyed on
+// the file, the named function around the call and the callee as written,
+// with the reason the site cannot carry the check.
+var CHAIN_CHECK_EXEMPT = [
+  { file: "lib/network-tls.js", fn: "_isEchSupported", callee: "nodeTls.connect",
+    reason: "a feature probe whose lookup fails before a socket opens, so no certificate is ever received" },
+  { file: "lib/http-client.js", fn: "_connectH2c", callee: "http2.connect",
+    reason: "an h2c session to an http: origin over cleartext TCP, with no TLS handshake to check" },
+];
+
+// The name of the nearest named function around `pos`: a declaration, a
+// method, or a function or arrow assigned to a name or a key. Null at the top
+// level or inside anonymous functions only.
+function _namedFunctionAround(sig, spans, pos) {
+  var P = shapeMatch.TOK_PUNCT;
+  var IDENT = shapeMatch.TOK_IDENT;
+  var K = shapeMatch.TOK_KEYWORD;
+  var anc = _ancestorSpans(spans, pos);
+  for (var a = 0; a < anc.length; a += 1) {
+    var b = anc[a].open;
+    var close = -1;
+    if (_tokIs(sig, b - 1, P, ")")) close = b - 1;
+    else if (_tokIs(sig, b - 1, P, "=>") && _tokIs(sig, b - 2, P, ")")) close = b - 2;
+    if (close === -1) continue;
+    var open = _openingIndex(sig, close);
+    if (open === -1) continue;
+    var t = open - 1;
+    if (_tokIs(sig, t, IDENT) && (_tokIs(sig, t - 1, K, "function") || _tokIs(sig, t - 1, P, "*"))) return sig[t].value;
+    if (_tokIs(sig, t, IDENT) && !_tokIs(sig, b - 1, P, "=>") && !_afterDot(sig, t)) return sig[t].value;
+    if (_tokIs(sig, t, K, "function")) t -= 1;
+    if (_tokIs(sig, t, K, "async")) t -= 1;
+    if ((_tokIs(sig, t, P, "=") || _tokIs(sig, t, P, ":")) && _tokIs(sig, t - 1, IDENT)) return sig[t - 1].value;
+  }
+  return null;
+}
+
+// Findings for one file: { line, content, fn, callee } for each outbound TLS
+// construction whose options do not pass through the compromised-key chain
+// check. A construction is `<m>.connect(`, `<m>.request(` or `<m>.get(`, or
+// `new <m>.Agent(` or `new <m>.TLSSocket(`, where `<m>` is a name the file
+// binds to require("node:tls"), "node:https" or "node:http2" (directly or
+// through lazyRequire, so `<m>()` counts), `require(...)` itself, or a name or
+// key assigned a value that reads one of those names (`lib: secure ? https :
+// http`). A TLSSocket built with `isServer` is a listener's socket and is not
+// read. The options carry the check when the arguments call
+// `_withCompromisedChainCheck`, `.buildOptions` or `applyToContext` with role
+// "client", call a same-file builder whose body does, or read a variable that
+// carries it where the call reads it: its last assignment had such a value, a
+// later `<id>.checkServerIdentity = ...` had one, or `Object.assign(<id>, ...)`
+// merged one in. The read starts in the innermost function that declares the
+// variable, or at the top of the file, and skips the bodies of functions the
+// call is not inside; function bodies written in the arguments (a response
+// callback) are not read. An Agent also passes when the function that builds
+// it replaces its `createConnection` with a function that carries the check.
+// A call inside a comment or a string is not read, and an unterminated call is
+// reported.
+function _outboundTlsChainCheckFindings(content) {
+  var masked = _maskComments(content);
+  if (!TLS_MODULE_REQUIRE_RE.test(masked)) return [];
+  var sig = _tokensWithSubstitutions(masked);
+  var spans = _functionBodySpans(sig);
+  var IDENT = shapeMatch.TOK_IDENT;
+  var STRING = shapeMatch.TOK_STRING;
+  var P = shapeMatch.TOK_PUNCT;
+  var K = shapeMatch.TOK_KEYWORD;
+  var hiddenAt = Object.create(null);
+  function _hidden(pos) {
+    if (!hiddenAt[pos]) hiddenAt[pos] = _hiddenTokens(sig, spans, pos);
+    return hiddenAt[pos];
+  }
+  function _isAssignOp(k) { return k < sig.length && sig[k].type === P && ASSIGNMENT_OPS[sig[k].value] === 1; }
+  function _isRequireOfTls(k) {
+    return _tokIs(sig, k, IDENT, "require") && _tokIs(sig, k + 1, P, "(") && _tokIs(sig, k + 2, STRING) &&
+      CHAIN_CHECK_MODULE_SPEC_RE.test(sig[k + 2].value) && _tokIs(sig, k + 3, P, ")");
+  }
+  // The value assigned at token index `eq` (an `=` or an object key's `:`).
+  function _valueRange(eq) { return { first: eq + 1, last: _rhsEnd(sig, eq, sig.length - 1) }; }
+  // Names bound to a TLS module, then names assigned a value reading one.
+  var modules = Object.create(null);
+  var assignments = [];
+  for (var a = 1; a < sig.length; a += 1) {
+    if (!_tokIs(sig, a - 1, IDENT)) continue;
+    var isKey = _tokIs(sig, a, P, ":") && (_tokIs(sig, a - 2, P, "{") || _tokIs(sig, a - 2, P, ","));
+    if (!_tokIs(sig, a, P, "=") && !isKey) continue;
+    assignments.push({ name: sig[a - 1].value, range: _valueRange(a) });
+  }
+  assignments.forEach(function (as) {
+    for (var k = as.range.first; k <= as.range.last; k += 1) {
+      if (_isRequireOfTls(k)) { modules[as.name] = true; return; }
+    }
+  });
+  for (var pass = 0; pass < 3; pass += 1) {
+    assignments.forEach(function (as) {
+      if (modules[as.name]) return;
+      for (var k = as.range.first; k <= as.range.last; k += 1) {
+        if (_tokIs(sig, k, IDENT) && modules[sig[k].value] && !_afterDot(sig, k) &&
+            !_tokIs(sig, k + 1, P, ".") && !_tokIs(sig, k + 1, P, "(") && !_isObjectKeyAt(k)) {
+          modules[as.name] = true;
+          return;
+        }
+      }
+    });
+  }
+  // The token index where the receiver ending at `end` starts, or -1 when the
+  // receiver is not a TLS module.
+  function _receiverStart(end) {
+    if (_tokIs(sig, end, IDENT) && modules[sig[end].value]) {
+      var s = end;
+      while (_tokIs(sig, s - 1, P, ".") && _tokIs(sig, s - 2, IDENT)) s -= 2;
+      return s;
+    }
+    if (!_tokIs(sig, end, P, ")")) return -1;
+    var open = _openingIndex(sig, end);
+    if (open === -1) return -1;
+    if (open + 1 === end && _tokIs(sig, open - 1, IDENT) && modules[sig[open - 1].value] && !_afterDot(sig, open - 1)) {
+      return open - 1;
+    }
+    if (_isRequireOfTls(open - 1)) return open - 1;
+    return -1;
+  }
+  function _isCarrierAt(k) {
+    if (!_tokIs(sig, k, IDENT)) return false;
+    var open = _callOpenAt(sig, k + 1);
+    if (open === -1) return false;
+    var v = sig[k].value;
+    if (v === "_withCompromisedChainCheck") return true;
+    if (v === "buildOptions") return _afterDot(sig, k);
+    if (v !== "applyToContext") return false;
+    var close = _closingIndex(sig, open);
+    for (var j = open + 1; j < close; j += 1) {
+      if (_tokIs(sig, j, STRING) && CLIENT_ROLE_RE.test(sig[j].value)) return true;
+    }
+    return false;
+  }
+  function _bodyAfterParams(open) {
+    var close = _closingIndex(sig, open);
+    if (close === -1 || !_tokIs(sig, close + 1, P, "{")) return null;
+    var end = _closingIndex(sig, close + 1);
+    return end === -1 ? null : { first: close + 2, last: end - 1 };
+  }
+  function _arrowBody(at) {
+    if (!_tokIs(sig, at, P, "{")) return { first: at, last: _rhsEnd(sig, at - 1, sig.length - 1) };
+    var end = _closingIndex(sig, at);
+    return end === -1 ? null : { first: at + 1, last: end - 1 };
+  }
+  function _functionValueAt(j) {
+    if (_tokIs(sig, j, K, "async")) j += 1;
+    if (_tokIs(sig, j, K, "function")) {
+      j += 1;
+      if (_tokIs(sig, j, P, "*")) j += 1;
+      if (_tokIs(sig, j, IDENT)) j += 1;
+      return _tokIs(sig, j, P, "(") ? _bodyAfterParams(j) : null;
+    }
+    if (_tokIs(sig, j, IDENT) && _tokIs(sig, j + 1, P, "=>")) return _arrowBody(j + 2);
+    if (!_tokIs(sig, j, P, "(")) return null;
+    var close = _closingIndex(sig, j);
+    return close !== -1 && _tokIs(sig, close + 1, P, "=>") ? _arrowBody(close + 2) : null;
+  }
+  var builders = Object.create(null);
+  function _builderBody(name) {
+    if (name in builders) return builders[name];
+    builders[name] = null;
+    for (var b = 0; b + 1 < sig.length; b += 1) {
+      if (!_tokIs(sig, b, IDENT, name) || _afterDot(sig, b)) continue;
+      var range = null;
+      if (_isDeclarationName(sig, b) && _tokIs(sig, b + 1, P, "(")) range = _bodyAfterParams(b + 1);
+      else if (_tokIs(sig, b + 1, P, "=")) range = _functionValueAt(b + 2);
+      if (range !== null) { builders[name] = range; break; }
+    }
+    return builders[name];
+  }
+  var builderVerdicts = Object.create(null);
+  // A body carries the check when it calls a carrier, or a same-file builder
+  // whose body does.
+  function _bodyCarries(range, depth) {
+    if (range === null || depth > 6) return false;
+    for (var k = range.first; k <= range.last; k += 1) {
+      if (_isCarrierAt(k)) return true;
+      if (_tokIs(sig, k, IDENT) && !_afterDot(sig, k) && _tokIs(sig, k + 1, P, "(") &&
+          _builderCarries(sig[k].value, depth + 1)) return true;
+    }
+    return false;
+  }
+  function _builderCarries(name, depth) {
+    if (name in builderVerdicts) return builderVerdicts[name];
+    builderVerdicts[name] = false;
+    var verdict = _bodyCarries(_builderBody(name), depth);
+    builderVerdicts[name] = verdict;
+    return verdict;
+  }
+  // A flag per token in first..last that sits in a function body written
+  // inside that range.
+  function _innerBodies(first, last) {
+    var inner = new Uint8Array(sig.length);
+    spans.forEach(function (s) {
+      if (s.open < first || s.close > last) return;
+      for (var j = s.open; j <= s.close; j += 1) inner[j] = 1;
+    });
+    return inner;
+  }
+  function _isObjectKeyAt(k) {
+    return _tokIs(sig, k + 1, P, ":") && (_tokIs(sig, k - 1, P, "{") || _tokIs(sig, k - 1, P, ","));
+  }
+  // The expression in tokens first..last, read at token index `at`, carries the check.
+  function _valueCarries(first, last, at, depth) {
+    if (first > last || depth > 6) return false;
+    var inner = _innerBodies(first, last);
+    for (var k = first; k <= last; k += 1) {
+      if (inner[k]) continue;
+      if (_isCarrierAt(k)) return true;
+      if (!_tokIs(sig, k, IDENT) || _afterDot(sig, k) || _isObjectKeyAt(k)) continue;
+      if (_tokIs(sig, k + 1, P, "(")) {
+        if (_builderCarries(sig[k].value, depth + 1)) return true;
+        continue;
+      }
+      if (_variableCarries(sig[k].value, at, depth + 1)) return true;
+    }
+    return false;
+  }
+  function _isIdentityWriteAt(k) {
+    if (_tokIs(sig, k, P, ".") && _tokIs(sig, k + 1, IDENT, "checkServerIdentity")) return _isAssignOp(k + 2) ? k + 2 : -1;
+    if (_tokIs(sig, k, P, "[") && _tokIs(sig, k + 1, STRING) && /^(["'])checkServerIdentity\1$/.test(sig[k + 1].value) &&
+        _tokIs(sig, k + 2, P, "]") && _isAssignOp(k + 3)) return k + 3;
+    return -1;
+  }
+  // The variable `id` carries the check where token index `at` reads it.
+  function _variableCarries(id, at, depth) {
+    if (depth > 6) return false;
+    var pos = sig[at].start;
+    var hidden = _hidden(pos);
+    var scope = _declaringSpan(sig, spans, pos, id, null);
+    var carries = false;
+    for (var k = scope === null ? 0 : scope.open + 1; k < at; k += 1) {
+      if (hidden[k] || !_tokIs(sig, k, IDENT, id) || _afterDot(sig, k)) continue;
+      var w = _isIdentityWriteAt(k + 1);
+      if (w !== -1) {
+        carries = _valueCarries(w + 1, _rhsEnd(sig, w, at - 1), k, depth);
+      } else if (_tokIs(sig, k + 1, P, "=")) {
+        carries = _valueCarries(k + 2, _rhsEnd(sig, k + 1, at - 1), k, depth);
+      } else if (_tokIs(sig, k - 1, P, "(") && _tokIs(sig, k - 2, IDENT, "assign") && _tokIs(sig, k - 3, P, ".") &&
+                 _tokIs(sig, k - 4, IDENT, "Object") && _tokIs(sig, k + 1, P, ",")) {
+        var oc = _closingIndex(sig, k - 1);
+        if (oc !== -1 && oc < at && _valueCarries(k + 2, oc - 1, k, depth)) carries = true;
+      }
+    }
+    return carries;
+  }
+  // `new <m>.Agent(...)` assigned to a name whose createConnection the same
+  // function replaces with one that carries the check.
+  function _agentConnectionCarries(newAt, callAt) {
+    var t = newAt - 1;
+    if (!_tokIs(sig, t, P, "=") || !_tokIs(sig, t - 1, IDENT)) return false;
+    var name = sig[t - 1].value;
+    var scope = _innermostSpan(spans, sig[callAt].start, masked.length);
+    var from = scope.open === undefined ? 0 : scope.open + 1;
+    var to = scope.close === undefined ? sig.length - 1 : scope.close - 1;
+    for (var k = from; k + 3 <= to; k += 1) {
+      if (!_tokIs(sig, k, IDENT, name) || _afterDot(sig, k) || !_tokIs(sig, k + 1, P, ".") ||
+          !_tokIs(sig, k + 2, IDENT, "createConnection") || !_tokIs(sig, k + 3, P, "=")) continue;
+      if (_bodyCarries(_functionValueAt(k + 4), 0)) return true;
+    }
+    return false;
+  }
+  var out = [];
+  for (var i = 1; i + 1 < sig.length; i += 1) {
+    if (!_tokIs(sig, i, P, ".") && !_tokIs(sig, i, P, "?.")) continue;
+    if (!_tokIs(sig, i + 1, IDENT)) continue;
+    var method = sig[i + 1].value;
+    var isClass = TLS_DIAL_CLASSES[method] === 1;
+    if (!isClass && TLS_DIAL_METHODS[method] !== 1) continue;
+    var start = _receiverStart(i - 1);
+    if (start === -1) continue;
+    var afterNew = _tokIs(sig, start - 1, K, "new");
+    if (isClass !== afterNew) continue;
+    var open = _callOpenAt(sig, i + 2);
+    if (open === -1 || _closesParams(sig, open)) continue;
+    var close = _closingIndex(sig, open);
+    var callee = masked.slice(sig[start].start, sig[i + 1].end);
+    var line = masked.slice(0, sig[start].start).split("\n").length;
+    var fn = _namedFunctionAround(sig, spans, sig[start].start);
+    if (close === -1) {
+      out.push({ line: line, fn: fn, callee: callee, content: callee + " call is not terminated" });
+      continue;
+    }
+    if (method === "TLSSocket") {
+      var serverSide = false;
+      for (var s = open + 1; s < close; s += 1) {
+        if (_tokIs(sig, s, IDENT, "isServer") && _tokIs(sig, s + 1, P, ":")) serverSide = true;
+      }
+      if (serverSide) continue;
+    }
+    if (_valueCarries(open + 1, close - 1, start, 0)) continue;
+    if (method === "Agent" && _agentConnectionCarries(start - 1, start)) continue;
+    out.push({ line: line, fn: fn, callee: callee,
+      content: callee + "(...) options do not pass through networkTls()._withCompromisedChainCheck() or " +
+               "applyToContext({ role: \"client\" }), so a server chain carrying a compromised key is accepted" });
+  }
+  return out;
+}
+
+// The detector's shapes, each against a source it must or must not report.
+function testOutboundTlsChainCheckDetectorShapes() {
+  // class: outbound-tls-chain-check-detector-shapes (no marker)
+  var REQ = "var nodeTls = require(\"node:tls\");\nvar https = require(\"node:https\");\n" +
+            "var http2 = require(\"node:http2\");\n";
+  var FILLER = "  var x = 1;\n".repeat(120);
+  var cases = [
+    ["a dial with posture only", true,
+      REQ + "function dial() {\n  return nodeTls.connect(Object.assign({ host: h }, networkTls().outboundPosture()));\n}\n"],
+    ["an https.request with options built without the check", true,
+      REQ + "function go() {\n  var o = { hostname: h, port: p };\n  return https.request(o, function (res) {});\n}\n"],
+    ["an http2.connect with no options", true,
+      REQ + "function go() {\n  return http2.connect(\"https://\" + h);\n}\n"],
+    ["a new https.Agent with posture only", true,
+      REQ + "function make() {\n  return new https.Agent(networkTls().outboundPosture());\n}\n"],
+    ["a lazy-required module", true,
+      "var nodeTls = lazyRequire(function () { return require(\"node:tls\"); });\n" +
+      "function dial() {\n  return nodeTls().connect({ host: h });\n}\n"],
+    ["a direct require", true,
+      "function dial() {\n  return require(\"node:tls\").connect({ host: h });\n}\n"],
+    ["an alias chosen by protocol", true,
+      REQ + "var http = require(\"node:http\");\n" +
+      "function go(u) {\n  var t = { lib: u.secure ? https : http };\n  return t.lib.request({ hostname: h });\n}\n"],
+    ["the check only in the response callback", true,
+      REQ + "function go() {\n  return https.request({ hostname: h }, function (res) {\n" +
+      "    res.checkServerIdentity = networkTls()._withCompromisedChainCheck();\n  });\n}\n"],
+    ["the check set after the call", true,
+      REQ + "function dial() {\n  var o = { host: h };\n  var s = nodeTls.connect(o);\n" +
+      "  o.checkServerIdentity = networkTls()._withCompromisedChainCheck();\n  return s;\n}\n"],
+    ["the check replaced before the call", true,
+      REQ + "function dial(mine) {\n  var o = { host: h, checkServerIdentity: networkTls()._withCompromisedChainCheck() };\n" +
+      "  o.checkServerIdentity = mine;\n  return nodeTls.connect(o);\n}\n"],
+    ["the check on another variable", true,
+      REQ + "function dial() {\n  var other = { checkServerIdentity: networkTls()._withCompromisedChainCheck() };\n" +
+      "  var o = { host: h };\n  return nodeTls.connect(o);\n}\n"],
+    ["the check in another function", true,
+      REQ + "function prep(o) {\n  o.checkServerIdentity = networkTls()._withCompromisedChainCheck();\n}\n" +
+      "function dial() {\n  var o = { host: h };\n  return nodeTls.connect(o);\n}\n"],
+    ["applyToContext with the server role", true,
+      REQ + "function dial() {\n  return nodeTls.connect(networkTls().applyToContext({ base: {}, role: \"server\" }));\n}\n"],
+    ["a builder that does not run the check", true,
+      REQ + "function _opts() {\n  return networkTls().outboundPosture();\n}\n" +
+      "function dial() {\n  return nodeTls.connect(_opts());\n}\n"],
+    ["a client TLSSocket", true,
+      REQ + "function upgrade(sock) {\n  return new nodeTls.TLSSocket(sock, { servername: h });\n}\n"],
+    ["an Agent whose createConnection does not run the check", true,
+      REQ + "function make() {\n  var agent = new https.Agent({});\n" +
+      "  agent.createConnection = function (o) { return nodeTls.connect(o); };\n  return agent;\n}\n"],
+    ["an options parameter passed through", true,
+      REQ + "function dial(o) {\n  return nodeTls.connect(o);\n}\n"],
+    ["an unterminated call", true,
+      REQ + "function dial() {\n  return nodeTls.connect({ host: h,\n"],
+    ["the check written as the identity option", false,
+      REQ + "function dial(o) {\n  return nodeTls.connect(Object.assign({}, o, {\n" +
+      "    checkServerIdentity: networkTls()._withCompromisedChainCheck(o.checkServerIdentity) }));\n}\n"],
+    ["the check written on the options before the call", false,
+      REQ + "function dial(opts) {\n  var o = Object.assign({ host: h }, opts);\n" + FILLER +
+      "  o.checkServerIdentity = networkTls()._withCompromisedChainCheck(opts.checkServerIdentity);\n" +
+      "  return nodeTls.connect(o);\n}\n"],
+    ["the check under a bracketed key", false,
+      REQ + "function dial() {\n  var o = { host: h };\n" +
+      "  o[\"checkServerIdentity\"] = networkTls()._withCompromisedChainCheck();\n  return nodeTls.connect(o);\n}\n"],
+    ["the check written conditionally on the options", false,
+      REQ + "function go(u) {\n  var o = { hostname: h };\n" +
+      "  if (u.secure) o.checkServerIdentity = networkTls()._withCompromisedChainCheck();\n" +
+      "  return https.request(o, function (res) {});\n}\n"],
+    ["Object.assign merging the check in", false,
+      REQ + "function dial() {\n  var o = { host: h };\n" +
+      "  Object.assign(o, { checkServerIdentity: networkTls()._withCompromisedChainCheck() });\n  return nodeTls.connect(o);\n}\n"],
+    ["applyToContext with the client role", false,
+      REQ + "function dial() {\n  return http2.connect(u, networkTls().applyToContext({ base: {}, role: \"client\" }));\n}\n"],
+    ["buildOptions", false,
+      REQ + "function dial() {\n  return nodeTls.connect(networkTls().buildOptions({ ca: ca }));\n}\n"],
+    ["a builder that runs applyToContext", false,
+      REQ + "function _clientTlsOptions(base) {\n  return networkTls().applyToContext({ base: base, role: \"client\" });\n}\n" +
+      "function dial() {\n  var o = _clientTlsOptions({ host: h });\n  return nodeTls.connect(o);\n}\n"],
+    ["a builder calling a builder that runs the check", false,
+      REQ + "function _inner(o) {\n  o.checkServerIdentity = networkTls()._withCompromisedChainCheck();\n  return o;\n}\n" +
+      "var _outer = function (o) { return _inner(o); };\n" +
+      "function dial() {\n  return nodeTls.connect(_outer({ host: h }));\n}\n"],
+    ["options built in the outer function and the call in a callback", false,
+      REQ + "function dial() {\n  var o = { host: h, checkServerIdentity: networkTls()._withCompromisedChainCheck() };\n" +
+      "  return ready(function () {\n    return nodeTls.connect(o);\n  });\n}\n"],
+    ["an alias request whose options carry the check", false,
+      REQ + "var http = require(\"node:http\");\n" +
+      "function go(u, t) {\n  var o = { hostname: h };\n" +
+      "  if (u.secure) o.checkServerIdentity = networkTls()._withCompromisedChainCheck();\n" +
+      "  return t.lib.request(o);\n}\n" +
+      "function pick(u) {\n  return { lib: u.secure ? https : http };\n}\n"],
+    ["an Agent whose createConnection runs applyToContext", false,
+      REQ + "function make() {\n  var agent = new https.Agent({});\n" +
+      "  agent.createConnection = function (o) {\n" +
+      "    return nodeTls.connect(networkTls().applyToContext({ base: o, role: \"client\" }));\n  };\n  return agent;\n}\n"],
+    ["a server TLSSocket", false,
+      REQ + "function accept(sock, ctx) {\n  return new nodeTls.TLSSocket(sock, { isServer: true, secureContext: ctx });\n}\n"],
+    ["the call named in a comment", false,
+      REQ + "function doc() {\n  // nodeTls.connect({ host: h })\n  return 1;\n}\n"],
+    ["the call named in a string", false,
+      REQ + "function doc() {\n  throw new Error(\"build it with nodeTls.connect( yourself\");\n}\n"],
+    ["a method named connect on another object", false,
+      REQ + "function dial(pool) {\n  return pool.connect({ host: h });\n}\n"],
+    ["a function declaration named connect", false,
+      REQ + "var api = {\n  connect(o) {\n    return wrap(o);\n  },\n};\n"],
+  ];
+  var bad = [];
+  cases.forEach(function (c) {
+    var n = _outboundTlsChainCheckFindings(c[2]).length;
+    if ((n > 0) !== c[1]) {
+      bad.push({ file: "test/layer-0-primitives/codebase-patterns.test.js", line: 0,
+        content: c[0] + ": expected " + (c[1] ? "a finding" : "no finding") + ", got " + n });
+    }
+  });
+  var probe = _outboundTlsChainCheckFindings(REQ + "function _isEchSupported() {\n  return nodeTls.connect({ host: h });\n}\n");
+  if (probe.length !== 1 || probe[0].fn !== "_isEchSupported" || probe[0].callee !== "nodeTls.connect") {
+    bad.push({ file: "test/layer-0-primitives/codebase-patterns.test.js", line: 0,
+      content: "a finding names the function around the call and the callee: " + JSON.stringify(probe) });
+  }
+  _report("the outbound TLS chain-check detector reports each shape it guards and nothing else", bad);
+}
+
+function testOutboundTlsRunsCompromisedChainCheck() {
+  // class: outbound-tls-chain-check (no marker)
+  var files = _libFiles();
+  var bad = [];
+  var used = new Set();
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    if (rel.indexOf("lib/vendor/") === 0) continue;
+    var content;
+    try { content = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    _outboundTlsChainCheckFindings(content).forEach(function (f) {
+      var exempt = -1;
+      CHAIN_CHECK_EXEMPT.forEach(function (e, idx) {
+        if (e.file === rel && e.fn === f.fn && e.callee === f.callee) exempt = idx;
+      });
+      if (exempt !== -1) { used.add(exempt); return; }
+      bad.push({ file: rel, line: f.line, content: f.content });
+    });
+  }
+  CHAIN_CHECK_EXEMPT.forEach(function (e, idx) {
+    if (!used.has(idx)) {
+      bad.push({ file: e.file, line: 0,
+        content: "CHAIN_CHECK_EXEMPT entry " + e.fn + " / " + e.callee + " matches no construction; remove it" });
+    }
+  });
+  _report("outbound TLS constructions run the compromised-key chain check", bad);
+}
+
 // The value written to an `ecdhCurve` key, bare, quoted or bracketed: from the
 // key to the end of its statement (`;`), its property (`,` or `}` ending a
 // line) or a blank line. The tempered token is the precision mechanism;
@@ -15150,6 +15607,22 @@ var KNOWN_ANTIPATTERNS = [
     regex: /\b(\w+)\.checkIssued\s*\(\s*(?!\1[\s,)])\w/,
     allowlist: ["lib/x509-chain.js"],
     reason: "basicConstraints cA:TRUE enforcement is owned by x509Chain.issuerValidlyIssued / x509Chain.isCaCert; tsa/mail-bimi/mail-crypto-smime route through it. Any lib file calling X.checkIssued(Y) (Y!=X) directly bypasses the cA check and must use x509Chain instead. lib/x509-chain.js is the home of the primitive.",
+  },
+  {
+    id: "x509-certificate-construction-routes-through-crypto",
+    primitive: "b.crypto._x509",
+    scanScope: "lib",
+    skipCommentLines: true,
+    // node's X509Certificate(buffer) reads an embedded
+    // "-----BEGIN CERTIFICATE-----" block ahead of the DER around it, while
+    // b.crypto.compromisedKey(buffer) judges the DER itself. A module that
+    // judges DER bytes and verifies with a certificate built from the same
+    // buffer can then check one certificate and trust another. bCrypto._x509
+    // reads a DER-shaped buffer as DER and hands everything else to node
+    // unchanged, so every construction in lib routes through it.
+    regex: /\bnew\s+[\w.]*\bX509Certificate\s*\(/,
+    allowlist: ["lib/crypto.js"],
+    reason: "Certificate construction is owned by bCrypto._x509 (and its DER half bCrypto._certificateFromDer) in lib/crypto.js, which read DER bytes as DER the way b.crypto.compromisedKey does. A bare new X509Certificate(...) in another lib file reads a DER buffer carrying PEM text as the embedded certificate.",
   },
   {
     id: "mail-report-header-builder-must-guard-crlf",
@@ -25254,9 +25727,9 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
   }
   // _sameCert must compare parsed DER identity (tolerating harmless PEM differences), falling
   // back to bytes only for an unparseable opaque custom cert.
-  if (!/function\s+_sameCert[\s\S]{0,160}X509Certificate\([^)]*\)\.raw\.equals\(\s*new\s+nodeCrypto\.X509Certificate/.test(noComments)) {
+  if (!/function\s+_sameCert[\s\S]{0,160}bCrypto\(\)\._x509\([^)]*\)\.raw\.equals\(\s*bCrypto\(\)\._x509\(/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
-      content: "_sameCert() must compare parsed X.509 DER identity (X509Certificate(...).raw.equals(...)) with a raw-byte " +
+      content: "_sameCert() must compare parsed X.509 DER identity (bCrypto()._x509(...).raw.equals(...)) with a raw-byte " +
                "fallback only for an unparseable opaque custom cert — a byte-only compare misreads harmless PEM reformatting" });
   }
   // A CERT-ONLY store (ca.crt present, no key at the destination) must be REFUSED before mutation:
@@ -25282,10 +25755,10 @@ function testMtlsCaCommitJournalsPriorKeyBeforeRename() {
   // — _caPairConsistent returns "consistent" for unparseable input (the opaque-custom fallback), so
   // without this a garbage string publishes and bricks the CA. The parse requirement is
   // default-engine-only (a custom engine may commit opaque material).
-  if (!/if\s*\(\s*usesDefaultEngine\s*\)\s*\{[\s\S]{0,400}new\s+nodeCrypto\.X509Certificate\(\s*opts2\.caCertPem\s*\)[\s\S]{0,200}createPrivateKey\(\s*opts2\.caKeyPem\s*\)[\s\S]{0,200}mtls-ca\/bad-commit/.test(noComments)) {
+  if (!/if\s*\(\s*usesDefaultEngine\s*\)\s*\{[\s\S]{0,400}bCrypto\(\)\._x509\(\s*opts2\.caCertPem\s*\)[\s\S]{0,200}createPrivateKey\(\s*opts2\.caKeyPem\s*\)[\s\S]{0,200}mtls-ca\/bad-commit/.test(noComments)) {
     bad.push({ file: "lib/mtls-ca.js", line: 1,
       content: "the public commit() must reject UNPARSEABLE material for the bundled engine (if (usesDefaultEngine) " +
-               "parse opts2.caCertPem via nodeCrypto.X509Certificate + opts2.caKeyPem via createPrivateKey, throwing " +
+               "parse opts2.caCertPem via bCrypto()._x509 + opts2.caKeyPem via createPrivateKey, throwing " +
                "mtls-ca/bad-commit on failure) — _caPairConsistent's opaque fallback would otherwise publish garbage" });
   }
   // A parseable, MATCHING pair can still be an algorithm the bundled engine does not support (a
@@ -28068,6 +28541,8 @@ async function run() {
   testWorkflowNodeVersionMatchesEngines();
   testNodeFloorDeclarationsAgree();
   testOutboundTlsMergesSharedPosture();
+  testOutboundTlsChainCheckDetectorShapes();
+  testOutboundTlsRunsCompromisedChainCheck();
   testListenerGroupDetectorShapes();
   testListenerGroupsUseServerPreference();
   testCertCompressionDetectorShapes();
@@ -28208,7 +28683,7 @@ async function run() {
         _allViolations.length === 0);
 }
 
-module.exports = { run: run };
+module.exports = { run: run, _outboundTlsChainCheckFindings: _outboundTlsChainCheckFindings };
 
 if (require.main === module) {
   // Persistent output to .test-output/codebase-patterns.log so agents

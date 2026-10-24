@@ -63,27 +63,65 @@ function _authData(rpId, flags, signCount, attested) {
   return attested ? Buffer.concat([head, attested]) : head;
 }
 
-// A registration response for a fresh ES256 credential, `none` attestation.
-// challenge is the base64url text the ceremony issued.
+function _array(items) { return Buffer.concat([_head(4, items.length)].concat(items)); }
+
+// The attestation statement opts.attestation asks for, over authData and the
+// clientDataJSON hash:
+//   { fmt: "packed", x5c: [der, ...], signingKey }  ES256 by the leaf key
+//   { fmt: "android-safetynet", x5c: [der, ...], signingKey, payload? }
+//     an RS256 JWS by the leaf key whose payload carries the nonce, a fresh
+//     timestampMs and passing integrity verdicts; payload fields override them
+function _attestationStatement(att, authData, clientDataHash) {
+  var signed = Buffer.concat([authData, clientDataHash]);
+  if (att.fmt === "packed") {
+    return _map([
+      [_text("alg"), _int(-7)],
+      [_text("sig"), _bytes(crypto.sign("sha256", signed, { key: att.signingKey, dsaEncoding: "der" }))],
+      [_text("x5c"), _array(att.x5c.map(function (der) { return _bytes(Buffer.from(der)); }))],
+    ]);
+  }
+  if (att.fmt === "android-safetynet") {
+    var header = { alg: "RS256", x5c: att.x5c.map(function (der) { return Buffer.from(der).toString("base64"); }) };
+    var payload = Object.assign({
+      nonce: _sha256(signed).toString("base64"), timestampMs: Date.now(),
+      apkPackageName: "com.google.android.gms", ctsProfileMatch: true, basicIntegrity: true,
+    }, att.payload || {});
+    var input = _b64url(Buffer.from(JSON.stringify(header), "utf8")) + "." +
+      _b64url(Buffer.from(JSON.stringify(payload), "utf8"));
+    var jws = input + "." + _b64url(crypto.sign("sha256", Buffer.from(input, "ascii"), att.signingKey));
+    return _map([
+      [_text("ver"),      _text("1")],
+      [_text("response"), _bytes(Buffer.from(jws, "utf8"))],
+    ]);
+  }
+  throw new Error("webauthn helper: unknown attestation fmt " + JSON.stringify(att.fmt));
+}
+
+// A registration response for an ES256 credential. challenge is the base64url
+// text the ceremony issued. opts.keyPair is the P-256 { privateKey, publicKey }
+// pair the credential uses; a fresh pair is generated when it is omitted.
+// opts.attestation selects a `packed` or `android-safetynet` statement (see
+// _attestationStatement); `none` attestation is used when it is omitted.
 function registerCredential(opts) {
   opts = opts || {};
   var rpId      = opts.rpId || "example.test";
   var origin    = opts.origin || ("https://" + rpId);
   var challenge = opts.challenge || _b64url(crypto.randomBytes(32));
-  var keyPair   = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var keyPair   = opts.keyPair || crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
   var credId    = crypto.randomBytes(32);
 
   var idLen = Buffer.alloc(2); idLen.writeUInt16BE(credId.length, 0);
   var attested = Buffer.concat([Buffer.alloc(16), idLen, credId, _coseEc2(keyPair.publicKey)]);
   var authData = _authData(rpId, FLAG_UP | FLAG_UV | FLAG_AT, 0, attested);
-  var attestationObject = _map([
-    [_text("fmt"),      _text("none")],
-    [_text("attStmt"),  _map([])],
-    [_text("authData"), _bytes(authData)],
-  ]);
   var clientData = Buffer.from(JSON.stringify({
     type: "webauthn.create", challenge: challenge, origin: origin, crossOrigin: false,
   }), "utf8");
+  var attestationObject = _map([
+    [_text("fmt"),      _text(opts.attestation ? opts.attestation.fmt : "none")],
+    [_text("attStmt"),  opts.attestation
+      ? _attestationStatement(opts.attestation, authData, _sha256(clientData)) : _map([])],
+    [_text("authData"), _bytes(authData)],
+  ]);
 
   return {
     rpId: rpId, origin: origin, challenge: challenge,
@@ -129,4 +167,5 @@ function assertCredential(reg, opts) {
 module.exports = {
   registerCredential: registerCredential,
   assertCredential:   assertCredential,
+  coseEc2PublicKey:   _coseEc2,
 };

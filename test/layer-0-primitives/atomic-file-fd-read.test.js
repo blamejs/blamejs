@@ -199,7 +199,36 @@ function testRefuseSymlinkAndInodeHappyPath() {
   } finally { dir.cleanup(); }
 }
 
+// `requireFile` judges the type of the inode the descriptor holds, so a caller
+// that only wants a regular file does not stat the path first and read it
+// second. The open is non-blocking, so a FIFO is refused instead of waiting
+// for a writer.
+function testRequireFileRefusesWhatIsNotARegularFile() {
+  var dir = _dir();
+  try {
+    var p = path.join(dir.path, "regular.pem");
+    fs.writeFileSync(p, "content", { mode: 0o600 });
+    check("fdSafeReadSync requireFile: a regular file reads",
+      b.atomicFile.fdSafeReadSync(p, { requireFile: true, encoding: "utf8" }) === "content");
+    var sub = path.join(dir.path, "a-directory");
+    fs.mkdirSync(sub);
+    var kinds = [];
+    var e = _throws(function () {
+      b.atomicFile.fdSafeReadSync(sub, { requireFile: true,
+        errorFor: function (kind) { kinds.push(kind); return undefined; } });
+    });
+    check("fdSafeReadSync requireFile: a directory is refused with kind not-file",
+      e !== null && kinds.indexOf("not-file") !== -1 && e.code === "atomic-file/not-file",
+      JSON.stringify({ kinds: kinds, code: e && e.code }));
+    var bad = _throws(function () { b.atomicFile.fdSafeReadSync(p, { requireFile: "yes" }); });
+    check("fdSafeReadSync requireFile: a non-boolean is refused", bad !== null && bad.code === "atomic-file/bad-opt");
+  } finally {
+    dir.cleanup();
+  }
+}
+
 async function run() {
+  testRequireFileRefusesWhatIsNotARegularFile();
   testReadsBufferAndString();
   testWithStat();
   testMaxBytesCap();

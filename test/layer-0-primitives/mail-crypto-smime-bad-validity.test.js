@@ -31,22 +31,24 @@ var smime = b.mail.crypto.smime;
 
 // ---- Stub: a cert that parses fine but carries unparseable dates ----
 //
-// Passes the sig-algorithm (sha256WithRSAEncryption) and RSA-bit
-// (publicKey null → bit-floor check skipped) gates so execution
-// reaches the validity window — the only thing under test here.
+// Passes the compromised-key check (an instance of the stubbed class whose
+// `raw` is an ordinary certificate's DER, the field b.crypto.compromisedKey
+// reads from an X509Certificate), the sig-algorithm (sha256WithRSAEncryption)
+// and RSA-bit (publicKey null, so the bit-floor check is skipped) gates so
+// execution reaches the validity window, the only thing under test here.
+var ORDINARY_CERT_DER = require("../helpers/compromised-keys").P256_CONTROL_CA_DER;
 function _withUnparseableValidityCert(validFrom, validTo, fn) {
   var Real = nodeCrypto.X509Certificate;
   function StubCert(_input) {
-    return {
-      subject:               "CN=signer.example",
-      issuer:                "CN=signer.example",
-      signatureAlgorithm:    "sha256WithRSAEncryption",
-      signatureAlgorithmOid: "1.2.840.113549.1.1.11",
-      publicKey:             null,
-      fingerprint256:        "AA:BB:CC",
-      validFrom:             validFrom,
-      validTo:               validTo,
-    };
+    this.subject               = "CN=signer.example";
+    this.issuer                = "CN=signer.example";
+    this.signatureAlgorithm    = "sha256WithRSAEncryption";
+    this.signatureAlgorithmOid = "1.2.840.113549.1.1.11";
+    this.publicKey             = null;
+    this.raw                   = Buffer.from(ORDINARY_CERT_DER);
+    this.fingerprint256        = "AA:BB:CC";
+    this.validFrom             = validFrom;
+    this.validTo               = validTo;
   }
   nodeCrypto.X509Certificate = StubCert;
   try {

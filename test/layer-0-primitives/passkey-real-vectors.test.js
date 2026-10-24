@@ -30,6 +30,7 @@
 
 var crypto  = require("crypto");
 var helpers = require("../helpers");
+var ck      = require("../helpers/compromised-keys");
 var b       = helpers.b;
 var check   = helpers.check;
 
@@ -642,6 +643,12 @@ async function makePackedAttestationUnderOwnCa(challenge) {
     extensions:       { basicConstraints: { cA: false } },
   }, { cert: caDer, key: caKeys.privateKey }));
 
+  return makePackedAttestationUnderChain(challenge, leafDer, caDer, leafPair.privateKey);
+}
+
+// A `packed` full attestation over a given leaf + CA chain, signed by the
+// leaf's private key.
+function makePackedAttestationUnderChain(challenge, leafDer, caDer, leafPrivateKey) {
   var kp = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
   var credId = crypto.randomBytes(32);
   // A REAL authenticator's AAGUID, which an unanchored chain lets anyone claim.
@@ -655,14 +662,14 @@ async function makePackedAttestationUnderOwnCa(challenge) {
     [cborText("fmt"),     cborText("packed")],
     [cborText("attStmt"), cborMap([
       [cborText("alg"), cborInt(-7)],
-      [cborText("sig"), cborBytes(signDER(leafPair.privateKey,
+      [cborText("sig"), cborBytes(signDER(leafPrivateKey,
         Buffer.concat([authData, sha256(clientData)])))],
       [cborText("x5c"), cborArray([cborBytes(leafDer), cborBytes(caDer)])],
     ])],
     [cborText("authData"), cborBytes(authData)],
   ]);
   return {
-    keyPair: kp, credId: credId,
+    keyPair: kp, credId: credId, caDer: caDer,
     response: {
       id: b64url(credId), rawId: b64url(credId), type: "public-key",
       response: { clientDataJSON: b64url(clientData), attestationObject: b64url(att) },
@@ -3062,6 +3069,64 @@ async function testRequireAttestationGatesUnattestedCredentials() {
         JSON.stringify({ ok: packedOk.ok, code: packedOk.code, at: packedOk.rv && packedOk.rv.registrationInfo && packedOk.rv.registrationInfo.attestationType }));
 }
 
+// ---- A compromised key in an attestation chain ----
+//
+// The chains are the P256_* fixtures in test/helpers/compromised-keys.js: a
+// compromised chain whose CA's private scalar is 1, and a control chain that
+// differs only in the CA's scalar. Both leaves carry the same key.
+
+async function testCompromisedAttestationKeyIsRefused() {
+  var leafKey = ck.p256AttestationLeafKey();
+  var leafSpki = crypto.createPublicKey(leafKey).export({ type: "spki", format: "der" });
+  var badCa = new crypto.X509Certificate(ck.P256_COMPROMISED_CA_DER);
+  var badLeaf = new crypto.X509Certificate(ck.P256_COMPROMISED_LEAF_DER);
+  var goodCa = new crypto.X509Certificate(ck.P256_CONTROL_CA_DER);
+  var goodLeaf = new crypto.X509Certificate(ck.P256_CONTROL_LEAF_DER);
+  check("compromised attestation key: the derived leaf key is the key both fixture leaves carry",
+        leafSpki.equals(badLeaf.publicKey.export({ type: "spki", format: "der" })) &&
+        leafSpki.equals(goodLeaf.publicKey.export({ type: "spki", format: "der" })));
+  check("compromised attestation key: each fixture leaf verifies under its own CA and not the other",
+        badLeaf.verify(badCa.publicKey) && goodLeaf.verify(goodCa.publicKey) &&
+        !badLeaf.verify(goodCa.publicKey) && !goodLeaf.verify(badCa.publicKey));
+  check("compromised attestation key: the compromised CA's public key is the P-256 generator (private key 1)",
+        badCa.publicKey.export({ type: "spki", format: "der" })
+          .equals(ck.ecKeyPair("prime256v1", 1n).publicKey.export({ type: "spki", format: "der" })));
+
+  var chControl = b64url(crypto.randomBytes(32));
+  var control = makePackedAttestationUnderChain(chControl, ck.P256_CONTROL_LEAF_DER, ck.P256_CONTROL_CA_DER, leafKey);
+  var controlArgs = {
+    response: control.response, expectedChallenge: chControl,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  };
+  var controlAnchored = await regOutcome(Object.assign({
+    attestationRoots: [ck.certPem(ck.P256_CONTROL_CA_DER)],
+  }, controlArgs));
+  check("compromised attestation key control: the same chain under an ordinary CA key anchors",
+        controlAnchored.ok === true && !!controlAnchored.rv.registrationInfo.anchoredTo,
+        JSON.stringify({ ok: controlAnchored.ok, code: controlAnchored.code }));
+  var controlUnanchored = await regOutcome(Object.assign({}, controlArgs));
+  check("compromised attestation key control: the control chain with no root configured verifies unanchored",
+        controlUnanchored.ok === true && !controlUnanchored.rv.registrationInfo.anchoredTo,
+        JSON.stringify({ ok: controlUnanchored.ok, code: controlUnanchored.code }));
+
+  var chBad = b64url(crypto.randomBytes(32));
+  var bad = makePackedAttestationUnderChain(chBad, ck.P256_COMPROMISED_LEAF_DER, ck.P256_COMPROMISED_CA_DER, leafKey);
+  var badArgs = {
+    response: bad.response, expectedChallenge: chBad,
+    expectedOrigin: ORIGIN, expectedRPID: RP_ID,
+  };
+  var badAnchored = await regOutcome(Object.assign({
+    attestationRoots: [ck.certPem(ck.P256_COMPROMISED_CA_DER)],
+  }, badArgs));
+  check("compromised attestation key: a chain anchored at a CA whose private key is 1 is refused",
+        badAnchored.threw === true && badAnchored.code === "auth-passkey/compromised-key",
+        JSON.stringify(badAnchored));
+  var badUnanchored = await regOutcome(Object.assign({}, badArgs));
+  check("compromised attestation key: the same chain with no root configured is refused",
+        badUnanchored.threw === true && badUnanchored.code === "auth-passkey/compromised-key",
+        JSON.stringify({ ok: badUnanchored.ok, code: badUnanchored.code }));
+}
+
 async function run() {
   await testBackupFlagSurfacing();
   await testRegistrationGenuineAndTampered();
@@ -3070,6 +3135,7 @@ async function run() {
   await testRegistrationCredentialIdIsAttested();
   await testAttestationRootsArePinned();
   await testRequireAttestationGatesUnattestedCredentials();
+  await testCompromisedAttestationKeyIsRefused();
   await testCredPropsAndPaddedDescriptors();
   await testAuthenticatorExtensionResults();
   await testAssertionFlagsComeFromTheVerifiedBytes();

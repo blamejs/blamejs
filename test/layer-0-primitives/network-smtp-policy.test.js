@@ -30,6 +30,7 @@ var C          = require("../../lib/constants");
 var asn1       = require("../../lib/asn1-der");
 var pki        = require("../../lib/vendor/blamejs-pki.cjs");
 var httpClientMod = require("../../lib/http-client");
+var ck         = require("../helpers/compromised-keys");
 
 // ---- small local helpers -------------------------------------------------
 
@@ -79,10 +80,9 @@ function _derName(label) {
 // Shared SubjectPublicKeyInfo fixture — embedded verbatim in every
 // _derCert, so a selector=1 (SPKI) TLSA match can be built against its
 // exact bytes (readNode's .raw slices these back out byte-identically).
-var _SPKI_DER = asn1.writeSequence([
-  asn1.writeSequence([ asn1.writeOid("1.2.840.10045.2.1"), asn1.writeOid("1.2.840.10045.3.1.7") ]),
-  asn1.writeNode(asn1.TAG.BIT_STRING, Buffer.from([0x00, 0x04, 0x01, 0x02, 0x03, 0x04])),
-]);
+// It is the ordinary P-256 key of the TLS control leaf, so a DANE-EE match
+// on a _derCert has a key the compromised-key check can read.
+var _SPKI_DER = Buffer.from(asn1.readCertificateTbsFields(ck.TLS_CONTROL_LEAF_DER).spki.raw);
 function _derCert(issuerName, subjectName) {
   var sigAlg = asn1.writeSequence([ asn1.writeOid("1.2.840.113549.1.1.11"), asn1.writeNull() ]);
   var validity = asn1.writeSequence([
@@ -278,19 +278,28 @@ function testVerifyChainPkixOptIn() {
   var leaf = Buffer.from("leaf-der-bytes", "utf8");
   var ca   = Buffer.from("ca-der-bytes", "utf8");
 
+  var realLeaf = ck.TLS_CONTROL_LEAF_DER;
+  var realCa = ck.TLS_CONTROL_INTERMEDIATE_DER;
+
   // PKIX-EE (usage 1) with allowPkixModes → matches leaf, flags pkixPathRequired.
-  var eeRec = { usage: 1, selector: 0, mtype: 0, dataHex: leaf.toString("hex") };
-  var eeRv = b.network.smtp.dane.verifyChain([leaf, ca], [eeRec], { allowPkixModes: true });
+  var eeRec = { usage: 1, selector: 0, mtype: 0, dataHex: realLeaf.toString("hex") };
+  var eeRv = b.network.smtp.dane.verifyChain([realLeaf, realCa], [eeRec], { allowPkixModes: true });
   check("verifyChain: PKIX-EE opt-in matches leaf with pkixPathRequired",
         eeRv.ok === true && eeRv.matches[0].usage === "PKIX-EE" &&
-        eeRv.matches[0].certIndex === 0 && eeRv.matches[0].pkixPathRequired === true);
+        eeRv.matches[0].certIndex === 0 && eeRv.matches[0].pkixPathRequired === true, JSON.stringify(eeRv));
 
-  // PKIX-TA (usage 0) with allowPkixModes → matches a non-leaf cert.
-  var taRec = { usage: 0, selector: 0, mtype: 0, dataHex: ca.toString("hex") };
-  var taRv = b.network.smtp.dane.verifyChain([leaf, ca], [taRec], { allowPkixModes: true });
+  // PKIX-TA (usage 0) with allowPkixModes → matches a non-leaf cert that
+  // issued the leaf, and only over a signature-verified path.
+  var taRec = { usage: 0, selector: 0, mtype: 0, dataHex: realCa.toString("hex") };
+  var taRv = b.network.smtp.dane.verifyChain([realLeaf, realCa], [taRec], { allowPkixModes: true });
   check("verifyChain: PKIX-TA opt-in matches trust-anchor cert with pkixPathRequired",
         taRv.ok === true && taRv.matches[0].usage === "PKIX-TA" &&
-        taRv.matches[0].certIndex === 1 && taRv.matches[0].pkixPathRequired === true);
+        taRv.matches[0].certIndex === 1 && taRv.matches[0].pkixPathRequired === true, JSON.stringify(taRv));
+
+  var fakeTaRec = { usage: 0, selector: 0, mtype: 0, dataHex: ca.toString("hex") };
+  var fakeTaRv = b.network.smtp.dane.verifyChain([leaf, ca], [fakeTaRec], { allowPkixModes: true });
+  check("verifyChain: PKIX-TA does not count a match on bytes that are not X.509",
+        fakeTaRv.ok === false && fakeTaRv.errors[0].reason === "pkix-ta-unparseable-leaf", JSON.stringify(fakeTaRv));
 }
 
 function testVerifyChainUnsupportedUsage() {
@@ -303,7 +312,7 @@ function testVerifyChainUnsupportedUsage() {
 }
 
 function testVerifyChainDaneEeSha512() {
-  var leaf = Buffer.from("leaf-bytes-for-sha512", "utf8");
+  var leaf = ck.TLS_CONTROL_LEAF_DER;
   var sha512Hex = nodeCrypto.createHash("sha512").update(leaf).digest("hex");
   var rec = { usage: 3, selector: 0, mtype: 2, dataHex: sha512Hex };
   var rv = b.network.smtp.dane.verifyChain([leaf], [rec]);
@@ -1084,7 +1093,7 @@ function testVerifyChainInputGuards() {
 
 function testVerifyChainDaneEeSha256() {
   // DANE-EE / Cert / SHA-256 — the mtype=1 hash branch against the leaf.
-  var leaf = Buffer.from("leaf-bytes-for-sha256", "utf8");
+  var leaf = ck.TLS_CONTROL_LEAF_DER;
   var sha256Hex = nodeCrypto.createHash("sha256").update(leaf).digest("hex");
   var rv = b.network.smtp.dane.verifyChain([leaf], [{ usage: 3, selector: 0, mtype: 1, dataHex: sha256Hex }]);
   check("verifyChain: DANE-EE / Cert / SHA-256 matches via hash",
