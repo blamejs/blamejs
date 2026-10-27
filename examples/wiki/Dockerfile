@@ -34,8 +34,8 @@
 # with no build-args uses the pinned (Dependabot-current) digest; the
 # human-readable tag is retained alongside the digest for readability and as the
 # rolling source the release workflow resolves.
-ARG BASE_DEPS=cgr.dev/chainguard/node:latest-dev@sha256:b165c3da2bc85bb4d7a4749854a087996bf51f540bc0655689ab5c43409bb741
-ARG BASE_RUNTIME=cgr.dev/chainguard/node:latest@sha256:05d2ed6a0b3e6d3b9ca1d7f0b76e88dd06b91fa95c4f1e849f99bba7bd5a21b8
+ARG BASE_DEPS=cgr.dev/chainguard/node:latest-dev@sha256:1ac2b87f6683faf0b4df19431bf73d0a40c5bcaa0da2073cad9f815571f593e4
+ARG BASE_RUNTIME=cgr.dev/chainguard/node:latest@sha256:efa14a42578e5931c351eb562ee2bed3e9c55e9abbfd683e218c88ab3889bcba
 
 FROM ${BASE_DEPS} AS deps
 WORKDIR /home/node
