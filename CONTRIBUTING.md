@@ -37,7 +37,7 @@ node scripts/test-integration.js
 docker compose -f docker-compose.test.yml down -v
 ```
 
-**Requirements:** Node.js 24.21+, matching `engines.node` (24.14.1 fixed CVE-2026-21713 non-constant-time HMAC compare; 24.21.0 carries OpenSSL 3.5.8 and the NSS 3.126 root store the TLS paths read). The framework targets `node:sqlite`, `Intl.PluralRules`, modern `crypto` primitives, and other recent built-ins. Anything older is out of scope.
+**Requirements:** Node.js 24.22.1+, matching `engines.node` (24.14.1 fixed CVE-2026-21713 non-constant-time HMAC compare; 24.21.0 brought OpenSSL 3.5.8 and the NSS 3.126 root store the TLS paths read; 24.22.1 fixes CVE-2026-111497 in the bundled Brotli decoder and carries OpenSSL 3.5.9). On Node 26, use 26.12.1 or later. The framework targets `node:sqlite`, `Intl.PluralRules`, modern `crypto` primitives, and other recent built-ins. Anything older is out of scope.
 
 ## House rules
 
