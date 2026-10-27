@@ -27,6 +27,10 @@
       "heading": "Changed",
       "items": [
         {
+          "title": "Vendored `@blamejs/pki` 0.9.9",
+          "body": "`@blamejs/pki` moves from 0.9.7 to 0.9.9. It requires Node 24.22.1. It refuses an IPv4 address spelled as a host name, such as `0127.0.0.1` or `0x7f.0.0.1`, wherever it matches a certificate identity, validates a path for an identity, or dials as a TLS server name, instead of comparing it with dNSName entries. A zstd input to its certificate decompression must be exactly one Zstandard frame."
+        },
+        {
           "title": "`engines.node` is `>=24.22.1`",
           "body": "The framework and the wiki example declare `>=24.22.1`, and CI, the npm publish workflow and the container workflow run Node 24.22.1. The wiki example's default base images, used by a local `docker build` without build arguments, move to Chainguard `node` digests that carry Node 26.12.1; the release workflow already resolves current digests when it builds."
         }
