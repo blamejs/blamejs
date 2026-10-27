@@ -15,6 +15,15 @@
       ]
     },
     {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "`b.watcher` starts on a tree that holds an unreadable directory",
+          "body": "On Linux, Node 24.22.1 and 26.12.1 refuse a recursive `fs.watch` with `EACCES` when any directory under the root cannot be read, where Node 24.21.0 skipped such a directory. `b.watcher.create` in `fs` mode then threw `watcher/start-failed`. When the root is readable and `fs.watch` refuses with `EACCES` or `EPERM`, the watcher now polls the tree instead, skipping directories it cannot read: the handle's `mode` is `\"poll\"`, and `onError` receives a `watcher/recursive-unreadable` notice that names the refused directory."
+        }
+      ]
+    },
+    {
       "heading": "Changed",
       "items": [
         {

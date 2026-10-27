@@ -14,7 +14,50 @@ var os             = helpers.os;
 var path           = helpers.path;
 var waitForWatcher = helpers.waitForWatcher;
 
+// On Linux, Node 24.22.1 and 26.12.1 refuse a recursive fs.watch whose tree
+// holds a directory the process cannot read, where 24.21.0 skipped it. The
+// watcher keeps working on such a tree by polling it, and says so through
+// onError. Only a non-root POSIX process can be denied a directory.
+async function testRecursiveWatchOverAnUnreadableDirectory() {
+  if (process.platform === "win32" || (typeof process.getuid === "function" && process.getuid() === 0)) return;
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-watch-unreadable-"));
+  var locked = path.join(dir, "locked");
+  fs.mkdirSync(locked);
+  fs.writeFileSync(path.join(dir, "file.txt"), "one");
+  fs.chmodSync(locked, 0o000);
+  var w = null;
+  try {
+    var changes = [];
+    var notices = [];
+    var threw = null;
+    try {
+      w = b.watcher.create({ root: dir, mode: "fs", debounceMs: 50, pollIntervalMs: 100,
+        onChange: function (ev) { changes.push(ev.relativePath); },
+        onError: function (err) { notices.push(err && err.code); } });
+    } catch (e) { threw = e; }
+    check("watcher: a tree holding an unreadable directory starts",
+      threw === null, threw && (threw.code + " " + threw.message));
+    if (w) {
+      check("watcher: a polling fallback is reported through onError, and only then",
+        (w.mode === "poll") === (notices.indexOf("watcher/recursive-unreadable") !== -1),
+        "mode=" + w.mode + " notices=" + JSON.stringify(notices));
+    }
+    if (w) {
+      await helpers.passiveObserve(250, "watcher unreadable: initial snapshot settles");
+      fs.writeFileSync(path.join(dir, "file.txt"), "two, a longer body");
+      await helpers.waitUntil(function () { return changes.indexOf("file.txt") !== -1; },
+        { timeoutMs: 5000, label: "watcher unreadable: change to a readable file is reported" });
+      check("watcher: a change beside the unreadable directory is reported", changes.indexOf("file.txt") !== -1);
+    }
+  } finally {
+    if (w) { try { w.stop(); } catch (_e) { /* best-effort */ } }
+    try { fs.chmodSync(locked, 0o700); } catch (_e) { /* best-effort */ }
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
+}
+
 async function run() {
+  await testRecursiveWatchOverAnUnreadableDirectory();
   // ---- _validateOpts: bad-shape inputs surface as WatcherError ----
   var threw;
   try { b.watcher.create(); } catch (e) { threw = e; }
@@ -734,12 +777,17 @@ async function run() {
   var underCap = new Array(b.watcher.MAX_IGNORE_PATTERN_LEN).join("a") + "*"; // len = cap
   var overCap  = new Array(b.watcher.MAX_IGNORE_PATTERN_LEN + 2).join("a") + "*";
   var threwUnder = null, threwOver = null;
-  try { var uw = b.watcher.create({ root: os.tmpdir(), ignore: [underCap], onChange: function () {} }); uw.stop(); }
-  catch (e) { threwUnder = e; }
-  try { b.watcher.create({ root: os.tmpdir(), ignore: [overCap], onChange: function () {} }); }
-  catch (e) { threwOver = e; }
+  var lengthCapDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-watch-cap-"));
+  try {
+    try { var uw = b.watcher.create({ root: lengthCapDir, ignore: [underCap], onChange: function () {} }); uw.stop(); }
+    catch (e) { threwUnder = e; }
+    try { b.watcher.create({ root: lengthCapDir, ignore: [overCap], onChange: function () {} }); }
+    catch (e) { threwOver = e; }
+  } finally {
+    try { fs.rmSync(lengthCapDir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
   check("watcher: pattern at the exported length cap is accepted",
-    threwUnder === null);
+    threwUnder === null, threwUnder && (threwUnder.code + " " + threwUnder.message));
   check("watcher: pattern over the exported length cap is refused",
     threwOver && threwOver.code === "watcher/bad-ignore");
 
