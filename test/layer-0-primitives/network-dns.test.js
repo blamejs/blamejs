@@ -760,11 +760,16 @@ function testDecodeAnswerRaw() {
   check("_decodeDnsAnswerRaw: <12 bytes throws dns/bad-reply",
     _throws(function () { dec(Buffer.alloc(6)); }, "dns/bad-reply"));
 
-  // rcode != 0 (SERVFAIL=2) → dns/no-result
+  // SERVFAIL (2) is a resolver failure: transient dns/server-failure.
   var servfail = Buffer.alloc(12);
   servfail.writeUInt8(0x02, 3);
-  check("_decodeDnsAnswerRaw: non-zero rcode throws dns/no-result",
-    _throws(function () { dec(servfail); }, "dns/no-result"));
+  check("_decodeDnsAnswerRaw: a SERVFAIL rcode throws dns/server-failure",
+    _throws(function () { dec(servfail); }, "dns/server-failure"));
+  // NXDOMAIN (3): the name does not exist, dns/no-result.
+  var nxdomain = Buffer.alloc(12);
+  nxdomain.writeUInt8(0x03, 3);
+  check("_decodeDnsAnswerRaw: an NXDOMAIN rcode throws dns/no-result",
+    _throws(function () { dec(nxdomain); }, "dns/no-result"));
 
   // ancount claims 1 but no answer bytes follow the question → record truncated
   var recTrunc = _buildReply("example.com", 1, []);
@@ -2046,7 +2051,7 @@ async function testDotDecodeAndErrorBranches() {
       a.address === "192.0.2.7");
   } finally { s1.close(); _resetAll(); }
 
-  // ---- SERVFAIL rcode over DoT → decode raises dns/no-result ----
+  // ---- SERVFAIL rcode over DoT → decode raises dns/server-failure ----
   _reset();
   var servfail = _buildReply("sf.example.com", 1,
     [{ name: "sf.example.com", type: 1, rdata: _aRdata(1, 2, 3, 4) }], 0x8182);   // rcode 2 = SERVFAIL

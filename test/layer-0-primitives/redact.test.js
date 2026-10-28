@@ -1519,8 +1519,184 @@ function testShortFieldNamesMatchBySegmentNotBySubstring() {
   }
 }
 
+function testRedactLogTextScrubsTokenShapedValues() {
+  var redactMod = require("../../lib/redact");
+  var hex = "3f9a1c0e7b2d4f6a8c1e3b5d7f9a0c2e4b6d8f1a3c5e7b9d0f2a4c6e8b1d3f5a";
+  check("_redactLogText is the shared log-line scrub", typeof redactMod._redactLogText === "function");
+  var out = redactMod._redactLogText("open '/data/uploads/" + hex + "/1.bin' token=AKIAIOSFODNN7EXAMPLE");
+  check("_redactLogText replaces a hex token and keeps the path around it",
+    out.indexOf(hex) === -1 && out.indexOf("/data/uploads/[redacted]/1.bin") !== -1, out);
+  check("_redactLogText still runs the redactText credential rules",
+    out.indexOf("AKIAIOSFODNN7EXAMPLE") === -1, out);
+  check("_redactLogText keeps ordinary text unchanged",
+    redactMod._redactLogText("route error: GET /users/:id x-amz-server-side-encryption") ===
+      "route error: GET /users/:id x-amz-server-side-encryption");
+  check("_redactLogText keeps a hex-letter word joined to a token",
+    redactMod._redactLogText("facade-" + hex) === "facade-[redacted]",
+    redactMod._redactLogText("facade-" + hex));
+  check("_redactLogText replaces a dash-grouped single-case code",
+    redactMod._redactLogText("code x7k2-m9p4-q8r3-t5v6-w1y0-z3a2 end") === "code [redacted] end",
+    redactMod._redactLogText("code x7k2-m9p4-q8r3-t5v6-w1y0-z3a2 end"));
+  check("_redactLogText passes an empty string through", redactMod._redactLogText("") === "");
+  var hostile = { toString: function () { throw new Error("toString"); } };
+  check("_redactLogText returns the marker instead of throwing on an unreadable value",
+    redactMod._redactLogText(hostile) === "[redacted]");
+}
+
+function _seededBytes(seed) {
+  var state = seed >>> 0;
+  return function (n) {
+    var out = Buffer.alloc(n);
+    for (var i = 0; i < n; i += 1) {
+      state = (state + 0x6D2B79F5) >>> 0;
+      var t = Math.imul(state ^ (state >>> 15), state | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      out[i] = ((t ^ (t >>> 14)) >>> 0) & 0xFF;
+    }
+    return out;
+  };
+}
+
+function testRedactLogTextScrubsRandomBase64Tokens() {
+  var redactMod = require("../../lib/redact");
+  var nextBytes = _seededBytes(876);
+  var sizes = [16, 24, 32];
+  var leaked = [];
+  var withSlash = 0;
+  var judged = 0;
+  var total = 0;
+  for (var s = 0; s < sizes.length; s += 1) {
+    for (var n = 0; n < 400; n += 1) {
+      var tok = nextBytes(sizes[s]).toString("base64");
+      total += 1;
+      if (tok.indexOf("/") !== -1) withSlash += 1;
+      if (tok.indexOf("+") === -1 && tok.charAt(tok.length - 1) !== "=") continue;
+      judged += 1;
+      var lines = [
+        "ENOENT: open '/data/share/" + tok + "/1.bin'",
+        "key " + tok + " end",
+        "at read (/srv/app/" + tok + ")",
+      ];
+      for (var l = 0; l < lines.length; l += 1) {
+        var out = redactMod._redactLogText(lines[l]);
+        if (out.indexOf(tok) !== -1 || out.indexOf("[redacted]") === -1) leaked.push(out);
+      }
+    }
+  }
+  check("the seeded token set includes tokens that contain '/'", withSlash > total / 3, withSlash + "/" + total);
+  check("no random base64 token that contains '+' or ends in '=' is written in full",
+    leaked.length === 0, leaked.length + " leaked, e.g. " + leaked.slice(0, 3).join(" ~~ "));
+  check("most seeded tokens contain '+' or end in '='", judged > total / 2, judged + "/" + total);
+  var out16 = redactMod._redactLogText("open '/data/share/" + nextBytes(16).toString("base64") + "/1.bin'");
+  check("the directory in front of a base64 token is kept",
+    out16.indexOf("open '/data/share/[redacted]") === 0 && out16.indexOf("/1.bin'") !== -1, out16);
+}
+
+function testRedactLogTextKeepsOrdinaryPaths() {
+  var redactMod = require("../../lib/redact");
+  var kept = [
+    "/usr/include/c++/13/bits/stl_vector.h",
+    "/opt/homebrew/Cellar/node/24.22.1/lib/node_modules/npm/bin/npm-cli.js",
+    "/Users/Robert/Library/Application Support/Code/User/settings.json",
+    "/Users/Robert/Library/Caches/node2/xyz",
+    "/srv/www/MyCompanyWebsite/public/images/HeaderBackground2x.png",
+    "/api/v2/users/42/profile?include=friends+groups",
+    "application/vnd.api+json",
+    "text/html; charset=utf-8",
+    "/var/lib/app/data/cache/SessionStore/index==",
+    "/home/deploy/releases/current/node_modules/express/lib/router/index.js",
+    "q=Hello+World+From+Node",
+    "a+b=c",
+    "/var/lib/docker/overlay2/l/ABCDEFGHIJKLMNOPQRSTUVWX/app.js:1:2",
+    "/data/uploads/LcGTKegeEoKJAcpbeNeUAi/1.bin",
+  ];
+  for (var i = 0; i < kept.length; i += 1) {
+    var out = redactMod._redactLogText("at fn (" + kept[i] + ")");
+    check("an ordinary path survives the token scrub: " + kept[i], out === "at fn (" + kept[i] + ")", out);
+  }
+  var overlay = redactMod._redactLogText("at /var/lib/docker/overlay2/l/K7pQ2xV9mR4tW8yB3nZ6cL1d/app.js:1:2");
+  check("the directories in front of a token keep their names",
+    overlay === "at /var/lib/docker/overlay2/l/[redacted]/app.js:1:2", overlay);
+}
+
+function _base64Url(bytes) {
+  return bytes.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function testRedactLogTextKeepsBase64UrlTokensWholeUnderPaths() {
+  var redactMod = require("../../lib/redact");
+  var fixed = [
+    "yE4WtJBkUv5rB-OL5Ml9RlxMePEG9vDU",
+    "KsBJZ50BIr_zOs2_BRnfww",
+    "PWnbmByTEKdD01cN-Xpxf4gAiRbhR2fY",
+  ];
+  for (var f = 0; f < fixed.length; f += 1) {
+    var out = redactMod._redactLogText("ENOENT: open '/data/uploads/" + fixed[f] + "/1.bin'");
+    check("a base64url token under a '/' path is replaced whole: " + fixed[f],
+      out === "ENOENT: open '/data/uploads/[redacted]/1.bin'", out);
+  }
+  var nextBytes = _seededBytes(2024);
+  var sizes = [16, 24, 32];
+  var differs = [];
+  var withSeparator = 0;
+  var total = 0;
+  for (var s = 0; s < sizes.length; s += 1) {
+    for (var n = 0; n < 400; n += 1) {
+      var tok = _base64Url(nextBytes(sizes[s]));
+      total += 1;
+      if (/[-_]/.test(tok)) withSeparator += 1;
+      var alone = redactMod._redactLogText("open " + tok + " failed").slice(5, -7);
+      var under = redactMod._redactLogText("open '/data/uploads/" + tok + "/1.bin'");
+      if (under !== "open '/data/uploads/" + alone + "/1.bin'") differs.push(tok + " -> " + under);
+    }
+  }
+  check("the seeded base64url set includes tokens with '-' or '_'", withSeparator > total / 2,
+    withSeparator + "/" + total);
+  check("a base64url token under a '/' path is redacted as it is on its own",
+    differs.length === 0, differs.length + " differ, e.g. " + differs.slice(0, 3).join(" ~~ "));
+}
+
+function _luhnDigit(prefix) {
+  for (var d = 0; d < 10; d += 1) {
+    var digits = prefix + d;
+    var sum = 0;
+    for (var i = 0; i < digits.length; i += 1) {
+      var v = digits.charCodeAt(digits.length - 1 - i) - 48;
+      if (i % 2 === 1) { v *= 2; if (v > 9) v -= 9; }
+      sum += v;
+    }
+    if (sum % 10 === 0) return String(d);
+  }
+  return "0";
+}
+
+function testRedactLogTextRedactsUuidWithLuhnPrefix() {
+  var redactMod = require("../../lib/redact");
+  var head = "48213907-5521-603" + _luhnDigit("482139075521603");
+  var uuid = head + "-89ab-0c1d2e3f4a5b";
+  var premise = redactMod.redactText("open '/data/share/" + uuid + "/1.bin'");
+  check("the first 16 digits of the UUID pass the card check on their own",
+    premise.indexOf("[redacted]-89ab-0c1d2e3f4a5b") !== -1, premise);
+  var out = redactMod._redactLogText("open '/data/share/" + uuid + "/1.bin'");
+  check("a UUID whose first 16 digits pass the card check is replaced whole",
+    out === "open '/data/share/[redacted]/1.bin'", out);
+  var tail = redactMod._redactLogText("card 4111111111111111 ok");
+  check("a card number followed by text keeps the text", tail === "card [redacted] ok", tail);
+  var dated = redactMod._redactLogText("paid with 4111111111111111-2024-10-28 ok");
+  check("a date joined to a card number is kept",
+    dated === "paid with [redacted]-2024-10-28 ok", dated);
+  var short = redactMod._redactLogText("order 4111111111111111-1-abc");
+  check("digits joined to a card number that do not complete a UUID are kept",
+    short === "order [redacted]-1-abc", short);
+}
+
 async function run() {
   testShortFieldNamesMatchBySegmentNotBySubstring();
+  testRedactLogTextScrubsTokenShapedValues();
+  testRedactLogTextScrubsRandomBase64Tokens();
+  testRedactLogTextKeepsOrdinaryPaths();
+  testRedactLogTextKeepsBase64UrlTokensWholeUnderPaths();
+  testRedactLogTextRedactsUuidWithLuhnPrefix();
   // registerValueDetector
   testRegisterValueDetectorRedactsMatchingValue();
   testRegisterValueDetectorFunctionReplacement();

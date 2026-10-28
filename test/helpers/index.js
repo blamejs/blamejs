@@ -133,6 +133,8 @@ module.exports = {
   superlinearRatio:      _growth.superlinearRatio,
   bestMsAsync:           _growth.bestMsAsync,
   looksSuperlinearAsync: _growth.looksSuperlinearAsync,
+  longestStallMs:        _growth.longestStallMs,
+  stallGrowth:           _growth.stallGrowth,
 
   // fs.watch / fs.watchFile test primitives
   backdateFile:       _fsWatch.backdateFile,

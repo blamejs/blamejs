@@ -29,6 +29,61 @@ async function run() {
     rejected2 && rejected2.code === "backup/bad-timeout");
 
   await testSharedGateReachesTheWorker();
+  await testDocumentedWorkerAdoptionRuns();
+}
+
+// The runInWorker documentation names the call a worker makes to adopt the
+// handle it receives. That call is read out of the JSDoc block and run inside a
+// worker started by runInWorker against the real gate(), so the documentation
+// cannot name a form gate() refuses.
+function _documentedAdoptionCall() {
+  var src = fs.readFileSync(path.resolve(__dirname, "..", "..", "lib", "backup", "index.js"), "utf8");
+  var start = src.indexOf("@primitive b.backup.runInWorker");
+  var end = src.indexOf("*/", start);
+  if (start === -1 || end === -1) return { calls: [], error: "runInWorker JSDoc block not found" };
+  var prose = src.slice(start, end).split(/\r?\n/).map(function (line) {
+    return line.replace(/^\s*\*\s?/, "");
+  }).join(" ");
+  var spans = prose.match(/`[^`]+`/g) || [];
+  var calls = spans.map(function (s) { return s.slice(1, -1); }).filter(function (s) {
+    return s.indexOf("b.auth.password.gate(") === 0 && s.indexOf("workerData.argon2GateHandle") !== -1;
+  });
+  return { calls: calls, error: null };
+}
+
+async function testDocumentedWorkerAdoptionRuns() {
+  var found = _documentedAdoptionCall();
+  check("the runInWorker JSDoc names exactly one worker adoption call",
+    found.error === null && found.calls.length === 1,
+    found.error || JSON.stringify(found.calls));
+  if (found.calls.length !== 1) return;
+
+  var prior = b.auth.password.stats();
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-wdoc-"));
+  try {
+    var script = path.join(dir, "doc-worker.js");
+    fs.writeFileSync(script,
+      "var { parentPort, workerData } = require('node:worker_threads');\n" +
+      "var b = { auth: { password: require(" +
+        JSON.stringify(path.resolve(__dirname, "..", "..", "lib", "auth", "password.js")) + ") } };\n" +
+      "var adopted = false;\n" +
+      "try { " + found.calls[0] + "; adopted = true; }\n" +
+      "catch (_e) { adopted = String(_e.code || _e.message); }\n" +
+      "var s = b.auth.password.stats();\n" +
+      "parentPort.postMessage({ adopted: adopted, shared: s.shared, limit: s.limit });\n");
+
+    b.auth.password.gate(3, { shared: true });
+    var msg = await b.backup.runInWorker({
+      workerScript: script, shareArgon2Gate: true, timeoutMs: 120000,
+    });
+    check("the documented adoption call is accepted by gate() in the worker",
+      msg && msg.adopted === true, JSON.stringify(msg) + " call=" + found.calls[0]);
+    check("and leaves the worker on the parent's shared limit",
+      msg && msg.shared === true && msg.limit === 3, JSON.stringify(msg));
+  } finally {
+    b.auth.password.gate(prior.limit, { shared: false });
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
 }
 
 // runInWorker created the Worker itself and returned only a promise, so a

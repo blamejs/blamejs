@@ -2968,16 +2968,19 @@ function testGetCachedTransportKindUrlObject() {
 
 // ---- downloadStream: generic (non-httpclient) pipeline failure -----
 //
-// A mid-body socket destroy makes streamPromises.pipeline reject with a Node
-// system error (ECONNRESET), not an HttpClientError — the catch re-wraps it via
+// A mid-body socket destroy on a chunked response, which declares no length,
+// makes streamPromises.pipeline reject with a Node system error (ECONNRESET),
+// not an HttpClientError. The catch re-wraps it via
 // _hcErr(e.code || ..., e.message || ...) rather than rethrowing as-is, and the
-// tmp file is cleaned up + a refused audit emits.
+// tmp file is cleaned up + a refused audit emits. The same destroy on a
+// response that declared Content-Length is a truncation, covered by
+// testTruncatedDownloadIsRefusedAndRetryable.
 
 async function testDownloadStreamGenericPipelineError() {
   var dir = b.testing.tempDir("httpclient-cov-plgen");
   try {
     await _withServer(function (req, res) {
-      res.writeHead(200, { "Content-Length": "100000" });
+      res.writeHead(200, {});
       res.write(Buffer.alloc(200, 1));
       setTimeout(function () { try { res.socket.destroy(); } catch (_e) { /* noop */ } }, 20);
     }, async function (base) {
@@ -3852,13 +3855,8 @@ async function testTruncatedDownloadIsRefusedAndRetryable() {
       });
     } catch (e) { caught = e; }
 
-    // Over HTTP/1.1 Node itself raises ECONNRESET for a body shorter than the
-    // declared length, so the pipeline fails before the length check. The
-    // check is what catches the HTTP/2 shape, where the readable side ends
-    // cleanly on a cancelled stream. Either way the transfer must be refused.
-    check("a body shorter than Content-Length is refused",
-      caught !== null &&
-      (caught.code === "http-client/truncated-body" || caught.code === "ECONNRESET"),
+    check("a body shorter than Content-Length is refused with http-client/truncated-body",
+      caught !== null && caught.code === "http-client/truncated-body",
       caught ? String(caught.code) : "resolved");
     check("and no partial file is left at dest",
       fs.existsSync(dest) === false, "dest exists");

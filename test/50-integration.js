@@ -977,6 +977,156 @@ async function testCreateAppValidation() {
   }
 }
 
+async function testCreateAppForwardsRouterOptions() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "createapp-router-"));
+  try {
+    var badRouter = [
+      { label: 'opts.router given the string "x"', router: "x",                         re: /opts\.router must be an object/ },
+      { label: "opts.router given an array",      router: [],                           re: /opts\.router must be an object/ },
+      { label: "an unknown router key",           router: { logErrorz: false },         re: /opts\.router\.logErrorz is not a router option/ },
+      { label: 'logErrors: "no"',                 router: { logErrors: "no" },          re: /logErrors must be a boolean/ },
+      { label: 'tls0Rtt: "accept"',               router: { tls0Rtt: "accept" },        re: /tls0Rtt must be one of/ },
+      { label: "a plain-HTTP redirect origin",    router: { allowedRedirectOrigins: ["http://idp.example.com"] },
+        re: /allowedRedirectOrigins\[0\]/ },
+    ];
+    for (var i = 0; i < badRouter.length; i += 1) {
+      var refused = null;
+      try { await b.createApp({ dataDir: dir, router: badRouter[i].router }); }
+      catch (e) { refused = e; }
+      check("createApp: " + badRouter[i].label + " is refused",
+            !!refused && badRouter[i].re.test(refused.message),
+            refused && String(refused.message).slice(0, 120));
+      check("and it refused before writing into dataDir (" + badRouter[i].label + ")",
+            fs.readdirSync(dir).length === 0, JSON.stringify(fs.readdirSync(dir)));
+    }
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* cleanup */ }
+  }
+
+  process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+  process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
+  b.cluster._resetForTest();
+  b.audit._resetForTest();
+  b.vault._resetForTest();
+  b.db._resetForTest();
+  var dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-app-router-"));
+  var app = await b.createApp({
+    dataDir: dataDir,
+    vault:   { mode: "plaintext" },
+    db:      { atRest: "plain", auditSigning: { mode: "plaintext" } },
+    schema:  [],
+    middleware: { botGuard: false },
+    router:  {
+      logErrors:              false,
+      tls0Rtt:                "replay-cache",
+      allowedRedirectOrigins: ["https://idp.example.com"],
+    },
+    routes:  function (r) {
+      r.get("/boom", function () { throw new Error("createApp quiet failure"); });
+    },
+  });
+  var lines = [];
+  var realError = console.error;
+  var realLog = console.log;
+  var realLevel = process.env.BLAMEJS_BOOT_LOG_LEVEL;
+  try {
+    check("createApp: router.tls0Rtt reaches the router",
+          app.router.tls0RttPosture() === "replay-cache", app.router.tls0RttPosture());
+    check("createApp: router.allowedRedirectOrigins reaches the router",
+          JSON.stringify(app.router.allowedRedirectOrigins()) === JSON.stringify(["https://idp.example.com"]),
+          JSON.stringify(app.router.allowedRedirectOrigins()));
+    var addr = await app.listen({ port: 0, host: "127.0.0.1" });
+    process.env.BLAMEJS_BOOT_LOG_LEVEL = "debug";
+    console.error = function (m) { lines.push(String(m)); };
+    console.log = function (m) { lines.push(String(m)); };
+    var status = null;
+    try { status = (await _appGet(addr.port, "/boom")).statusCode; }
+    catch (e) { status = (e && e.statusCode) || "threw"; }
+    console.error = realError;
+    console.log = realLog;
+    check("createApp: the throwing route still answers 500", status === 500, String(status));
+    check("createApp: router.logErrors false stops the route error line",
+          lines.every(function (l) { return l.indexOf("route error") === -1; }),
+          lines.join(" ~~ ").slice(0, 300));
+  } finally {
+    console.error = realError;
+    console.log = realLog;
+    if (realLevel === undefined) delete process.env.BLAMEJS_BOOT_LOG_LEVEL;
+    else process.env.BLAMEJS_BOOT_LOG_LEVEL = realLevel;
+    await app.shutdown();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+}
+
+async function testCreateAppErrorLinesRedactTokens() {
+  var token = "3f9a1c0e7b2d4f6a8c1e3b5d7f9a0c2e4b6d8f1a3c5e7b9d0f2a4c6e8b1d3f5a";
+  var variants = [
+    { label: "the default router", router: undefined, routeLine: true },
+    { label: "router.logErrors false", router: { logErrors: false }, routeLine: false },
+  ];
+  for (var v = 0; v < variants.length; v += 1) {
+    var variant = variants[v];
+    process.env.BLAMEJS_SKIP_NTP_CHECK = "1";
+    process.env.BLAMEJS_AUDIT_SIGNING_MODE = "plaintext";
+    b.cluster._resetForTest();
+    b.audit._resetForTest();
+    b.vault._resetForTest();
+    b.db._resetForTest();
+    var dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-app-redact-"));
+    var appOpts = {
+      dataDir: dataDir,
+      vault:   { mode: "plaintext" },
+      db:      { atRest: "plain", auditSigning: { mode: "plaintext" } },
+      schema:  [],
+      middleware: { botGuard: false },
+      routes:  function (r) {
+        r.get("/boom", function () {
+          throw new Error("ENOENT: no such file or directory, open '/data/uploads/" + token + "/1.bin'");
+        });
+      },
+    };
+    if (variant.router) appOpts.router = variant.router;
+    var app = await b.createApp(appOpts);
+    var lines = [];
+    var realError = console.error;
+    var realLog = console.log;
+    var realLevel = process.env.BLAMEJS_BOOT_LOG_LEVEL;
+    try {
+      var addr = await app.listen({ port: 0, host: "127.0.0.1" });
+      process.env.BLAMEJS_BOOT_LOG_LEVEL = "debug";
+      console.error = function (m) { lines.push(String(m)); };
+      console.log = function (m) { lines.push(String(m)); };
+      var status = null;
+      try { status = (await _appGet(addr.port, "/boom")).statusCode; }
+      catch (e) { status = (e && e.statusCode) || "threw"; }
+      await helpers.waitUntil(function () {
+        return lines.some(function (l) { return l.indexOf("unhandled error") !== -1; });
+      }, { timeoutMs: 5000, label: "createApp: unhandled error line written (" + variant.label + ")" });
+      console.error = realError;
+      console.log = realLog;
+      check("createApp (" + variant.label + "): the throwing route answers 500", status === 500, String(status));
+      var routeLines = lines.filter(function (l) { return l.indexOf("route error") !== -1; });
+      check("createApp (" + variant.label + "): the router's route error line is " +
+            (variant.routeLine ? "written" : "not written"),
+            routeLines.length === (variant.routeLine ? 1 : 0), lines.join(" ~~ ").slice(0, 300));
+      var unhandled = lines.filter(function (l) { return l.indexOf("unhandled error") !== -1; });
+      check("createApp (" + variant.label + "): the unhandled error line keeps the message with the token replaced",
+            unhandled.length === 1 && unhandled[0].indexOf("/data/uploads/[redacted]/1.bin") !== -1,
+            unhandled.join(" ~~ ").slice(0, 300));
+      var leaking = lines.filter(function (l) { return l.indexOf(token) !== -1; });
+      check("createApp (" + variant.label + "): no log line carries the token",
+            leaking.length === 0, leaking.join(" ~~ ").slice(0, 300));
+    } finally {
+      console.error = realError;
+      console.log = realLog;
+      if (realLevel === undefined) delete process.env.BLAMEJS_BOOT_LOG_LEVEL;
+      else process.env.BLAMEJS_BOOT_LOG_LEVEL = realLevel;
+      await app.shutdown();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  }
+}
+
 function testCreateAppSurface() {
   check("b.createApp is a function",                   typeof b.createApp === "function");
 }
@@ -1007,6 +1157,8 @@ async function run() {
   await testCreateAppRoutesCallback();
   await testCreateAppWithJobs();
   await testCreateAppShutdown();
+  await testCreateAppForwardsRouterOptions();
+  await testCreateAppErrorLinesRedactTokens();
 }
 
 module.exports = {
@@ -1019,7 +1171,9 @@ module.exports = {
   testClusterGatesObjectStoreLocal:   testClusterGatesObjectStoreLocal,
   testCreateAppSurface:               testCreateAppSurface,
   testCreateAppValidation:            testCreateAppValidation,
-  testCreateAppMinimalBoot:           testCreateAppMinimalBoot,
+  testCreateAppForwardsRouterOptions: testCreateAppForwardsRouterOptions,
+  testCreateAppErrorLinesRedactTokens: testCreateAppErrorLinesRedactTokens,
+  testCreateAppMinimalBoot:          testCreateAppMinimalBoot,
   testCreateAppListenRejectsOnBindFailure: testCreateAppListenRejectsOnBindFailure,
   testCreateAppDefaultMiddleware:     testCreateAppDefaultMiddleware,
   testCreateAppMiddlewareDisableable: testCreateAppMiddlewareDisableable,

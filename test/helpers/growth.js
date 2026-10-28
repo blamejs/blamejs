@@ -136,10 +136,52 @@ async function bestMsAsync(fn, reps) {
   return lowest;
 }
 
+// Longest single event-loop turn, in milliseconds, while `fn` runs, including
+// any synchronous work `fn` does before its first await. A chain of
+// setImmediate callbacks records the gap between consecutive check phases, so
+// a turn that holds the loop shows up as one long gap however the rest of the
+// work is spread out. Contention adds time here too, so callers take the
+// minimum over several runs like every other reading in this file.
+async function longestStallMs(fn) {
+  var longest = 0;
+  var last = process.hrtime.bigint();
+  var running = true;
+  function tick() {
+    var now = process.hrtime.bigint();
+    var gap = Number(now - last) / 1e6;
+    if (gap > longest) longest = gap;
+    last = now;
+    if (running) setImmediate(tick);
+  }
+  setImmediate(tick);
+  try { await fn(); }
+  finally { running = false; }
+  var tail = Number(process.hrtime.bigint() - last) / 1e6;
+  return Math.max(longest, tail);
+}
+
+// Does the longest event-loop stall grow with input size? Same contract and
+// verdict as looksSuperlinearAsync, but each sample reads longestStallMs of
+// `run(x)` rather than its elapsed time. Work that yields between bounded
+// steps holds a stall that stays flat as the input grows; work done in one
+// synchronous pass holds one that grows with it.
+async function stallGrowth(run, opts) {
+  return _superlinearRatioAsync(function (x) {
+    return longestStallMs(function () { return run(x); });
+  }, opts);
+}
+
 // Same contract as looksSuperlinear, awaiting each sample. Defaults differ in
 // one place: an async sample costs a round trip, so `reps` and `confirmReps`
 // are smaller.
 async function looksSuperlinearAsync(run, opts) {
+  var verdict = await _superlinearRatioAsync(function (x) {
+    return bestMsAsync(function () { return run(x); }, 1);
+  }, opts);
+  return verdict;
+}
+
+async function _superlinearRatioAsync(sample, opts) {
   opts = opts || {};
   var threshold = opts.threshold === undefined ? 3 : opts.threshold;
   var floorMs   = opts.floorMs === undefined ? 25 : opts.floorMs;
@@ -152,10 +194,8 @@ async function looksSuperlinearAsync(run, opts) {
     var large = Infinity;
     var small = Infinity;
     for (var i = 0; i < n; i += 1) {
-      large = Math.min(large,
-        await bestMsAsync(function () { return run(opts.large); }, 1));
-      small = Math.min(small,
-        await bestMsAsync(function () { return run(opts.small); }, 1));
+      large = Math.min(large, await sample(opts.large));
+      small = Math.min(small, await sample(opts.small));
     }
     if (large < floorMs) return null;                 // fast enough to rule out
     return large / Math.max(small, 0.05);             // 0.05ms: timer floor
@@ -177,4 +217,6 @@ module.exports = {
   superlinearRatio:      superlinearRatio,
   bestMsAsync:           bestMsAsync,
   looksSuperlinearAsync: looksSuperlinearAsync,
+  longestStallMs:        longestStallMs,
+  stallGrowth:           stallGrowth,
 };

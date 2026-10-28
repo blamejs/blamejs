@@ -210,7 +210,35 @@ async function testARejectedSampleIsNotMeasuredAsFast() {
         calls === 1, String(calls));
 }
 
+// The stall reading is the longest single turn, not the total. The same total
+// work done in one turn and in yielding slices must read differently, and the
+// synchronous part of the work before its first await must count.
+function _yieldTurn() { return new Promise(function (r) { setImmediate(r); }); }
+
+async function testStallReadsTheLongestTurnNotTheTotal() {
+  var oneTurn = await growth.longestStallMs(function () { _spin(60); return Promise.resolve(); });
+  check("growth stall: synchronous work before the first await is one long turn",
+        oneTurn >= 55, String(oneTurn));
+
+  var sliced = await growth.longestStallMs(async function () {
+    for (var i = 0; i < 30; i += 1) { _spin(2); await _yieldTurn(); }
+  });
+  check("growth stall: the same work in yielding slices reads as its longest slice",
+        sliced < 30, String(sliced));
+
+  var STALL = { small: SMALL, large: LARGE, threshold: 2, floorMs: 1, reps: 2, confirmReps: 2 };
+  var grows = await growth.stallGrowth(async function (n) { _linear(n); }, STALL);
+  check("growth stall: a single turn that grows with the input is reported as growth",
+        grows.superlinear === true, JSON.stringify(grows));
+  var flat = await growth.stallGrowth(async function (n) {
+    for (var k = 0; k < n / 200; k += 1) { _spin(2); await _yieldTurn(); }
+  }, STALL);
+  check("growth stall: work spread over more slices as the input grows reads as flat",
+        flat.superlinear === false, JSON.stringify(flat));
+}
+
 async function run() {
+  await testStallReadsTheLongestTurnNotTheTotal();
   testSyncSeparatesLinearFromQuadratic();
   testBelowTheFloorThereIsNoVerdict();
   testALoadExcursionIsNotReadAsGrowth();

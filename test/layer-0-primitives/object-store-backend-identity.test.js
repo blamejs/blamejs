@@ -82,6 +82,7 @@ async function run() {
   await _testAStreamPutIsNotRetried();
   await _testGetStreamYieldsBeforeTheTransferEnds();
   await _testAConditionalGetStreamIsNotShort();
+  await _testAnH2BodyCutShortReportsTheObjectStoreCode();
 }
 
 // RFC 7230 section 3.3.2 lets a 304 carry the Content-Length of the selected
@@ -234,16 +235,58 @@ async function _testGetStreamYieldsBeforeTheTransferEnds() {
     });
     check("a body shorter than Content-Length fails the stream",
       truncErr !== null, "bytes=" + truncBytes + " no error");
-    // Over HTTP/1.1 Node raises the reset itself before the length check; the
-    // check is what catches the HTTP/2 shape, where the readable side ends
-    // cleanly. Either way the short body must not read as a complete object.
-    check("and it is reported rather than completing",
-      truncErr !== null &&
-      (truncErr.code === "objectstore/truncated-body" || truncErr.code === "ECONNRESET"),
+    check("and it is reported as objectstore/truncated-body",
+      truncErr !== null && truncErr.code === "objectstore/truncated-body",
       truncErr ? String(truncErr.code) : "no error");
+    check("and the truncation is retryable",
+      truncErr !== null && b.retry.isRetryable(truncErr) === true,
+      truncErr ? JSON.stringify({ permanent: truncErr.permanent, transient: truncErr.transient }) : "no error");
+    var getErr = null;
+    try { await store.get("short"); } catch (e) { getErr = e; }
+    check("a buffered get of a body shorter than Content-Length reports objectstore/truncated-body",
+      getErr !== null && getErr.code === "objectstore/truncated-body" && b.retry.isRetryable(getErr) === true,
+      getErr ? String(getErr.code) : "resolved");
     truncating = false;
   } finally {
     await new Promise(function (resolve) { server.close(resolve); });
+  }
+}
+
+// The object-store stream adapter reads the body b.httpClient.request returns.
+// Over HTTP/2 a body cut short fails in the transport with
+// http-client/truncated-body before the adapter's own length check runs, and
+// that code reached the getStream() caller in place of the object-store code.
+async function _testAnH2BodyCutShortReportsTheObjectStoreCode() {
+  var http2 = require("node:http2");
+  var sharedRequest = require("../../lib/object-store/http-request");
+  var server = http2.createServer(function (req, res) {
+    res.stream.respond({ ":status": 200, "content-length": "100" });
+    res.stream.end(Buffer.alloc(9, 0x72));
+  });
+  var sessions = [];
+  server.on("session", function (s) { sessions.push(s); });
+  var port = await helpers.listenOnRandomPort(server, "127.0.0.1");
+  try {
+    var stream = sharedRequest.responseToStream(b.httpClient.request({
+      url: "http://127.0.0.1:" + port + "/obj", responseMode: "stream", preferH2: true,
+      allowInternal: true, allowedProtocols: b.safeUrl.ALLOW_HTTP_ALL,
+    }));
+    var err = null;
+    var ended = false;
+    stream.on("data", function () {});
+    stream.on("error", function (e) { err = e; });
+    stream.on("end", function () { ended = true; });
+    await helpers.waitUntil(function () { return err !== null || ended; },
+      { timeoutMs: 5000, label: "object-store h2 short body: stream settles" });
+    check("h2: an object body cut short fails with objectstore/truncated-body",
+      err !== null && err.code === "objectstore/truncated-body", err ? String(err.code) : "ended cleanly");
+    check("h2: and the truncation is retryable",
+      err !== null && b.retry.isRetryable(err) === true,
+      err ? JSON.stringify({ permanent: err.permanent, transient: err.transient }) : "ended cleanly");
+  } finally {
+    sessions.forEach(function (s) { try { s.destroy(); } catch (_e) { /* already closed */ } });
+    await new Promise(function (resolve) { server.close(function () { resolve(); }); });
+    b.httpClient._resetForTest();
   }
 }
 

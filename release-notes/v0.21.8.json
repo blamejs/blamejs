@@ -1,0 +1,88 @@
+{
+  "$schema": "../scripts/release-notes-schema.json",
+  "version": "0.21.8",
+  "date": "2026-10-29",
+  "headline": "Stream bodies fail on timeouts and truncation, a SERVFAIL is transient, DoH shares one connection, and trusted origins can keep their TLS connections",
+  "summary": "`b.httpClient.request` with `responseMode: \"stream\"` now ends the body with an error when a timeout, an abort or a truncation cuts the transfer short, over HTTP/1.1 and HTTP/2. A SERVFAIL or REFUSED reply from `b.network.dns` and `b.network.dns.resolver` is a transient error that `b.retry` retries, and NXDOMAIN stays permanent.\n\nDNS-over-HTTPS queries share one HTTP/2 connection, `b.network.dns.lookup` caches answers for their TTL, and a TLS session is resumed on dual-stack hosts. `b.httpClient.configurePool({ trustedKeepAliveOrigins })` keeps HTTP/1.1 connections pooled to origins an operator lists; every other origin still uses one connection per request.\n\nThe router, error page and shutdown log lines replace token-shaped values with `[redacted]`. `b.watcher` walks the tree without blocking the event loop and exposes a `ready` promise.",
+  "sections": [
+    {
+      "heading": "Security",
+      "items": [
+        {
+          "title": "Log lines replace token-shaped values",
+          "body": "The `b.router` lines `route error`, `route refused`, `ws handler threw` and `SNICallback threw`, the response-validation lines, the `b.errorPage` (and `b.middleware.errorHandler` and default `b.createApp` error handler) `unhandled error` stack and code, `request error` code, hook-failure lines and audit record, and the `b.appShutdown` `uncaught`, `onUncaught hook failed` and `shutdown threw unexpectedly` lines go through `b.redact.redactText` and then replace token-shaped values with `[redacted]`, in every `NODE_ENV`. Each run of letters, digits, `-` and `_` is checked, and so is each part between `-` and `_`, so `bundle-<hex>` is written as `bundle-[redacted]`. A value counts as token-shaped when it has 32 or more hex digits, or 20 or more hex digits that mix digits and a to f (UUIDs and 24-character object IDs); when it has 20 or more mixed-case letters and digits with at least one digit and is not mostly made of words; when it has 20 or more single-case letters and digits with at least two digits and no `-` or `_` (ULID, cuid2); or when it is a `-`-grouped single-case code with 20 or more letters and digits and at least two digits. A standard base64 run that contains `+` or ends with `=` is read as one value across its `+` and `/` characters after leading `/` directory names made of letters, and is replaced at 20 or more characters that mix case and are not only words. A mixed-case value of letters alone is kept, and so may be an unpadded standard base64 value that contains `/` but no `+`. A base64url or nanoid token under a path is redacted the same as on its own. `Http2ServerRequestHandler1`, `getUserById2FactorAuth` and `node-v24-22-1-linux-x64-musl-2026` are kept; a function name such as `generateMlkem768X25519KeyPair` in a stack frame is replaced. The dev-mode error page still shows the stack."
+        },
+        {
+          "title": "`b.router` `logErrors` and `b.createApp` router options",
+          "body": "`b.router.create({ logErrors: false })` stops the router from writing its `route error`, `route refused` and `ws handler threw` lines; `onError` and the default 500 still run, and a non-boolean value throws `router/bad-log-errors`. The option does not affect the `SNICallback threw` line or the `b.errorPage` lines. `b.createApp({ router: { tls0Rtt, allowedRedirectOrigins, logErrors } })` passes those options to the application's router; any other key, or a value `b.router.create` refuses, throws before `b.createApp` creates the data directory or opens the vault."
+        },
+        {
+          "title": "A failing `SNICallback` fails only its handshake",
+          "body": "A `tlsOptions.SNICallback` passed to `b.router` `listen()` that throws `null`, another non-Error, or an Error whose `message` or `stack` throws when read, fails that handshake with `router/sni-callback-threw`. Before, a non-Error completed the handshake with the listener's default certificate, and an Error with a throwing `message` getter held the connection open until the handshake timeout. The router passes at most one answer from an `SNICallback` to the TLS layer, and a WebSocket handler or `SNICallback` that throws a non-Error no longer crashes the listener."
+        }
+      ]
+    },
+    {
+      "heading": "Added",
+      "items": [
+        {
+          "title": "`trustedKeepAliveOrigins` for `b.httpClient`",
+          "body": "`b.httpClient.configurePool({ trustedKeepAliveOrigins: [\"https://host[:port]\", ...] })` keeps https HTTP/1.1 connections to the listed origins pooled and reused. Every other origin keeps one connection per request, which guards against a server writing a response before the request (CVE-2026-105481). A value that is not an array of https origins (scheme, host and optional port only) throws `http-client/bad-opts`, and `[]` clears the list."
+        },
+        {
+          "title": "`b.network.dns.setCacheTtlBounds` and answer-TTL caching",
+          "body": "`b.network.dns.lookup` now caches an answer for the smallest TTL in the DNS answer, CNAMEs included, up to 5 minutes, without any configuration. An answer with TTL 0 is not cached, and an answer from the system resolver is cached only when `b.network.dns.setCacheTtlMs` is set. `b.network.dns.setCacheTtlBounds({ minMs, maxMs, negativeMs })` sets the bounds (defaults 0, 300000 and 0). `setCacheTtlMs(ms)` still caches for a fixed time, and `setCacheTtlMs(0)` turns the cache off. A transient failure is never cached: when one address family fails transiently and the other answers, the answer is returned but not cached. Every lookup returns its own copy of a cached answer."
+        },
+        {
+          "title": "`b.watcher` `ready` promise",
+          "body": "The handle `b.watcher.create` returns has a `ready` promise. Under mode `\"poll\"` it resolves once the first walk has taken the baseline snapshot, and under mode `\"fs\"` it resolves straight away. A change made before `ready` resolves may be taken into the baseline without being reported, or may be reported by the next walk. When the first poll walk fails, for example because the tree holds more than `pollMaxFiles` entries or the root cannot be read, `create()` no longer throws: the watcher stops, `ready` rejects with `watcher/start-failed` whose `cause` is the walk's error, and `onError` receives the same error. Code that relied on `create()` throwing for a failed poll walk should await `ready`. When `stop()` is called before the first walk completes, `ready` resolves at once and `onError` receives nothing more."
+        }
+      ]
+    },
+    {
+      "heading": "Changed",
+      "items": [
+        {
+          "title": "DNS response codes",
+          "body": "A SERVFAIL or REFUSED reply rejects with the transient `dns/server-failure` (`err.permanent === false`), which `b.retry.isRetryable` retries. Before, it rejected with the permanent `dns/no-result` over DoH or DoT, or the transient `dns/resolve-failed` on the system resolver. `dns/no-result` means NXDOMAIN, or a NOERROR reply with no records of the queried type, and is permanent; any other non-zero RCODE rejects with the new permanent `dns/query-failed`. These errors carry `err.rcode`. The codes apply to `b.network.dns.resolve4`, `resolve6`, `resolveAaaa`, `resolve`, `querySvcb` and `queryHttps` on every transport, and to `lookup` and `resolveSecure` over DoH or DoT; on the system resolver, `lookup` keeps Node's getaddrinfo errors, and the other functions now report NXDOMAIN as the permanent `dns/no-result`. `b.network.dns.discoverEncrypted` rejects with `dns/ddr-not-discovered` for NXDOMAIN, an empty answer, REFUSED, NOTIMP, FORMERR or any other non-zero RCODE except SERVFAIL, which rejects with `dns/server-failure`."
+        },
+        {
+          "title": "`b.network.dns.resolver` error codes",
+          "body": "A SERVFAIL or REFUSED reply rejects with the new transient `resolver/server-failure` instead of the permanent `resolver/query-failed`, and a cached answer inside the `serveStale` window is returned instead. Transport failures are classified by cause. Transient: `resolver/upstream-timeout` (no answer within `timeoutMs`, or a transport rejecting with `dns/lookup-timeout`), `resolver/server-failure` (a transport rejecting with `dns/server-failure`), the new `resolver/upstream-connection-failed` (a refused or reset connection, or another error that `b.retry.isRetryable` treats as retryable) and `resolver/upstream-http` (HTTP 429 or 5xx). Permanent: the new `resolver/upstream-rejected` (another non-200 status such as 403 or 404), `resolver/upstream-too-large` (over 64 KiB) and `resolver/upstream-failed` (any other transport error). The HTTP codes carry `err.statusCode`, and a transport that rejects with a `ResolverError` keeps its code. Before, every one of these was the permanent `resolver/upstream-failed`."
+        },
+        {
+          "title": "DNS-over-HTTPS shares one HTTP/2 connection",
+          "body": "DoH queries from `b.network.dns` offer HTTP/2. When the server accepts it, the A and AAAA queries of a lookup and later queries share one connection, which closes after 2 minutes idle and does not keep the process alive. A query on the shared connection also sends an HTTP/2 PING; when neither the acknowledgment nor the response arrives within half the lookup timeout (at most 2 seconds), the connection is closed and the query is sent once more on a new one, which covers a NAT or firewall that dropped the connection's state. A query is also sent once more on a new connection when the server closes the connection or sends GOAWAY; after a GOAWAY the client closes the connection once its queries finish. A stream reset on a connection that is still open is retried once on the same connection. A stream that ends without a response rejects with `dns/doh-failed`. A DoH server that answers only HTTP/1.1, or a process using `NODE_USE_ENV_PROXY`, gets one connection per query as before."
+        },
+        {
+          "title": "TLS sessions are resumed on dual-stack hosts",
+          "body": "Every agent built with `b.pqcAgent.create`, including the `b.httpClient` default pool, stores a connection's TLS session when its response ends, so a later connection resumes it even when Node's happy-eyeballs path connected over the second address family. A request through such an agent runs the agent's `checkServerIdentity` in place of its own. A `b.httpClient` request through an agent passed in `opts` that sets no `checkServerIdentity` stores no session, so it does not evict sessions other code cached on that agent."
+        },
+        {
+          "title": "`b.watcher` walks the tree without blocking",
+          "body": "Under mode `\"poll\"`, `b.watcher.create` returns without walking the tree. The walk reads each directory in batches of 32 entries, stats each batch concurrently, and compares a later snapshot with the previous one 1024 entries per event-loop turn, so no turn grows with the size of the tree or of a single directory. Under both backends, settled changes are delivered to `onChange` and `onDelete` at most 64 per turn, in the order they settled; under mode `\"fs\"`, one native `fs.watch` batch is queued in one turn. The fallback to polling when `fs.watch` refuses a recursive watch with `EACCES` or `EPERM` still works, and `ready` then resolves after a walk that skips the unreadable directories."
+        }
+      ]
+    },
+    {
+      "heading": "Fixed",
+      "items": [
+        {
+          "title": "Stream-mode bodies fail on timeout, abort and truncation",
+          "body": "With `responseMode: \"stream\"`, `b.httpClient.request` destroys the body with a transient `ETIMEDOUT` when `timeoutMs` or `idleTimeoutMs` fires after the headers, and with `ABORT` when `opts.signal` aborts, over HTTP/1.1 and HTTP/2. Before, the HTTP/2 body ended with no error and the HTTP/1.1 body errored with `ECONNRESET`. A body the client has already received and buffered in full is still delivered whole to a late reader; a larger body still in transit fails. In every response mode, a body that ends short of its `Content-Length`, or an HTTP/2 stream the server resets with an error code before the body ends, rejects with the transient `http-client/truncated-body`, which carries the `statusCode`. A stream reset with `NO_ERROR` and no `Content-Length` cannot be told apart from a complete body and is delivered as complete. HEAD and 1xx, 204, 205 and 304 responses are not checked. `b.httpClient.downloadStream` rejects with `ETIMEDOUT` or `http-client/truncated-body`, and the remote `b.objectStore` backends report a truncated `get` or `getStream` as the transient `objectstore/truncated-body`."
+        },
+        {
+          "title": "DNS-over-TLS queries after a failed lookup",
+          "body": "After one lookup failed on a reply over DNS-over-TLS, later lookups on the same pooled connection rejected with that same error without being sent, until the connection closed. Each query is now sent and answered on its own."
+        },
+        {
+          "title": "`b.backup.runInWorker` documentation",
+          "body": "The documentation now shows the worker adopting the shared Argon2id gate with `b.auth.password.gate(null, { shared: workerData.argon2GateHandle })`, the form `gate()` accepts. A test runs that call from the documentation inside a real worker."
+        }
+      ]
+    }
+  ],
+  "references": [
+    { "label": "Node.js October 2026 security releases", "url": "https://nodejs.org/en/blog/vulnerability/october-2026-security-releases" }
+  ]
+}

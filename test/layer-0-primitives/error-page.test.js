@@ -870,6 +870,120 @@ function testLoggerInjection() {
     JSON.stringify(audited).slice(0, 200));
 }
 
+var TOKEN_HEX = "3f9a1c0e7b2d4f6a8c1e3b5d7f9a0c2e4b6d8f1a3c5e7b9d0f2a4c6e8b1d3f5a";
+
+function testLogAndAuditLinesRedactTokenShapedValues() {
+  var captured = [];
+  var fakeLog = {
+    warn:  function (msg, fields) { captured.push({ level: "warn",  msg: msg, fields: fields }); },
+    error: function (msg, fields) { captured.push({ level: "error", msg: msg, fields: fields }); },
+    info:  function () {},
+  };
+  var message = "ENOENT: no such file or directory, open '/data/uploads/" + TOKEN_HEX + "/1.bin'";
+  var req = _mockReq({ method: "GET", url: "/files/1", headers: {} });
+  req.routePattern = "/files/:id";
+
+  var h = b.errorPage.create({ mode: "prod", audit: false, log: fakeLog });
+  h(new Error(message), req, _mockRes());
+  var unhandled = captured.filter(function (c) { return c.msg === "unhandled error"; });
+  check("the unhandled error line is written", unhandled.length === 1, JSON.stringify(captured).slice(0, 300));
+  var stack = unhandled.length ? String(unhandled[0].fields.stack) : "";
+  check("the unhandled error line does not carry the token", stack.indexOf(TOKEN_HEX) === -1, stack.slice(0, 300));
+  check("the unhandled error line keeps the rest of the stack",
+    stack.indexOf("/data/uploads/[redacted]/1.bin") !== -1 && stack.indexOf("ENOENT") !== -1, stack.slice(0, 300));
+
+  captured.length = 0;
+  h("thrown string /data/uploads/" + TOKEN_HEX + "/1.bin", req, _mockRes());
+  var fromString = captured.filter(function (c) { return c.msg === "unhandled error"; });
+  check("a thrown string is logged without the token",
+    fromString.length === 1 && String(fromString[0].fields.stack).indexOf(TOKEN_HEX) === -1 &&
+    String(fromString[0].fields.stack).indexOf("[redacted]") !== -1,
+    JSON.stringify(fromString).slice(0, 300));
+
+  var hookNames = ["onError", "jsonFormatter", "renderHtml"];
+  hookNames.forEach(function (hook) {
+    captured.length = 0;
+    var hookOpts = { mode: "prod", audit: false, log: fakeLog, defaultFormat: hook === "jsonFormatter" ? "json" : "html" };
+    hookOpts[hook] = function () { throw new Error(message); };
+    b.errorPage.create(hookOpts)(new Error("plain"), req, _mockRes());
+    var hookLines = captured.filter(function (c) { return c.msg.indexOf(hook + " hook threw") !== -1 || c.msg.indexOf(hook + " threw") !== -1; });
+    check("the " + hook + " failure line is written", hookLines.length === 1, JSON.stringify(captured).slice(0, 300));
+    check("the " + hook + " failure line does not carry the token",
+      hookLines.every(function (c) { return JSON.stringify(c.fields).indexOf(TOKEN_HEX) === -1 &&
+        JSON.stringify(c.fields).indexOf("[redacted]") !== -1; }),
+      JSON.stringify(hookLines).slice(0, 300));
+  });
+
+  var auditMod = b.audit;
+  var origSafe = auditMod.safeEmit;
+  var seen = [];
+  auditMod.safeEmit = function (ev) { seen.push(ev); };
+  try {
+    b.errorPage.create({ mode: "prod", log: fakeLog })(new Error(message), req, _mockRes());
+  } finally {
+    auditMod.safeEmit = origSafe;
+  }
+  check("the audit record is emitted", seen.length === 1);
+  check("the audit record's stack and reason do not carry the token",
+    seen.length === 1 && String(seen[0].metadata.stack).indexOf(TOKEN_HEX) === -1 &&
+    String(seen[0].reason).indexOf(TOKEN_HEX) === -1,
+    JSON.stringify(seen).slice(0, 300));
+  check("the audit record keeps the rest of the message",
+    seen.length === 1 && String(seen[0].reason).indexOf("/data/uploads/[redacted]/1.bin") !== -1,
+    seen.length ? String(seen[0].reason) : "none");
+}
+
+function testLogAndAuditLinesRedactTokenShapedCode() {
+  var captured = [];
+  var fakeLog = {
+    warn:  function (msg, fields) { captured.push({ level: "warn",  msg: msg, fields: fields }); },
+    error: function (msg, fields) { captured.push({ level: "error", msg: msg, fields: fields }); },
+    info:  function () {},
+  };
+  var code = "share/" + TOKEN_HEX + "/missing";
+  var req = _mockReq({ method: "GET", url: "/files/1", headers: {} });
+  var h = b.errorPage.create({ mode: "prod", audit: false, log: fakeLog });
+
+  var serverErr = new Error("boom");
+  serverErr.code = code;
+  h(serverErr, req, _mockRes());
+  var notFound = new Error("gone");
+  notFound.statusCode = 404;
+  notFound.code = code;
+  h(notFound, req, _mockRes());
+  var unhandled = captured.filter(function (c) { return c.msg === "unhandled error"; });
+  var requestErr = captured.filter(function (c) { return c.msg === "request error"; });
+  check("both log lines are written", unhandled.length === 1 && requestErr.length === 1,
+    JSON.stringify(captured).slice(0, 300));
+  [unhandled, requestErr].forEach(function (lines, idx) {
+    var name = idx === 0 ? "unhandled error" : "request error";
+    check("the " + name + " line writes err.code without the token",
+      lines.length === 1 && String(lines[0].fields.code) === "share/[redacted]/missing",
+      JSON.stringify(lines).slice(0, 300));
+  });
+
+  var numeric = new Error("numeric code");
+  numeric.statusCode = 400;
+  numeric.code = 4001;
+  captured.length = 0;
+  h(numeric, req, _mockRes());
+  check("a numeric err.code is written unchanged",
+    captured.length === 1 && captured[0].fields.code === 4001, JSON.stringify(captured));
+
+  var auditMod = b.audit;
+  var origSafe = auditMod.safeEmit;
+  var seen = [];
+  auditMod.safeEmit = function (ev) { seen.push(ev); };
+  try {
+    b.errorPage.create({ mode: "prod", log: fakeLog })(serverErr, req, _mockRes());
+  } finally {
+    auditMod.safeEmit = origSafe;
+  }
+  check("the audit record's code does not carry the token",
+    seen.length === 1 && seen[0].metadata.code === "share/[redacted]/missing",
+    JSON.stringify(seen).slice(0, 300));
+}
+
 function testHooksThrowWithoutMessage() {
   // The three shaping hooks each log `(e && e.message) || String(e)`.
   // A thrown value with NO `.message` (throw null) exercises the
@@ -958,6 +1072,8 @@ async function run() {
   testModeAutoDetect();
   testAuditPath();
   testLoggerInjection();
+  testLogAndAuditLinesRedactTokenShapedValues();
+  testLogAndAuditLinesRedactTokenShapedCode();
 }
 
 module.exports = { run: run };
