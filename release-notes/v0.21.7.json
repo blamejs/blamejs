@@ -60,7 +60,11 @@
       "items": [
         {
           "title": "The first compromised-key check per curve takes milliseconds",
-          "body": "`b.crypto.compromisedKey` builds its table of small-scalar public keys for P-256, P-384, P-521 and secp256k1 by point addition, with one scalar multiplication per curve instead of 255. It also skips the vendored `@blamejs/pki` key lint on a certificate whose key node and `@blamejs/pki` decode to the same SubjectPublicKeyInfo bytes. The first `b.pqcAgent.create({ ca: tls.rootCertificates })` in a process makes 3 scalar multiplications instead of 1530 and takes about 0.13 to 0.34 s instead of about 1.4 to 2.4 s on Node 26.12.1. `b.selfUpdate.standaloneVerifier.verify` builds its P-384 table from the published generator in about 4 to 6 ms instead of about 200 ms. The vendored `@blamejs/pki` still builds its own table with 255 scalar multiplications per curve, once per process, where it checks keys itself, including a compressed-point EC certificate passed as `ca`."
+          "body": "`b.crypto.compromisedKey` builds its table of small-scalar public keys for P-256, P-384, P-521 and secp256k1 by point addition, with one scalar multiplication per curve instead of 255. It also skips the vendored `@blamejs/pki` key lint on a certificate whose key node and `@blamejs/pki` decode to the same SubjectPublicKeyInfo bytes. The first `b.pqcAgent.create({ ca: tls.rootCertificates })` in a process makes 3 scalar multiplications instead of 1530 and takes about 0.13 to 0.34 s instead of about 1.4 to 2.4 s on Node 26.12.1. `b.selfUpdate.standaloneVerifier.verify` builds its P-384 table from the published generator in about 4 to 6 ms instead of about 200 ms. The vendored `@blamejs/pki` 0.9.10 builds its own table the same way, so the paths where it checks keys itself (certificate, CSR and CRMF issuance, chain validation, trust anchors, and a compressed-point EC certificate passed as `ca`) no longer pay the cost either."
+        },
+        {
+          "title": "Vendored `@blamejs/pki` 0.9.10",
+          "body": "`@blamejs/pki` moves from 0.9.9 to 0.9.10. Its first compromised-key check on each elliptic curve builds the small-scalar table by point addition, which takes a few milliseconds instead of up to about half a second."
         },
         {
           "title": "`b.archive.tar` writes long non-ASCII names that other tools read",
