@@ -143,6 +143,124 @@ function testCertCompressionFor() {
   check("the input list is not mutated", all.join(",") === "zlib,brotli,zstd");
 }
 
+// A Node built with --shared-brotli decodes with the system library, which
+// the Node release fix does not touch, and process.versions.brotli reports
+// that library's version. Node's bundled copy reports 1.2.0 after the fix, so
+// the library version is read only on a shared build.
+function testSharedBrotliLibrary() {
+  if (typeof C._brotliDecoderPatched !== "function") return;
+  function shared(v) { return { sharedBrotli: true, brotliVersion: v }; }
+  [["24.22.1", "1.2.0"], ["26.12.1", "1.1.0"], ["27.0.0", "1.0.9"], ["24.22.1", "garbage"],
+   ["24.22.1", ""], ["24.22.1", undefined], ["24.22.1", "1.2.1-rc1"]].forEach(function (c) {
+    check("shared brotli " + JSON.stringify(c[1]) + " on Node " + c[0] + " is not fixed",
+          C._brotliDecoderPatched(c[0], shared(c[1])) === false);
+  });
+  [["24.22.1", "1.2.1"], ["26.12.1", "1.3.0"], ["22.23.4", "2.0.0"]].forEach(function (c) {
+    check("shared brotli " + c[1] + " on Node " + c[0] + " is fixed",
+          C._brotliDecoderPatched(c[0], shared(c[1])) === true);
+  });
+  check("shared brotli 1.2.1 on an unfixed Node release is not fixed",
+        C._brotliDecoderPatched("24.21.0", shared("1.2.1")) === false);
+  check("the bundled decoder is judged by the Node release, not the 1.2.0 it reports",
+        C._brotliDecoderPatched("24.22.1", { sharedBrotli: false, brotliVersion: "1.2.0" }) === true);
+  check("cert compression: brotli is dropped on a shared brotli 1.2.0 build of Node 24.22.1",
+        C._certCompressionFor(["zlib", "brotli", "zstd"], "24.22.1", shared("1.2.0")).join(",") === "zlib,zstd");
+  check("cert compression: brotli is kept on a shared brotli 1.2.1 build of Node 24.22.1",
+        C._certCompressionFor(["zlib", "brotli", "zstd"], "24.22.1", shared("1.2.1")).join(",") ===
+          "zlib,brotli,zstd");
+  var live = {
+    sharedBrotli:  !!(process.config && process.config.variables && process.config.variables.node_shared_brotli),
+    brotliVersion: process.versions.brotli,
+  };
+  check("with no build argument the live runtime's build is judged",
+        C._brotliDecoderPatched(process.versions.node) === C._brotliDecoderPatched(process.versions.node, live));
+}
+
+// Reports `node` as the Node release and `build` as the Brotli build for the
+// duration of fn. Both refusals read the runtime at call time, and each
+// refuses before any byte reaches a decoder.
+function _asBrotliRuntime(node, build, fn) {
+  var saved = {
+    node:    Object.getOwnPropertyDescriptor(process.versions, "node"),
+    brotli:  Object.getOwnPropertyDescriptor(process.versions, "brotli"),
+    config:  Object.getOwnPropertyDescriptor(process, "config"),
+  };
+  var variables = Object.assign({}, process.config && process.config.variables,
+    { node_shared_brotli: build.sharedBrotli });
+  Object.defineProperty(process.versions, "node",
+    { value: node, configurable: true, enumerable: true, writable: false });
+  Object.defineProperty(process.versions, "brotli",
+    { value: build.brotliVersion, configurable: true, enumerable: true, writable: false });
+  Object.defineProperty(process, "config",
+    { value: Object.freeze({ variables: Object.freeze(variables) }), configurable: true, enumerable: true,
+      writable: false });
+  try { return fn(); }
+  finally {
+    Object.defineProperty(process.versions, "node", saved.node);
+    if (saved.brotli) Object.defineProperty(process.versions, "brotli", saved.brotli);
+    else delete process.versions.brotli;
+    Object.defineProperty(process, "config", saved.config);
+  }
+}
+
+function _refusals() {
+  var zlib = require("node:zlib");
+  var br = zlib.brotliCompressSync(Buffer.from("hello world ".repeat(50), "utf8"));
+  var out = {};
+  try {
+    b.safeDecompress(br, { algorithm: "brotli", maxOutputBytes: C.BYTES.kib(64),
+      audit: { safeEmit: function () {} } });
+    out.decompress = null;
+  } catch (e) { out.decompress = e; }
+  try {
+    b.network.tls.applyToContext({ base: { certificateCompression: ["brotli"] }, role: "client" });
+    out.tls = null;
+  } catch (e) { out.tls = e; }
+  return out;
+}
+
+// The safeDecompress and certificate-compression refusals describe the same
+// decoder and the same remedy. On a Node built against a shared Brotli
+// library, a fixed Node release is not the problem, so the advice names the
+// library. Otherwise the advice names only the supported Node releases.
+function testBrotliRefusalWording() {
+  var cases = [
+    { node: "24.22.1", build: { sharedBrotli: true, brotliVersion: "1.1.1" },
+      must: ["shared Brotli library 1.1.1", "Node 24.22.1", "Brotli library to 1.2.1 or later", "CVE-2026-111497"],
+      mustNot: ["upgrade to Node", "22.23.4"] },
+    { node: "26.12.1", build: { sharedBrotli: true, brotliVersion: "garbage" },
+      must: ["shared Brotli library", "Brotli library to 1.2.1 or later"],
+      mustNot: ["upgrade to Node", "22.23.4"] },
+    { node: "24.21.0", build: { sharedBrotli: true, brotliVersion: "1.1.1" },
+      must: ["Node 24.21.0", "shared Brotli library 1.1.1", "24.22.1", "26.12.1", "Brotli 1.2.1 or later"],
+      mustNot: ["22.23.4"] },
+    { node: "24.21.0", build: { sharedBrotli: false, brotliVersion: "1.1.0" },
+      must: ["Node 24.21.0", "24.22.1", "26.12.1"],
+      mustNot: ["22.23.4", "shared"] },
+    { node: "25.9.0", build: { sharedBrotli: false, brotliVersion: "1.1.0" },
+      must: ["Node 25.9.0", "24.22.1", "26.12.1"],
+      mustNot: ["22.23.4", "shared"] },
+  ];
+  cases.forEach(function (c) {
+    var tag = "Node " + c.node + (c.build.sharedBrotli ? " on shared Brotli " + c.build.brotliVersion : " bundled");
+    var r = _asBrotliRuntime(c.node, c.build, _refusals);
+    check(tag + ": safeDecompress refuses brotli with safe-decompress/unsafe-runtime",
+          r.decompress && r.decompress.code === "safe-decompress/unsafe-runtime",
+          r.decompress && r.decompress.message);
+    check(tag + ": applyToContext refuses brotli with tls/unsafe-cert-compression",
+          r.tls && r.tls.code === "tls/unsafe-cert-compression", r.tls && r.tls.message);
+    [["safeDecompress", r.decompress], ["applyToContext", r.tls]].forEach(function (pair) {
+      var msg = pair[1] ? pair[1].message : "";
+      c.must.forEach(function (s) {
+        check(tag + ": the " + pair[0] + " refusal says " + JSON.stringify(s), msg.indexOf(s) !== -1, msg);
+      });
+      c.mustNot.forEach(function (s) {
+        check(tag + ": the " + pair[0] + " refusal does not say " + JSON.stringify(s), msg.indexOf(s) === -1, msg);
+      });
+    });
+  });
+}
+
 function testTlsCertCompressionFollowsRuntime() {
   if (typeof C._certCompressionFor !== "function") {
     check("TLS_CERT_COMPRESSION has a version filter to compare against", false);
@@ -222,15 +340,22 @@ async function testOutboundPostureBrotliOfferOnTheWire() {
   var fatCert = new Array(24).join(pair.cert) + pair.cert;
   var control = await _handshakeBytes(pair, fatCert, []);
   var posture = await _handshakeBytes(pair, fatCert, undefined);
+  check("Node " + process.versions.node + ": outboundPosture() offers no certificate compression, " +
+        "so the certificate arrives uncompressed (" + posture + " vs " + control + " bytes)",
+        Math.abs(posture - control) < control * 0.05);
   var fixed = C._brotliDecoderPatched(process.versions.node);
   if (fixed) {
-    check("Node " + process.versions.node + ": outboundPosture() negotiates brotli " +
-          "certificate compression (" + posture + " vs " + control + " bytes uncompressed)",
-          posture < control * 0.8);
+    var optIn = await _handshakeBytes(pair, fatCert,
+      b.network.tls.buildOptions({ certificateCompression: ["brotli"] }).certificateCompression);
+    check("Node " + process.versions.node + ": an explicit [\"brotli\"] negotiates brotli " +
+          "certificate compression (" + optIn + " vs " + control + " bytes uncompressed)",
+          optIn < control * 0.8);
   } else {
-    check("Node " + process.versions.node + ": outboundPosture() does not offer brotli, " +
-          "so the certificate arrives uncompressed (" + posture + " vs " + control + " bytes)",
-          Math.abs(posture - control) < control * 0.05);
+    var refused = null;
+    try { b.network.tls.buildOptions({ certificateCompression: ["brotli"] }); }
+    catch (e) { refused = e && e.code; }
+    check("Node " + process.versions.node + ": an explicit [\"brotli\"] is refused (" + refused + ")",
+          refused === "tls/unsafe-cert-compression");
   }
 }
 
@@ -241,6 +366,8 @@ async function run() {
   testOpensslPrefixedVersion();
   testVersionParsers();
   testCertCompressionFor();
+  testSharedBrotliLibrary();
+  testBrotliRefusalWording();
   testTlsCertCompressionFollowsRuntime();
   await testOutboundPostureBrotliOfferOnTheWire();
 }

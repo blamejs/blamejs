@@ -222,6 +222,12 @@ async function testSafeArchiveRefusesTrustedStreamSource() {
     } catch (e) { refused = e; }
     check("safeArchive.extract: trusted-stream upfront refused",
       refused && /trusted-stream-unsupported/.test(refused.code || refused.message));
+    var inspectRefused = null;
+    try { await b.safeArchive.inspect({ source: adapter }); }
+    catch (e) { inspectRefused = e; }
+    check("safeArchive.inspect: a trusted-stream source is refused with safe-archive/trusted-stream-unsupported",
+      _hasCode(inspectRefused, "safe-archive/trusted-stream-unsupported"),
+      inspectRefused ? String(inspectRefused.code) : "inspected without error");
   } finally {
     fakeReadable.destroy();
     fs.rmSync(dest, { recursive: true, force: true });
@@ -282,6 +288,54 @@ async function testGuardArchiveInspect() {
   });
   check("guardArchive.inspect: 1 entry",       summary.entries.length === 1);
   check("guardArchive.inspect: issues array",   Array.isArray(summary.issues));
+
+  // A profile name the guard does not have is refused before the archive is
+  // read, and the reader emits no inspect audit for it.
+  var badProfiles = ["nope", "hipaa", 5];
+  for (var bp = 0; bp < badProfiles.length; bp += 1) {
+    var counted = _countingAdapter(bytes);
+    var events = [];
+    var auditSink = { safeEmit: function (ev) { events.push(ev); }, emit: function (ev) { events.push(ev); } };
+    var errBp = null;
+    try { await b.guardArchive.inspect(counted.adapter, { profile: badProfiles[bp], audit: auditSink }); }
+    catch (err) { errBp = err; }
+    check("guardArchive.inspect: profile " + JSON.stringify(badProfiles[bp]) +
+      " is refused before the archive is read",
+      _hasCode(errBp, "archive/bad-profile") && counted.reads.length === 0 && events.length === 0,
+      (errBp ? String(errBp.code) : "inspected without error") + " reads=" + counted.reads.length +
+      " audits=" + events.length);
+  }
+
+  // The validateEntries options reach validateEntries: a cap applies, and a
+  // bad cap, policy or posture is refused before the archive is read.
+  var two = b.archive.zip();
+  two.addFile("a.txt", "a");
+  two.addFile("b.txt", "b");
+  var twoBytes = two.toBuffer();
+  var capped = await b.guardArchive.inspect(b.archive.adapters.buffer(twoBytes), { maxEntries: 1 });
+  check("guardArchive.inspect: maxEntries reaches validateEntries",
+    capped.issues.some(function (i) { return i.kind === "entry-count-cap"; }),
+    JSON.stringify(capped.issues.map(function (i) { return i.kind; })));
+  var underCap = await b.guardArchive.inspect(b.archive.adapters.buffer(twoBytes), { maxEntries: 2 });
+  check("guardArchive.inspect: two entries under maxEntries 2 draw no entry-count issue",
+    !underCap.issues.some(function (i) { return i.kind === "entry-count-cap"; }));
+  var badOpts = [
+    { opts: { maxEntries: -1 },                     code: "archive/bad-opt" },
+    { opts: { maxEntries: "x", profile: "strict" }, code: "archive/bad-opt" },
+    { opts: { maxTotalBytes: 0 },                   code: "archive/bad-opt" },
+    { opts: { encryptionPolicy: "bogus" },          code: "archive/bad-opt" },
+    { opts: { compliancePosture: "nope" },          code: "archive/bad-posture" },
+  ];
+  for (var bo = 0; bo < badOpts.length; bo += 1) {
+    var countedBo = _countingAdapter(twoBytes);
+    var errBo = null;
+    try { await b.guardArchive.inspect(countedBo.adapter, badOpts[bo].opts); }
+    catch (err) { errBo = err; }
+    check("guardArchive.inspect: " + JSON.stringify(badOpts[bo].opts) + " throws " + badOpts[bo].code +
+      " before the archive is read",
+      _hasCode(errBo, badOpts[bo].code) && countedBo.reads.length === 0,
+      (errBo ? String(errBo.code) : "inspected without error") + " reads=" + countedBo.reads.length);
+  }
 }
 
 async function testBundleAdapterStorageRoundTrip() {
@@ -772,7 +826,9 @@ function _buildDataDescriptor(dd, crc, csize, usize) {
 // `dataDescriptor` appends a descriptor after the data (see
 // _buildDataDescriptor); `cdLfhOffset` overrides the CD's local-header offset.
 // `lfhFlags` sets the local header's general-purpose flags and leaves the CD's
-// flags at `flags`.
+// flags at `flags`. `extra` and `lfhExtra` are the extra-field blocks of the
+// CD entry and the local header. `nameBytes` and `lfhNameBytes` set the raw
+// name-field bytes, for a name that is not valid UTF-8.
 // opts: { eocdDiskNumber?, eocdCdDisk?, totalEntries?, entriesOnDisk?,
 //         cdTrailing?: Buffer, eocdCdOffset?, eocdCdSize? }
 function buildClassicZip(specs, opts) {
@@ -781,7 +837,7 @@ function buildClassicZip(specs, opts) {
   var offsets = [];
   var running = 0;
   specs.forEach(function (s) {
-    var nameBuf = Buffer.from(s.name, "utf8");
+    var nameBuf = s.nameBytes || Buffer.from(s.name, "utf8");
     var data = s.data || Buffer.alloc(0);
     var usize = s.usize != null ? s.usize : data.length;
     var csize = s.csize != null ? s.csize : data.length;
@@ -797,10 +853,11 @@ function buildClassicZip(specs, opts) {
     lfh.writeUInt32LE((s.lfhCrc != null ? s.lfhCrc : crc) >>> 0, 14);
     lfh.writeUInt32LE((s.lfhCsize != null ? s.lfhCsize : csize) >>> 0, 18);
     lfh.writeUInt32LE((s.lfhUsize != null ? s.lfhUsize : usize) >>> 0, 22);
-    var lfhNameBuf = s.lfhName != null ? Buffer.from(s.lfhName, "utf8") : nameBuf;
+    var lfhNameBuf = s.lfhNameBytes || (s.lfhName != null ? Buffer.from(s.lfhName, "utf8") : nameBuf);
+    var lfhExtraBuf = s.lfhExtra || Buffer.alloc(0);
     lfh.writeUInt16LE(lfhNameBuf.length, 26);
-    lfh.writeUInt16LE(0, 28);
-    var pieces = [lfh, lfhNameBuf, data];
+    lfh.writeUInt16LE(lfhExtraBuf.length, 28);
+    var pieces = [lfh, lfhNameBuf, lfhExtraBuf, data];
     if (s.dataDescriptor) pieces.push(_buildDataDescriptor(s.dataDescriptor, crc, csize, usize));
     var part = Buffer.concat(pieces);
     offsets.push(running);
@@ -810,7 +867,8 @@ function buildClassicZip(specs, opts) {
   var localBlob = Buffer.concat(localParts);
   var cdParts = [];
   specs.forEach(function (s, i) {
-    var nameBuf = Buffer.from(s.name, "utf8");
+    var nameBuf = s.nameBytes || Buffer.from(s.name, "utf8");
+    var cdExtraBuf = s.extra || Buffer.alloc(0);
     var data = s.data || Buffer.alloc(0);
     var usize = s.usize != null ? s.usize : data.length;
     var csize = s.csize != null ? s.csize : data.length;
@@ -828,13 +886,13 @@ function buildClassicZip(specs, opts) {
     cd.writeUInt32LE(csize >>> 0, 20);
     cd.writeUInt32LE(usize >>> 0, 24);
     cd.writeUInt16LE(s.cdNameLen != null ? s.cdNameLen : nameBuf.length, 28);
-    cd.writeUInt16LE(0, 30);
+    cd.writeUInt16LE(cdExtraBuf.length, 30);
     cd.writeUInt16LE(0, 32);
     cd.writeUInt16LE(0, 34);
     cd.writeUInt16LE(0, 36);
     cd.writeUInt32LE(s.externalAttrs != null ? (s.externalAttrs >>> 0) : 0, 38);
     cd.writeUInt32LE((s.cdLfhOffset != null ? s.cdLfhOffset : offsets[i]) >>> 0, 42);
-    cdParts.push(Buffer.concat([cd, nameBuf]));
+    cdParts.push(Buffer.concat([cd, nameBuf, cdExtraBuf]));
   });
   if (opts.cdTrailing) cdParts.push(opts.cdTrailing);
   var cdBlob = Buffer.concat(cdParts);
@@ -1857,8 +1915,8 @@ async function testEmbeddedStructureRefusals() {
     _hasCode(eg1d.err, "archive-read/embedded-archive") && eg1d.left.length === 0,
     (eg1d.err ? String(eg1d.err.code) : "read without error") + " left=" + eg1d.left.join(","));
   var eg1i = await _inspectErr(gapHidden);
-  check("zip embedded: inspect() reads only the central directory and lists the gap archive",
-    eg1i === null, eg1i ? String(eg1i.code) : "");
+  check("zip embedded: inspect() refuses the local header in the gap between entries",
+    _hasCode(eg1i, "archive-read/embedded-archive"), eg1i ? String(eg1i.code) : "read without error");
 
   // The same hiding place after a directory entry, after a data descriptor,
   // and between the last entry and the central directory.
@@ -1952,6 +2010,798 @@ async function testEmbeddedStructureRefusals() {
   } catch (err) { ok5 = "ERR " + err.code; }
   check("zip embedded: a stored entry that is itself a ZIP still extracts",
     ok5 === "nested.zip:true,b.txt:true", String(ok5));
+}
+
+// Archives written by real tools: Info-ZIP `zip -r`, Info-ZIP reading stdin
+// (`zip -fd - -`, a ZIP64 data descriptor), Python zipfile to a file and to
+// an unseekable stream (data descriptors), 7-Zip, and the JDK `jar` tool.
+var INTEROP_ARCHIVES = {
+  "infozip.zip":        "UEsDBAoAAAAAALUVXF0PpOroHwAAAB8AAAAKAAAAcmVhZG1lLnR4dGhlbGxvIGZyb20gdGhlIGludGVyb3AgZml4dHVyZQpQSwMECgAAAAAAtRVcXQAAAAAAAAAAAAAAAAUAAABkb2NzL1BLAwQKAAAAAAC1FVxdgxbcjAEAAAABAAAADAAAAGRvY3Mvb25lLnR4dHhQSwMEFAAAAAgAtRVcXUXwEzuFAAAAzgQAAA4AAABkb2NzL25vdGVzLnR4dIXTQQ6CQBBE0b2n6CPYVYJ4HDRDQjIyRLx/DAfwz/rvXqrqupW4Rltijld7759yHOuzltjat1zqWROrsBrrDeuAdcR6xzphfbBGB4u1krmSvZLBksWSyZLNktGS1cRq6myM1cRqYjWxmlhNrCZWE6uZ1cxq7lyT1cxqZjWzmlnNrOa/aj9QSwECHgMKAAAAAAC1FVxdD6Tq6B8AAAAfAAAACgAAAAAAAAABAAAApIEAAAAAcmVhZG1lLnR4dFBLAQIeAwoAAAAAALUVXF0AAAAAAAAAAAAAAAAFAAAAAAAAAAAAEADtQUcAAABkb2NzL1BLAQIeAwoAAAAAALUVXF2DFtyMAQAAAAEAAAAMAAAAAAAAAAEAAACkgWoAAABkb2NzL29uZS50eHRQSwECHgMUAAAACAC1FVxdRfATO4UAAADOBAAADgAAAAAAAAABAAAApIGVAAAAZG9jcy9ub3Rlcy50eHRQSwUGAAAAAAQABADhAAAARgEAAAAA",
+  "infozip-stream.zip": "UEsDBC0ACAAIALUVXF0AAAAA//////////8BABQALQEAEAAAAAAAAAAAAAAAAAAAAAAAhdM7DgIxDEXRnlV4CdjmuxxAjiZSJhllgsTyaWi5qW939N4SpTRJva0ylpBcR/S2Scqf8e5xKLmGHKUlecirrVuPfc/PElLb+FXFalgd6wnrGesF6xXrDeudNSZYrKXMpeylDKYspkymbKaMpqxmrGaTjbGasZqxmrGasZqxmrGasZqzmrOaT67Jas5qzmrOas5qzmr+V+0LUEsHCK34qFKZAAAAAAAAAO0EAAAAAAAAUEsBAh4DLQAIAAgAtRVcXa34qFKZAAAA7QQAAAEAAAAAAAAAAQAAAIARAAAAAC1QSwUGAAAAAAEAAQAvAAAA5AAAAAAA",
+  "python.zip":         "UEsDBBQAAAAIALUVXF0PpOroIQAAAB8AAAAKAAAAcmVhZG1lLnR4dMtIzcnJV0grys9VKMlIVcjMK0ktyi9QSMusKCktSuUCAFBLAwQUAAAAAAC1FVxdRfATO84EAADOBAAADgAAAGRvY3Mvbm90ZXMudHh0bGluZSAwIG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSAxIG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSAyIG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSAzIG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSA0IG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSA1IG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSA2IG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSA3IG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSA4IG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSA5IG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSAxMCBvZiBhIGNvbXByZXNzaWJsZSBub3RlCmxpbmUgMTEgb2YgYSBjb21wcmVzc2libGUgbm90ZQpsaW5lIDEyIG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSAxMyBvZiBhIGNvbXByZXNzaWJsZSBub3RlCmxpbmUgMTQgb2YgYSBjb21wcmVzc2libGUgbm90ZQpsaW5lIDE1IG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSAxNiBvZiBhIGNvbXByZXNzaWJsZSBub3RlCmxpbmUgMTcgb2YgYSBjb21wcmVzc2libGUgbm90ZQpsaW5lIDE4IG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSAxOSBvZiBhIGNvbXByZXNzaWJsZSBub3RlCmxpbmUgMjAgb2YgYSBjb21wcmVzc2libGUgbm90ZQpsaW5lIDIxIG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSAyMiBvZiBhIGNvbXByZXNzaWJsZSBub3RlCmxpbmUgMjMgb2YgYSBjb21wcmVzc2libGUgbm90ZQpsaW5lIDI0IG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSAyNSBvZiBhIGNvbXByZXNzaWJsZSBub3RlCmxpbmUgMjYgb2YgYSBjb21wcmVzc2libGUgbm90ZQpsaW5lIDI3IG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSAyOCBvZiBhIGNvbXByZXNzaWJsZSBub3RlCmxpbmUgMjkgb2YgYSBjb21wcmVzc2libGUgbm90ZQpsaW5lIDMwIG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSAzMSBvZiBhIGNvbXByZXNzaWJsZSBub3RlCmxpbmUgMzIgb2YgYSBjb21wcmVzc2libGUgbm90ZQpsaW5lIDMzIG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSAzNCBvZiBhIGNvbXByZXNzaWJsZSBub3RlCmxpbmUgMzUgb2YgYSBjb21wcmVzc2libGUgbm90ZQpsaW5lIDM2IG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKbGluZSAzNyBvZiBhIGNvbXByZXNzaWJsZSBub3RlCmxpbmUgMzggb2YgYSBjb21wcmVzc2libGUgbm90ZQpsaW5lIDM5IG9mIGEgY29tcHJlc3NpYmxlIG5vdGUKUEsDBBQAAAAIALUVXF0AAAAAAgAAAAAAAAAFAAAAZG9jcy8DAFBLAQIUAxQAAAAIALUVXF0PpOroIQAAAB8AAAAKAAAAAAAAAAAAAACkgQAAAAByZWFkbWUudHh0UEsBAhQDFAAAAAAAtRVcXUXwEzvOBAAAzgQAAA4AAAAAAAAAAAAAAKSBSQAAAGRvY3Mvbm90ZXMudHh0UEsBAhQDFAAAAAgAtRVcXQAAAAACAAAAAAAAAAUAAAAAAAAAAAAQAP1BQwUAAGRvY3MvUEsFBgAAAAADAAMApwAAAGgFAAAAAA==",
+  "python-stream.zip":  "UEsDBBQACAAIALUVXF0AAAAAAAAAAAAAAAAKAAAAcmVhZG1lLnR4dMtIzcnJV0grys9VKMlIVcjMK0ktyi9QSMusKCktSuUCAFBLBwgPpOroIQAAAB8AAABQSwMEFAAIAAgAAAAhAAAAAAAAAAAAAAAAAA4AAABkb2NzL25vdGVzLnR4dIXTQQ6CQBBE0b2n6CPYVYJ4HDRDQjIyRLx/DAfwz/rvXqrqupW4Rltijld7759yHOuzltjat1zqWROrsBrrDeuAdcR6xzphfbBGB4u1krmSvZLBksWSyZLNktGS1cRq6myM1cRqYjWxmlhNrCZWE6uZ1cxq7lyT1cxqZjWzmlnNrOa/aj9QSwcIRfATO4UAAADOBAAAUEsBAhQDFAAIAAgAtRVcXQ+k6ughAAAAHwAAAAoAAAAAAAAAAAAAAKSBAAAAAHJlYWRtZS50eHRQSwECFAMUAAgACAAAACEARfATO4UAAADOBAAADgAAAAAAAAAAAAAAgAFZAAAAZG9jcy9ub3Rlcy50eHRQSwUGAAAAAAIAAgB0AAAAGgEAAAAA",
+  "7z.zip":             "UEsDBBQAAAAAALYVXF0AAAAAAAAAAAAAAAAFAAAAZG9jcy9QSwMEFAAAAAgAthVcXUXwEzt5AAAAzgQAAA4AAABkb2NzL25vdGVzLnR4dIXTSwqAMBAE0b2nmCMkmfw8jkoEQY0Y74/g3sr67YrufTuLGKmrTLLU47pLa9u8FznrU4ZPLapDVVSPGlAjakLNqCPX6MSyzI5ZmT1zYI7MiTkzczVnmDsbc8zK7JkDc2ROzJmZq6lhtsydayqzZw7MkTkxZ+bfai9QSwMECgAAAAAAthVcXYMW3IwBAAAAAQAAAAwAAABkb2NzL29uZS50eHR4UEsDBAoAAAAAALYVXF0PpOroHwAAAB8AAAAKAAAAcmVhZG1lLnR4dGhlbGxvIGZyb20gdGhlIGludGVyb3AgZml4dHVyZQpQSwECPwMUAAAAAAC2FVxdAAAAAAAAAAAAAAAABQAkAAAAAAAAABCA7UEAAAAAZG9jcy8KACAAAAAAAAEAGAALfMxshmbdAQAAAAAAAAAAAAAAAAAAAABQSwECPwMUAAAACAC2FVxdRfATO3kAAADOBAAADgAkAAAAAAAAACCApIEjAAAAZG9jcy9ub3Rlcy50eHQKACAAAAAAAAEAGAALfMxshmbdAQAAAAAAAAAAAAAAAAAAAABQSwECPwMKAAAAAAC2FVxdgxbcjAEAAAABAAAADAAkAAAAAAAAACCApIHIAAAAZG9jcy9vbmUudHh0CgAgAAAAAAABABgAC3zMbIZm3QEAAAAAAAAAAAAAAAAAAAAAUEsBAj8DCgAAAAAAthVcXQ+k6ugfAAAAHwAAAAoAJAAAAAAAAAAggKSB8wAAAHJlYWRtZS50eHQKACAAAAAAAAEAGAALfMxshmbdAQAAAAAAAAAAAAAAAAAAAABQSwUGAAAAAAQABABxAQAAOgEAAAAA",
+  "app.jar":            "UEsDBAoAAAgAALUVXF0AAAAAAAAAAAAAAAAJAAQATUVUQS1JTkYv/soAAFBLAwQUAAgICAC1FVxdAAAAAAAAAAAAAAAAFAAAAE1FVEEtSU5GL01BTklGRVNULk1G803My0xLLS7RDUstKs7Mz7NSMNQz4OVyLkpNLElN0XWqtFIwAoroGRopaDjmFGTmpWrycvFyAQBQSwcIUTLwXTgAAAA3AAAAUEsDBBQACAgIALUVXF0AAAAAAAAAAAAAAAAKAAAAcmVhZG1lLnR4dMtIzcnJV0grys9VKMlIVcjMK0ktyi9QSMusKCktSuUCAFBLBwgPpOroIQAAAB8AAABQSwMECgAACAAAtRVcXQAAAAAAAAAAAAAAAAUAAABkb2NzL1BLAwQUAAgICAC1FVxdAAAAAAAAAAAAAAAADgAAAGRvY3Mvbm90ZXMudHh0hdNBDoJAEETRvafoI9hVgngcNENCMjJEvH8MB/DP+u9equq6lbhGW2KOV3vvn3Ic67OW2Nq3XOpZE6uwGusN64B1xHrHOmF9sEYHi7WSuZK9ksGSxZLJks2S0ZLVxGrqbIzVxGpiNbGaWE2sJlYTq5nVzGruXJPVzGpmNbOaWc2s5r9qP1BLBwhF8BM7hQAAAM4EAABQSwMEFAAICAgAtRVcXQAAAAAAAAAAAAAAAAwAAABkb2NzL29uZS50eHSrAABQSwcIgxbcjAMAAAABAAAAUEsBAgoACgAACAAAtRVcXQAAAAAAAAAAAAAAAAkABAAAAAAAAAAAAAAAAAAAAE1FVEEtSU5GL/7KAABQSwECFAAUAAgICAC1FVxdUTLwXTgAAAA3AAAAFAAAAAAAAAAAAAAAAAArAAAATUVUQS1JTkYvTUFOSUZFU1QuTUZQSwECFAAUAAgICAC1FVxdD6Tq6CEAAAAfAAAACgAAAAAAAAAAAAAAAAClAAAAcmVhZG1lLnR4dFBLAQIKAAoAAAgAALUVXF0AAAAAAAAAAAAAAAAFAAAAAAAAAAAAAAAAAP4AAABkb2NzL1BLAQIUABQACAgIALUVXF1F8BM7hQAAAM4EAAAOAAAAAAAAAAAAAAAAACEBAABkb2NzL25vdGVzLnR4dFBLAQIUABQACAgIALUVXF2DFtyMAwAAAAEAAAAMAAAAAAAAAAAAAAAAAOIBAABkb2NzL29uZS50eHRQSwUGAAAAAAYABgBeAQAAHwIAAAAA",
+};
+
+function _interopExpectedBodies() {
+  var readme = "hello from the interop fixture\n";
+  var notes = "";
+  for (var n = 0; n < 40; n += 1) notes += "line " + n + " of a compressible note\n";
+  return { "readme.txt": readme, "docs/notes.txt": notes, "docs/one.txt": "x", "-": readme + notes };
+}
+
+function _countingAdapter(bytes) {
+  var inner = b.archive.adapters.buffer(bytes);
+  var counter = { reads: [], adapter: null };
+  counter.adapter = Object.assign({}, inner, {
+    range: function (offset, length) {
+      counter.reads.push({ offset: offset, length: length });
+      return inner.range(offset, length);
+    },
+  });
+  return counter;
+}
+
+// inspect() checks every local header against its central directory entry,
+// and the bytes between entries, the way extract and extractEntries do. A
+// reader that takes names from the local headers (a streaming unzip) would
+// otherwise write a file the central directory never listed.
+async function testInspectVerifiesLocalHeaders() {
+  var GOOD = Buffer.from("GOOD-CONTENT\n");
+  var EVIL = Buffer.from("EVIL-PAYLOAD\n");
+
+  var nameSkew = buildClassicZip([{ name: "docs/readme.txt", data: GOOD, lfhName: "../../evil.txt" }]);
+  var ei1 = await _inspectErr(nameSkew);
+  check("zip inspect: a local header naming ../../evil.txt under a CD name of docs/readme.txt is refused",
+    _hasCode(ei1, "archive-read/lfh-cd-skew"), ei1 ? String(ei1.code) : "inspected without error");
+  var eg1 = null;
+  try { await b.guardArchive.inspect(b.archive.adapters.buffer(nameSkew), { profile: "strict" }); }
+  catch (err) { eg1 = err; }
+  check("zip inspect: b.guardArchive.inspect refuses the same local-header name skew",
+    _hasCode(eg1, "archive-read/lfh-cd-skew"), eg1 ? String(eg1.code) : "inspected without error");
+  var es1 = null;
+  try { await b.safeArchive.inspect({ source: nameSkew }); }
+  catch (err) { es1 = err; }
+  check("zip inspect: b.safeArchive.inspect refuses the same local-header name skew",
+    _hasCode(es1, "archive-read/lfh-cd-skew"), es1 ? String(es1.code) : "inspected without error");
+  var et1 = null;
+  try {
+    await b.archive.read.zip.fromTrustedStream(
+      b.archive.adapters.trustedStream(nodeStream.Readable.from([nameSkew]))).inspect();
+  } catch (err) { et1 = err; }
+  check("zip inspect: fromTrustedStream inspect() refuses the same local-header name skew",
+    _hasCode(et1, "archive-read/lfh-cd-skew"), et1 ? String(et1.code) : "inspected without error");
+  var en1 = null;
+  try { for await (var _n1 of b.archive.read.zip(b.archive.adapters.buffer(nameSkew)).entries()) { void _n1; } }
+  catch (err) { en1 = err; }
+  check("zip inspect: entries() refuses the same local-header name skew before yielding",
+    _hasCode(en1, "archive-read/lfh-cd-skew"), en1 ? String(en1.code) : "enumerated without error");
+
+  var cases = [
+    { label: "a bad local-header signature", code: "archive-read/bad-lfh-signature",
+      spec: { name: "a.txt", data: GOOD, lfhSig: 0xdeadbeef } },
+    { label: "a method skew", code: "archive-read/lfh-cd-skew",
+      spec: { name: "a.txt", data: GOOD, method: 0, lfhMethod: 8 } },
+    { label: "a CRC-32 skew", code: "archive-read/lfh-cd-skew",
+      spec: { name: "a.txt", data: GOOD, lfhCrc: 7 } },
+    { label: "a compressed-size skew", code: "archive-read/lfh-cd-skew",
+      spec: { name: "a.txt", data: GOOD, lfhCsize: 99 } },
+    { label: "an uncompressed-size skew", code: "archive-read/lfh-cd-skew",
+      spec: { name: "a.txt", data: GOOD, lfhUsize: 99 } },
+    { label: "an encryption-flag skew", code: "archive-read/lfh-cd-skew",
+      spec: { name: "a.txt", data: GOOD, lfhFlags: 0x0001 } },
+    { label: "a data-descriptor-flag skew", code: "archive-read/lfh-cd-skew",
+      spec: { name: "a.txt", data: GOOD, lfhFlags: 0x0008 } },
+    { label: "a data descriptor that disagrees with the CD", code: "archive-read/lfh-cd-skew",
+      spec: { name: "a.txt", data: GOOD, flags: 0x0008, lfhCrc: 0, lfhCsize: 0, lfhUsize: 0,
+              dataDescriptor: { crc: 1 } } },
+    { label: "a directory entry whose local header names another path", code: "archive-read/lfh-cd-skew",
+      spec: { name: "d/", externalAttrs: EXT_DIR, lfhName: "../" } },
+  ];
+  for (var c = 0; c < cases.length; c += 1) {
+    var bytes = buildClassicZip([cases[c].spec]);
+    var ec = await _inspectErr(bytes);
+    check("zip inspect: " + cases[c].label + " is refused by inspect()",
+      _hasCode(ec, cases[c].code), ec ? String(ec.code) : "inspected without error");
+    var egc = null;
+    try { await b.guardArchive.inspect(b.archive.adapters.buffer(bytes)); }
+    catch (err) { egc = err; }
+    check("zip inspect: " + cases[c].label + " is refused by b.guardArchive.inspect",
+      _hasCode(egc, cases[c].code), egc ? String(egc.code) : "inspected without error");
+  }
+
+  // A local header with its data in the gap between two entries, after a
+  // directory entry, after a data descriptor, and before the central directory.
+  var gaps = [
+    _zipWithGaps([{ name: "a.txt", data: GOOD, gap: _rawLfh("evil.txt", EVIL) }, { name: "b.txt", data: GOOD }]),
+    _zipWithGaps([{ name: "d/", dir: true, gap: _rawLfh("evil.txt", EVIL) }, { name: "d/b.txt", data: GOOD }]),
+    _zipWithGaps([{ name: "a.txt", data: GOOD, dd: true, gap: _rawLfh("evil.txt", EVIL) }, { name: "b.txt", data: GOOD }]),
+    _zipWithGaps([{ name: "a.txt", data: GOOD }], { beforeCd: _rawLfh("evil.txt", EVIL) }),
+  ];
+  for (var g = 0; g < gaps.length; g += 1) {
+    var egi = await _inspectErr(gaps[g]);
+    check("zip inspect: inspect() refuses gap archive #" + g,
+      _hasCode(egi, "archive-read/embedded-archive"), egi ? String(egi.code) : "inspected without error");
+    var egg = null;
+    try { await b.guardArchive.inspect(b.archive.adapters.buffer(gaps[g])); }
+    catch (err) { egg = err; }
+    check("zip inspect: b.guardArchive.inspect refuses gap archive #" + g,
+      _hasCode(egg, "archive-read/embedded-archive"), egg ? String(egg.code) : "inspected without error");
+  }
+
+  // Controls: gap bytes holding no parseable ZIP structure, an APK-style
+  // signing block before the central directory, and a stored entry that is
+  // itself a ZIP still inspect.
+  var sigBlockBody = Buffer.alloc(4096);
+  for (var k = 0; k < sigBlockBody.length; k += 1) sigBlockBody[k] = (k * 131 + 7) & 0xff;
+  var sigBlockSize = Buffer.alloc(8);
+  sigBlockSize.writeBigUInt64LE(BigInt(sigBlockBody.length + 24));
+  var controls = [
+    _zipWithGaps([
+      { name: "a.txt", data: GOOD, gap: Buffer.concat([Buffer.alloc(64, 0), Buffer.from("PK\u0003\u0004"), Buffer.alloc(8, 0xff)]) },
+      { name: "b.txt", data: GOOD, dd: true, gap: Buffer.alloc(16, 0) },
+    ]),
+    _zipWithGaps([{ name: "classes.dex", data: GOOD }],
+      { beforeCd: Buffer.concat([sigBlockSize, sigBlockBody, sigBlockSize, Buffer.from("APK Sig Block 42")]) }),
+    _zipWithGaps([{ name: "nested.zip", data: _storeZipOf("inner.txt", "INNER\n") }, { name: "b.txt", data: GOOD }]),
+  ];
+  for (var k2 = 0; k2 < controls.length; k2 += 1) {
+    var okc = await _inspectErr(controls[k2]);
+    check("zip inspect: control archive #" + k2 + " still inspects", okc === null, okc ? String(okc.code) : "");
+  }
+
+  // One layout pass per reader: inspect() reads each local header once, and
+  // extractEntries() after it, or a second inspect(), reads none again.
+  var zz = b.archive.zip();
+  zz.addFile("one.txt", "one");
+  zz.addFile("two.txt", "two");
+  zz.addFile("three.txt", "three");
+  var three = zz.toBuffer();
+  var lfhOffsets = [];
+  for (var p = three.indexOf(Buffer.from([0x50, 0x4b, 0x03, 0x04])); p !== -1;
+       p = three.indexOf(Buffer.from([0x50, 0x4b, 0x03, 0x04]), p + 1)) {
+    lfhOffsets.push(p);
+  }
+  function lfhReads(list) {
+    return list.filter(function (r) { return lfhOffsets.indexOf(r.offset) !== -1; }).length;
+  }
+  var solo = _countingAdapter(three);
+  await b.archive.read.zip(solo.adapter).inspect();
+  var counted = _countingAdapter(three);
+  var sharedReader = b.archive.read.zip(counted.adapter);
+  await Promise.all([sharedReader.inspect(), sharedReader.inspect()]);
+  check("zip inspect: two concurrent inspect() calls make the reads of one inspect()",
+    counted.reads.length === solo.reads.length && lfhReads(counted.reads) === lfhReads(solo.reads),
+    "reads=" + counted.reads.length + " solo=" + solo.reads.length);
+  var afterInspect = counted.reads.length;
+  await sharedReader.inspect();
+  check("zip inspect: a second inspect() makes no adapter read",
+    counted.reads.length === afterInspect, "reads=" + (counted.reads.length - afterInspect));
+  for await (var _x of sharedReader.extractEntries()) { void _x; }
+  check("zip inspect: extractEntries() after inspect() reads no local header again",
+    lfhReads(counted.reads.slice(afterInspect)) === 0,
+    "local-header reads=" + lfhReads(counted.reads.slice(afterInspect)));
+
+  // A failed pass is not remembered as a pass: a second inspect() on the same
+  // reader refuses the archive again.
+  var skewReader = b.archive.read.zip(b.archive.adapters.buffer(nameSkew));
+  var first = null;
+  var second = null;
+  try { await skewReader.inspect(); } catch (err) { first = err; }
+  try { await skewReader.inspect(); } catch (err) { second = err; }
+  check("zip inspect: a second inspect() after a refusal refuses again",
+    _hasCode(first, "archive-read/lfh-cd-skew") && _hasCode(second, "archive-read/lfh-cd-skew"),
+    (second ? String(second.code) : "inspected without error"));
+
+  // opts.signal stops the inspect() layout pass at the next read. Each entry
+  // is larger than the read window, so every local header is its own read.
+  var innerMany = b.archive.adapters.buffer(_spreadZip(50));
+  var reads = 0;
+  var ac = new AbortController();
+  var midway = Object.assign({}, innerMany, {
+    range: function (offset, length) {
+      reads += 1;
+      if (reads === 6) ac.abort("stop midway");
+      return innerMany.range(offset, length);
+    },
+  });
+  var ea = null;
+  try { await b.archive.read.zip(midway, { signal: ac.signal }).inspect(); }
+  catch (err) { ea = err; }
+  check("zip inspect: an abort during the inspect() layout pass stops it at the next read",
+    _hasCode(ea, "archive-read/aborted") && reads <= 7, "reads=" + reads + " code=" + (ea ? ea.code : "none"));
+  var reads2 = 0;
+  var ac2 = new AbortController();
+  var midway2 = Object.assign({}, innerMany, {
+    range: function (offset, length) {
+      reads2 += 1;
+      if (reads2 === 6) ac2.abort("stop midway");
+      return innerMany.range(offset, length);
+    },
+  });
+  var ega = null;
+  try { await b.guardArchive.inspect(midway2, { signal: ac2.signal }); }
+  catch (err) { ega = err; }
+  check("zip inspect: b.guardArchive.inspect passes opts.signal to the layout pass",
+    _hasCode(ega, "archive-read/aborted") && reads2 <= 7, "reads=" + reads2 + " code=" + (ega ? ega.code : "none"));
+
+  // Archives written by real tools still inspect, pass the guard, and extract
+  // the bytes they were built from. Info-ZIP records an entry read from a
+  // pipe with the FIFO file type, so that archive extracts with fifos allowed.
+  var expected = _interopExpectedBodies();
+  var names = Object.keys(INTEROP_ARCHIVES);
+  for (var r = 0; r < names.length; r += 1) {
+    var label = names[r];
+    var buf = Buffer.from(INTEROP_ARCHIVES[label], "base64");
+    var readOpts = label === "infozip-stream.zip" ? { entryTypePolicy: { fifos: true } } : {};
+    var outcome;
+    try {
+      var listed = await b.archive.read.zip(b.archive.adapters.buffer(buf)).inspect();
+      var guarded = await b.guardArchive.inspect(b.archive.adapters.buffer(buf), { profile: "strict" });
+      var critical = guarded.issues.filter(function (i) { return i.severity === "critical"; });
+      var bodiesOk = true;
+      var extracted = 0;
+      for await (var ent of b.archive.read.zip(b.archive.adapters.buffer(buf), readOpts).extractEntries()) {
+        extracted += 1;
+        if (Object.prototype.hasOwnProperty.call(expected, ent.name) &&
+            ent.bytes.toString("utf8") !== expected[ent.name]) {
+          bodiesOk = false;
+        }
+      }
+      outcome = "listed=" + listed.length + " critical=" + critical.length +
+        " extracted=" + extracted + " bodies=" + bodiesOk;
+      check("zip inspect: the " + label + " archive inspects, passes the guard and extracts",
+        listed.length > 0 && critical.length === 0 && extracted > 0 && bodiesOk, outcome);
+    } catch (err) {
+      check("zip inspect: the " + label + " archive inspects, passes the guard and extracts",
+        false, String(err && (err.code || err.message)));
+    }
+  }
+}
+
+var SEVEN_ZIP_OEM_NAME_ARCHIVE = "UEsDBBQAAAAAAMe0W10AAAAAAAAAAAAAAAAFAAAAZG9jcy9QSwMECgAAAAAAx7RbXc2SgOAFAAAABQAAAA0AFwBkb2NzL2NhZoIudHh0dXATAAEFN03XZG9jcy9jYWbDqS50eHRHT09EClBLAwQKAAAAAADHtFtdHwjqRgIAAAACAAAACQAAAHBsYWluLnR4dHgKUEsBAj8AFAAAAAAAx7RbXQAAAAAAAAAAAAAAAAUAJAAAAAAAAAAQAAAAAAAAAGRvY3MvCgAgAAAAAAABABgAy1D7hZ5m3QEAAAAAAAAAAAAAAAAAAAAAUEsBAj8ACgAAAAAAx7RbXc2SgOAFAAAABQAAAA0AOwAAAAAAAAAgAAAAIwAAAGRvY3MvY2Fmgi50eHQKACAAAAAAAAEAGAC1jPuFnmbdAQAAAAAAAAAAAAAAAAAAAAB1cBMAAQU3Tddkb2NzL2NhZsOpLnR4dFBLAQI/AAoAAAAAAMe0W10fCOpGAgAAAAIAAAAJACQAAAAAAAAAIAAAAGoAAABwbGFpbi50eHQKACAAAAAAAAEAGADJofuFnmbdAQAAAAAAAAAAAAAAAAAAAABQSwUGAAAAAAMAAwAoAQAAkwAAAAAA";
+var BSDTAR_OEM_NAME_ARCHIVE = "UEsDBBQAAAAAAMa0W10AAAAAAAAAAAAAAAAFACAAZG9jcy91eAsAAQQAAAAABAAAAABVVA0AB0SK4WpEiuFqRIrhalBLAwQUAAgACADGtFtdAAAAAAAAAAAAAAAADQAgAGRvY3MvY2Fmgi50eHR1eAsAAQQAAAAABAAAAABVVA0AB0SK4WpEiuFqRIrhanP393fhAgBQSwcIzZKA4AcAAAAFAAAAUEsDBBQACAAIAMa0W10AAAAAAAAAAAAAAAAJACAAcGxhaW4udHh0dXgLAAEEAAAAAAQAAAAAVVQNAAdEiuFqRIrhakSK4Wqr4AIAUEsHCB8I6kYEAAAAAgAAAFBLAQIUAxQAAAAAAMa0W10AAAAAAAAAAAAAAAAFABgAAAAAAAAAAAD/QQAAAABkb2NzL3V4CwABBAAAAAAEAAAAAFVUBQABRIrhalBLAQIUAxQACAAIAMa0W13NkoDgBwAAAAUAAAANABgAAAAAAAAAAAC2gUMAAABkb2NzL2NhZoIudHh0dXgLAAEEAAAAAAQAAAAAVVQFAAFEiuFqUEsBAhQDFAAIAAgAxrRbXR8I6kYEAAAAAgAAAAkAGAAAAAAAAAAAALaBpQAAAHBsYWluLnR4dHV4CwABBAAAAAAEAAAAAFVUBQABRIrhalBLBQYAAAAAAwADAO0AAAAAAQAAAAA=";
+
+// Stored entries larger than the local-header read window, so the layout
+// pass reads each local header separately.
+function _spreadZip(n) {
+  var specs = [];
+  for (var i = 0; i < n; i += 1) {
+    specs.push({ name: "s" + i + ".bin", data: Buffer.alloc(C.BYTES.kib(70), 0x61 + (i % 26)) });
+  }
+  return buildClassicZip(specs);
+}
+
+// Info-ZIP Unicode Path extra field (APPNOTE 4.6.9, id 0x7075): version,
+// CRC-32 of the header's name field, then the UTF-8 path.
+function _unicodePathExtra(pathName, crcOf, opts) {
+  opts = opts || {};
+  var fixed = Buffer.alloc(5);
+  fixed[0] = opts.version != null ? opts.version : 1;
+  fixed.writeUInt32LE((opts.crc != null ? opts.crc : zlib.crc32(Buffer.from(crcOf, "utf8"))) >>> 0, 1);
+  var data = Buffer.concat([fixed, Buffer.isBuffer(pathName) ? pathName : Buffer.from(pathName, "utf8")]);
+  if (opts.truncate != null) data = data.subarray(0, opts.truncate);
+  var head = Buffer.alloc(4);
+  head.writeUInt16LE(0x7075, 0);
+  head.writeUInt16LE(data.length, 2);
+  return Buffer.concat([head, data]);
+}
+
+// Info-ZIP Unicode Comment extra field (id 0x6375): version, CRC-32 of the
+// entry comment, then the UTF-8 comment.
+function _unicodeCommentExtra(text) {
+  var data = Buffer.concat([Buffer.from([1, 0, 0, 0, 0]), Buffer.from(text, "utf8")]);
+  var head = Buffer.alloc(4);
+  head.writeUInt16LE(0x6375, 0);
+  head.writeUInt16LE(data.length, 2);
+  return Buffer.concat([head, data]);
+}
+
+function _extendedTimestampExtra() {
+  var f = Buffer.alloc(9);
+  f.writeUInt16LE(0x5455, 0);
+  f.writeUInt16LE(5, 2);
+  f[4] = 1;
+  f.writeUInt32LE(1700000000, 5);
+  return f;
+}
+
+async function _readerOutcomes(bytes) {
+  var out = {};
+  var e1 = await _inspectErr(bytes);
+  out.inspect = e1 ? String(e1.code) : "ok";
+  var e2 = null;
+  try { await b.guardArchive.inspect(b.archive.adapters.buffer(bytes), { profile: "strict" }); }
+  catch (err) { e2 = err; }
+  out.guard = e2 ? String(e2.code) : "ok";
+  var e3 = await _extractEntriesErr(bytes);
+  out.extract = e3 ? String(e3.code) : "ok";
+  var e4 = null;
+  try { await b.safeArchive.inspect({ source: bytes }); }
+  catch (err) { e4 = err; }
+  out.safe = e4 ? String(e4.code) : "ok";
+  return out;
+}
+
+var SEVEN_ZIP_DEFAULT_ARCHIVE = "UEsDBBQAAAAAAIq5W10AAAAAAAAAAAAAAAAFAAAAZG9jcy9QSwMECgAAAAAAirlbXayKzkYHAAAABwAAAA0AFwBkb2NzL2NhZoIudHh0dXATAAEFN03XZG9jcy9jYWbDqS50eHRoZWxsbw0KUEsDBAoAAAgAAIq5W114N1V0BAAAAAQAAAAPAAAAZG9jcy/ml6XmnKwudHh0anANClBLAQI/ABQAAAAAAIq5W10AAAAAAAAAAAAAAAAFACQAAAAAAAAAEAAAAAAAAABkb2NzLwoAIAAAAAAAAQAYAJb3CkmjZt0BAAAAAAAAAAAAAAAAAAAAAFBLAQI/AAoAAAAAAIq5W12sis5GBwAAAAcAAAANADsAAAAAAAAAIAAAACMAAABkb2NzL2NhZoIudHh0CgAgAAAAAAABABgA3cMKSaNm3QEAAAAAAAAAAAAAAAAAAAAAdXATAAEFN03XZG9jcy9jYWbDqS50eHRQSwECPwAKAAAIAACKuVtdeDdVdAQAAAAEAAAADwAkAAAAAAAAACAAAABsAAAAZG9jcy/ml6XmnKwudHh0CgAgAAAAAAABABgA1R4LSaNm3QEAAAAAAAAAAAAAAAAAAAAAUEsFBgAAAAADAAMALgEAAJ0AAAAAAA==";
+
+async function _namesAndBodies(bytes) {
+  var listed = await b.archive.read.zip(b.archive.adapters.buffer(bytes)).inspect();
+  var guarded = await b.guardArchive.inspect(b.archive.adapters.buffer(bytes), { profile: "strict" });
+  var bodies = [];
+  for await (var ent of b.archive.read.zip(b.archive.adapters.buffer(bytes)).extractEntries()) {
+    bodies.push(ent.name + "=" + ent.bytes.toString("utf8"));
+  }
+  var safe = await b.safeArchive.inspect({ source: bytes });
+  return {
+    names:    listed.map(function (e) { return e.name; }),
+    critical: guarded.issues.filter(function (i) { return i.severity === "critical"; }).length,
+    bodies:   bodies,
+    safe:     safe.entries.map(function (e) { return e.name; }),
+  };
+}
+
+// An entry's name is the one Info-ZIP unzip, 7-Zip and bsdtar extract: the
+// Unicode Path extra field (0x7075) when it is version 1 and its CRC-32
+// matches that header's name field, otherwise the name field. That effective
+// name is listed, judged by the guard and extracted. The local and central
+// name fields must agree byte for byte, the local and central effective names
+// must agree, and a Unicode Path the tools read differently is refused.
+async function testUnicodePathExtraField() {
+  var GOOD = Buffer.from("GOOD-CONTENT\n");
+  var NAME = "docs/readme.txt";
+  var EVIL = "evil/payload.txt";
+  var refused = [
+    { label: "a local-header Unicode Path naming evil/payload.txt with none in the central directory",
+      spec: { name: NAME, data: GOOD, lfhExtra: _unicodePathExtra(EVIL, NAME) } },
+    { label: "a local-header Unicode Path naming ../../evil.txt with none in the central directory",
+      spec: { name: NAME, data: GOOD, lfhExtra: _unicodePathExtra("../../evil.txt", NAME) } },
+    { label: "a central-directory Unicode Path naming evil/payload.txt with none in the local header",
+      spec: { name: NAME, data: GOOD, extra: _unicodePathExtra(EVIL, NAME) } },
+    { label: "a central-directory Unicode Path after another extra field, with none in the local header",
+      spec: { name: NAME, data: GOOD,
+              extra: Buffer.concat([_extendedTimestampExtra(), _unicodePathExtra(EVIL, NAME)]) } },
+    { label: "a valid local-header Unicode Path beside a central one whose CRC-32 does not match",
+      spec: { name: NAME, data: GOOD, lfhExtra: _unicodePathExtra(EVIL, NAME),
+              extra: _unicodePathExtra(EVIL, NAME, { crc: 1 }) } },
+    { label: "a valid central Unicode Path beside a local one whose CRC-32 does not match",
+      spec: { name: NAME, data: GOOD, extra: _unicodePathExtra(EVIL, NAME),
+              lfhExtra: _unicodePathExtra(EVIL, NAME, { crc: 1 }) } },
+    { label: "a Unicode Path of version 2",
+      spec: { name: NAME, data: GOOD, extra: _unicodePathExtra(EVIL, NAME, { version: 2 }),
+              lfhExtra: _unicodePathExtra(EVIL, NAME, { version: 2 }) } },
+    { label: "a Unicode Path shorter than its version and CRC-32",
+      spec: { name: NAME, data: GOOD, extra: _unicodePathExtra(NAME, NAME, { truncate: 3 }) } },
+    { label: "a Unicode Path with an empty path",
+      spec: { name: NAME, data: GOOD, extra: _unicodePathExtra("", NAME), lfhExtra: _unicodePathExtra("", NAME) } },
+    { label: "two Unicode Path fields in one header",
+      spec: { name: NAME, data: GOOD,
+              extra: Buffer.concat([_unicodePathExtra(NAME, NAME), _unicodePathExtra(EVIL, NAME)]),
+              lfhExtra: Buffer.concat([_unicodePathExtra(NAME, NAME), _unicodePathExtra(EVIL, NAME)]) } },
+    { label: "a Unicode Path that differs from a name field flagged UTF-8 (bit 11)",
+      spec: { name: NAME, data: GOOD, flags: 0x0800,
+              extra: _unicodePathExtra(EVIL, NAME), lfhExtra: _unicodePathExtra(EVIL, NAME) } },
+    { label: "a Unicode Path ending in a slash for a name field that does not",
+      spec: { name: NAME, data: GOOD, extra: _unicodePathExtra("evil/", NAME), lfhExtra: _unicodePathExtra("evil/", NAME) } },
+    { label: "a Unicode Path that is not valid UTF-8",
+      spec: { name: NAME, data: GOOD,
+              extra: _unicodePathExtra(Buffer.from("evil/\xff.txt", "latin1"), NAME),
+              lfhExtra: _unicodePathExtra(Buffer.from("evil/\xff.txt", "latin1"), NAME) } },
+  ];
+  for (var i = 0; i < refused.length; i += 1) {
+    var got = await _readerOutcomes(buildClassicZip([refused[i].spec]));
+    var code = "archive-read/unicode-path-mismatch";
+    check("zip unicode path: " + refused[i].label + " is refused by inspect(), b.guardArchive.inspect, " +
+      "extractEntries() and b.safeArchive.inspect",
+      got.inspect === code && got.guard === code && got.extract === code && got.safe === code,
+      JSON.stringify(got));
+  }
+
+  var effective = [
+    { label: "a valid Unicode Path in both headers names the entry",
+      spec: { name: NAME, data: GOOD, extra: _unicodePathExtra(EVIL, NAME), lfhExtra: _unicodePathExtra(EVIL, NAME) },
+      want: EVIL },
+    { label: "a Unicode Path whose CRC-32 does not match the name field is not used",
+      spec: { name: NAME, data: GOOD, extra: _unicodePathExtra(EVIL, NAME, { crc: 1 }),
+              lfhExtra: _unicodePathExtra(EVIL, NAME, { crc: 1 }) },
+      want: NAME },
+    { label: "an Info-ZIP Unicode Comment field (0x6375) does not name the entry",
+      spec: { name: NAME, data: GOOD, extra: _unicodeCommentExtra(EVIL), lfhExtra: _unicodeCommentExtra(EVIL) },
+      want: NAME },
+  ];
+  for (var j = 0; j < effective.length; j += 1) {
+    var res;
+    try { res = await _namesAndBodies(buildClassicZip([effective[j].spec])); }
+    catch (err) { res = { error: String(err && (err.code || err.message)) }; }
+    var want = effective[j].want;
+    check("zip unicode path: " + effective[j].label + " (inspect, guard, extractEntries and b.safeArchive.inspect use " +
+      JSON.stringify(want) + ")",
+      !res.error && res.names.length === 1 && res.names[0] === want && res.critical === 0 &&
+      res.bodies.length === 1 && res.bodies[0] === want + "=" + GOOD.toString("utf8") &&
+      res.safe[0] === want, JSON.stringify(res));
+  }
+
+  var traversal = buildClassicZip([{ name: NAME, data: GOOD,
+    extra: _unicodePathExtra("../../evil.txt", NAME), lfhExtra: _unicodePathExtra("../../evil.txt", NAME) }]);
+  var travListed = await b.archive.read.zip(b.archive.adapters.buffer(traversal)).inspect();
+  var travGuard = await b.guardArchive.inspect(b.archive.adapters.buffer(traversal), { profile: "strict" });
+  var travCritical = travGuard.issues.filter(function (x) { return x.severity === "critical"; });
+  var travExtract = await _extractEntriesErr(traversal);
+  check("zip unicode path: a Unicode Path naming ../../evil.txt in both headers is listed under that name, " +
+    "draws a critical guard issue and is refused by extractEntries()",
+    travListed[0].name === "../../evil.txt" && travCritical.length > 0 &&
+    travExtract && travExtract.code === "archive-read/guard-refused",
+    JSON.stringify({ name: travListed[0].name, critical: travCritical.length, extract: travExtract && travExtract.code }));
+
+  var lossy = buildClassicZip([{
+    name: "unused", data: GOOD,
+    nameBytes: Buffer.from("docs/ÿ.txt", "latin1"),
+    lfhNameBytes: Buffer.from("docs/þ.txt", "latin1"),
+  }]);
+  var lossyGot = await _readerOutcomes(lossy);
+  check("zip unicode path: local and central names that decode alike but differ as bytes are refused",
+    lossyGot.inspect === "archive-read/lfh-cd-skew" && lossyGot.guard === "archive-read/lfh-cd-skew" &&
+    lossyGot.extract === "archive-read/lfh-cd-skew", JSON.stringify(lossyGot));
+
+  var UNAME = "docs/café.txt";
+  var agreeing = buildClassicZip([
+    { name: UNAME, data: GOOD, flags: 0x0800,
+      extra: Buffer.concat([_extendedTimestampExtra(), _unicodePathExtra(UNAME, UNAME)]),
+      lfhExtra: Buffer.concat([_unicodePathExtra(UNAME, UNAME), _extendedTimestampExtra()]) },
+    { name: "plain.txt", data: GOOD, extra: _extendedTimestampExtra(), lfhExtra: _extendedTimestampExtra() },
+  ]);
+  // 7-Zip 26.03 on Windows writes a non-ASCII name in the OEM code page
+  // (docs/caf\x82.txt) with bit 11 clear, and its UTF-8 form (docs/café.txt)
+  // in a Unicode Path field. A name the OEM code page cannot hold is written
+  // as UTF-8 with bit 11 set. bsdtar writes the OEM name with no Unicode Path.
+  var sevens = [
+    { label: "a 7-Zip archive with an OEM-code-page name field and a Unicode Path",
+      bytes: Buffer.from(SEVEN_ZIP_OEM_NAME_ARCHIVE, "base64"),
+      names: ["docs/", "docs/café.txt", "plain.txt"],
+      bodies: ["docs/café.txt=GOOD\n", "plain.txt=x\n"] },
+    { label: "a default 7-Zip archive of docs/café.txt and docs/日本.txt",
+      bytes: Buffer.from(SEVEN_ZIP_DEFAULT_ARCHIVE, "base64"),
+      names: ["docs/", "docs/café.txt", "docs/日本.txt"],
+      bodies: ["docs/café.txt=hello\r\n", "docs/日本.txt=jp\r\n"] },
+  ];
+  for (var s = 0; s < sevens.length; s += 1) {
+    var sres;
+    try { sres = await _namesAndBodies(sevens[s].bytes); }
+    catch (err) { sres = { error: String(err && (err.code || err.message)) }; }
+    check("zip unicode path: " + sevens[s].label + " inspects, passes the strict guard and extracts under its UTF-8 names",
+      !sres.error && JSON.stringify(sres.names) === JSON.stringify(sevens[s].names) && sres.critical === 0 &&
+      JSON.stringify(sres.bodies) === JSON.stringify(sevens[s].bodies) &&
+      JSON.stringify(sres.safe) === JSON.stringify(sevens[s].names), JSON.stringify(sres));
+  }
+  var bsdGot = await _readerOutcomes(Buffer.from(BSDTAR_OEM_NAME_ARCHIVE, "base64"));
+  check("zip unicode path: a bsdtar archive with an OEM-code-page name and no Unicode Path still reads",
+    bsdGot.inspect === "ok" && bsdGot.guard === "ok" && bsdGot.extract === "ok", JSON.stringify(bsdGot));
+
+  var agreeGot = await _readerOutcomes(agreeing);
+  var listed = await b.archive.read.zip(b.archive.adapters.buffer(agreeing)).inspect();
+  var bodies = [];
+  for await (var ent of b.archive.read.zip(b.archive.adapters.buffer(agreeing)).extractEntries()) {
+    bodies.push(ent.name + "=" + ent.bytes.toString("utf8"));
+  }
+  check("zip unicode path: a Unicode Path equal to the name field, with a matching CRC-32, still reads",
+    agreeGot.inspect === "ok" && agreeGot.guard === "ok" && agreeGot.extract === "ok" && agreeGot.safe === "ok" &&
+    listed[0].name === UNAME && bodies.length === 2 && bodies[0] === UNAME + "=" + GOOD.toString("utf8"),
+    JSON.stringify(agreeGot) + " " + JSON.stringify(bodies));
+}
+
+// A Unicode Path extra field (0x7075) of `length` bytes declared with a
+// larger data size than the extra block holds.
+function _overrunUnicodePathExtra(declared, length) {
+  var f = Buffer.alloc(4 + length);
+  f.writeUInt16LE(0x7075, 0);
+  f.writeUInt16LE(declared, 2);
+  if (length > 0) f[4] = 1;
+  return f;
+}
+
+async function _rawNameOutcome(bytes) {
+  var out = {};
+  try {
+    var listed = await b.archive.read.zip(b.archive.adapters.buffer(bytes)).inspect();
+    out.listed = listed.map(function (e) { return [e.name, e.altNames]; });
+  } catch (err) { out.listed = String(err && (err.code || err.message)); }
+  try {
+    var guarded = await b.guardArchive.inspect(b.archive.adapters.buffer(bytes), { profile: "strict" });
+    out.critical = guarded.issues.filter(function (i) { return i.severity === "critical"; })
+      .map(function (i) { return i.ruleId; });
+    out.kinds = guarded.issues.map(function (i) { return i.kind; });
+  } catch (err) { out.guard = String(err && (err.code || err.message)); }
+  var e1 = await _extractEntriesErr(bytes);
+  out.extractEntries = e1 ? String(e1.code) : "ok";
+  var dest = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-rawname-"));
+  try {
+    await b.archive.read.zip(b.archive.adapters.buffer(bytes)).extract({ destination: dest });
+    out.extract = "ok";
+  } catch (err) { out.extract = String(err && err.code); }
+  var unguarded = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-rawname-unguarded-"));
+  try {
+    await b.archive.read.zip(b.archive.adapters.buffer(bytes), { guardProfile: false })
+      .extract({ destination: path.join(unguarded, "out") });
+    out.unguarded = "ok";
+  } catch (err) { out.unguarded = String(err && err.code); }
+  out.escaped = fs.existsSync(path.join(unguarded, "evil.txt")) || fs.existsSync(path.join(os.tmpdir(), "evil.txt"));
+  fs.rmSync(dest, { recursive: true, force: true });
+  fs.rmSync(unguarded, { recursive: true, force: true });
+  return out;
+}
+
+// Java's java.util.zip and Python 3.11's zipfile ignore the Unicode Path
+// extra field and use the name field. When a valid Unicode Path names the
+// entry, the guard and the extract path check judge the name field too.
+async function testUnicodePathRawNameJudged() {
+  var GOOD = Buffer.from("GOOD-CONTENT\n");
+  var BENIGN = "docs/readme.txt";
+  var raws = [
+    { raw: "../../evil.txt", rule: "archive.zip-slip", unguarded: "filename/extraction-traversal" },
+    { raw: "/tmp/evil.txt", rule: "archive.absolute-path", unguarded: "filename/extraction-absolute" },
+    { raw: "..\\..\\evil.txt", rule: "archive.zip-slip", unguarded: "filename/extraction-traversal" },
+  ];
+  for (var i = 0; i < raws.length; i += 1) {
+    var bytes = buildClassicZip([{ name: raws[i].raw, data: GOOD,
+      extra: _unicodePathExtra(BENIGN, raws[i].raw), lfhExtra: _unicodePathExtra(BENIGN, raws[i].raw) }]);
+    var got = await _rawNameOutcome(bytes);
+    check("zip unicode path raw name: a name field of " + JSON.stringify(raws[i].raw) + " under a Unicode Path of " +
+      BENIGN + " is listed with both names, draws " + raws[i].rule + " from the strict guard, and is refused by " +
+      "extractEntries(), extract() and an unguarded extract()",
+      JSON.stringify(got.listed) === JSON.stringify([[BENIGN, [raws[i].raw]]]) &&
+      Array.isArray(got.critical) && got.critical.indexOf(raws[i].rule) !== -1 &&
+      got.extractEntries === "archive-read/guard-refused" && got.extract === "archive-read/guard-refused" &&
+      got.unguarded === raws[i].unguarded && got.escaped === false,
+      JSON.stringify(got));
+  }
+
+  var direct = b.guardArchive.validateEntries([
+    { name: BENIGN, altNames: ["../../evil.txt"], size: 1, compressedSize: 1 },
+  ], { profile: "balanced" });
+  check("zip unicode path raw name: b.guardArchive.validateEntries judges an entry's altNames",
+    direct.issues.some(function (x) { return x.ruleId === "archive.zip-slip" && x.severity === "critical" &&
+      x.snippet.indexOf("../../evil.txt") !== -1; }), JSON.stringify(direct.issues));
+  var badRaw = b.guardArchive.validateEntries([{ name: BENIGN, altNames: 7, size: 1, compressedSize: 1 }]);
+  check("zip unicode path raw name: altNames that is not an array is reported",
+    badRaw.issues.some(function (x) { return x.ruleId === "archive.bad-entry-name"; }), JSON.stringify(badRaw.issues));
+
+  var dupRaw = buildClassicZip([
+    { name: "x.txt", data: GOOD, extra: _unicodePathExtra("a.txt", "x.txt"), lfhExtra: _unicodePathExtra("a.txt", "x.txt") },
+    { name: "x.txt", data: GOOD, extra: _unicodePathExtra("b.txt", "x.txt"), lfhExtra: _unicodePathExtra("b.txt", "x.txt") },
+  ]);
+  var dupGot = await _rawNameOutcome(dupRaw);
+  check("zip unicode path raw name: two entries whose name fields are equal draw a duplicate-name issue " +
+    "although their Unicode Paths differ",
+    Array.isArray(dupGot.kinds) && dupGot.kinds.indexOf("duplicate-entry-name") !== -1 &&
+    dupGot.critical.indexOf("archive.duplicate-name") !== -1 && dupGot.extract === "archive-read/guard-refused",
+    JSON.stringify(dupGot));
+
+  var dupMixed = buildClassicZip([
+    { name: "x.txt", data: GOOD, extra: _unicodePathExtra("a.txt", "x.txt"), lfhExtra: _unicodePathExtra("a.txt", "x.txt") },
+    { name: "x.txt", data: GOOD },
+  ], {});
+  var dupMixedGot = await _rawNameOutcome(dupMixed);
+  check("zip unicode path raw name: an entry's name field equal to another entry's only name draws a duplicate-name issue",
+    Array.isArray(dupMixedGot.kinds) && dupMixedGot.kinds.indexOf("duplicate-entry-name") !== -1,
+    JSON.stringify(dupMixedGot));
+
+  var overruns = [
+    { label: "a central Unicode Path whose declared size overruns the extra block",
+      spec: { name: BENIGN, data: GOOD, extra: _overrunUnicodePathExtra(40, 10) } },
+    { label: "a local Unicode Path whose declared size overruns the extra block",
+      spec: { name: BENIGN, data: GOOD, lfhExtra: _overrunUnicodePathExtra(40, 10) } },
+    { label: "a Unicode Path whose declared size overruns the extra block in both headers",
+      spec: { name: BENIGN, data: GOOD, extra: _overrunUnicodePathExtra(40, 10), lfhExtra: _overrunUnicodePathExtra(40, 10) } },
+    { label: "a Unicode Path whose header is cut off by the end of the extra block",
+      spec: { name: BENIGN, data: GOOD, extra: Buffer.concat([_extendedTimestampExtra(), Buffer.from([0x75, 0x70])]) } },
+  ];
+  for (var o = 0; o < overruns.length; o += 1) {
+    var og = await _readerOutcomes(buildClassicZip([overruns[o].spec]));
+    var code = "archive-read/unicode-path-mismatch";
+    check("zip unicode path: " + overruns[o].label + " is refused by inspect(), b.guardArchive.inspect, " +
+      "extractEntries() and b.safeArchive.inspect",
+      og.inspect === code && og.guard === code && og.extract === code && og.safe === code, JSON.stringify(og));
+  }
+  var otherOverrun = await _readerOutcomes(buildClassicZip([{ name: BENIGN, data: GOOD,
+    extra: Buffer.concat([_extendedTimestampExtra().subarray(0, 4), Buffer.from([1])]) }]));
+  check("zip unicode path: an overrunning extra field that is not a Unicode Path still reads",
+    otherOverrun.inspect === "ok" && otherOverrun.guard === "ok" && otherOverrun.extract === "ok",
+    JSON.stringify(otherOverrun));
+
+  var sevens = [
+    { bytes: Buffer.from(SEVEN_ZIP_OEM_NAME_ARCHIVE, "base64"),
+      listed: [["docs/", []], ["docs/café.txt", []], ["plain.txt", []]] },
+    { bytes: Buffer.from(SEVEN_ZIP_DEFAULT_ARCHIVE, "base64"),
+      listed: [["docs/", []], ["docs/café.txt", []], ["docs/日本.txt", []]] },
+  ];
+  for (var s = 0; s < sevens.length; s += 1) {
+    var sg = await _rawNameOutcome(sevens[s].bytes);
+    check("zip unicode path raw name: 7-Zip archive " + s + " lists its OEM name fields in code page 437, " +
+      "draws no strict guard issue and extracts",
+      JSON.stringify(sg.listed) === JSON.stringify(sevens[s].listed) && Array.isArray(sg.kinds) &&
+      sg.kinds.length === 0 && sg.extractEntries === "ok" && sg.extract === "ok" && sg.unguarded === "ok",
+      JSON.stringify(sg));
+  }
+}
+
+async function _altNameOutcome(bytes) {
+  var out = {};
+  try {
+    var listed = await b.archive.read.zip(b.archive.adapters.buffer(bytes)).inspect();
+    out.listed = listed.map(function (e) { return [e.name, e.altNames]; });
+  } catch (err) { out.listed = String(err && (err.code || err.message)); }
+  try {
+    var guarded = await b.guardArchive.inspect(b.archive.adapters.buffer(bytes), { profile: "strict" });
+    out.issues = guarded.issues.map(function (i) { return i.severity + ":" + i.ruleId; });
+  } catch (err) { out.issues = String(err && (err.code || err.message)); }
+  var e1 = await _extractEntriesErr(bytes);
+  out.extractEntries = e1 ? String(e1.code) : "ok";
+  return out;
+}
+
+function _hasAll(list, wanted) {
+  return Array.isArray(list) && wanted.every(function (w) { return list.indexOf(w) !== -1; });
+}
+
+// A name field with general-purpose bit 11 clear is read two ways by the
+// readers in use. Java's java.util.zip, bsdtar, and unzip and 7-Zip for a
+// Unix-made entry decode it as UTF-8, and Java ignores the Unicode Path
+// extra field. Python's zipfile, and 7-Zip for an entry made on FAT or NTFS,
+// decode it as code page 437. Python 3.11 ignores the Unicode Path field.
+// 7-Zip 26.03 on Windows extracted the two code-page-437 names below to one
+// file.
+async function testZipNameFieldDecodesJudged() {
+  var BENIGN = "docs/readme.txt";
+  var BIDI = Buffer.from("docs/gpj‮exe.txt", "utf8");
+  var ZW = Buffer.from("docs/a​b.txt", "utf8");
+  var A_GRAVE = Buffer.from([0xC3, 0x80, 0x2E, 0x74, 0x78, 0x74]);
+  var C_CEDIL = Buffer.from([0xC3, 0x87, 0x2E, 0x74, 0x78, 0x74]);
+  var E_UPPER = Buffer.from("É.txt", "utf8");
+  var E_LOWER = Buffer.from("é.txt", "utf8");
+  function hidden(nameField, unicodePath, data) {
+    return { name: "x", nameBytes: nameField, data: Buffer.from(data || "GOOD\n"),
+      extra: _unicodePathExtra(unicodePath, nameField), lfhExtra: _unicodePathExtra(unicodePath, nameField) };
+  }
+  function plain(nameField, data, flags) {
+    return { name: "x", nameBytes: nameField, data: Buffer.from(data || "GOOD\n"), flags: flags || 0 };
+  }
+
+  var bidiCtl = await _altNameOutcome(buildClassicZip([plain(BIDI)]));
+  var bidiHid = await _altNameOutcome(buildClassicZip([hidden(BIDI, BENIGN)]));
+  check("zip name field decodes: a UTF-8 bidi name field under a benign Unicode Path lists both decodes, " +
+    "draws the same critical bidi issue as the name field alone, and is refused by extractEntries()",
+    JSON.stringify(bidiHid.listed) === JSON.stringify([[BENIGN, ["docs/gpjΓÇ«exe.txt", "docs/gpj‮exe.txt"]]]) &&
+    _hasAll(bidiCtl.issues, ["critical:archive.filename.bidi"]) &&
+    _hasAll(bidiHid.issues, ["critical:archive.filename.bidi"]) &&
+    bidiHid.extractEntries === "archive-read/guard-refused",
+    JSON.stringify({ ctl: bidiCtl, hid: bidiHid }));
+
+  var zwCtl = await _altNameOutcome(buildClassicZip([plain(ZW)]));
+  var zwHid = await _altNameOutcome(buildClassicZip([hidden(ZW, BENIGN)]));
+  var zwRules = Array.isArray(zwCtl.issues) ? zwCtl.issues.filter(function (x) { return x.indexOf("zero-width") !== -1; }) : [];
+  check("zip name field decodes: a UTF-8 zero-width name field under a benign Unicode Path draws the zero-width " +
+    "issue the name field alone draws",
+    zwRules.length > 0 && _hasAll(zwHid.issues, zwRules), JSON.stringify({ ctl: zwCtl, hid: zwHid }));
+
+  var caseUtf8 = await _altNameOutcome(buildClassicZip([hidden(E_UPPER, "one.txt", "ONE\n"), hidden(E_LOWER, "two.txt", "TWO\n")]));
+  check("zip name field decodes: UTF-8 name fields that collide case-insensitively under distinct Unicode Paths " +
+    "draw a case-collision issue",
+    _hasAll(caseUtf8.issues, ["high:archive.case-collision"]), JSON.stringify(caseUtf8));
+
+  var caseCp437 = await _altNameOutcome(buildClassicZip([hidden(A_GRAVE, "one.txt", "ONE\n"), hidden(C_CEDIL, "two.txt", "TWO\n")]));
+  check("zip name field decodes: name fields whose code page 437 decodes collide case-insensitively under " +
+    "distinct Unicode Paths draw a case-collision issue",
+    JSON.stringify(caseCp437.listed) === JSON.stringify([
+      ["one.txt", ["├Ç.txt", "À.txt"]], ["two.txt", ["├ç.txt", "Ç.txt"]]]) &&
+    _hasAll(caseCp437.issues, ["high:archive.case-collision"]), JSON.stringify(caseCp437));
+
+  var noUp = await _altNameOutcome(buildClassicZip([plain(A_GRAVE, "ONE\n"), plain(C_CEDIL, "TWO\n")]));
+  check("zip name field decodes: without a Unicode Path, UTF-8 name fields with bit 11 clear whose code page 437 " +
+    "decodes collide case-insensitively list that decode and draw a case-collision issue",
+    JSON.stringify(noUp.listed) === JSON.stringify([["À.txt", ["├Ç.txt"]], ["Ç.txt", ["├ç.txt"]]]) &&
+    _hasAll(noUp.issues, ["high:archive.case-collision"]), JSON.stringify(noUp));
+
+  var flagged = await _altNameOutcome(buildClassicZip([plain(A_GRAVE, "ONE\n", 0x0800), plain(C_CEDIL, "TWO\n", 0x0800)]));
+  check("zip name field decodes: the same name fields with bit 11 set list no other decode and draw no issue",
+    JSON.stringify(flagged.listed) === JSON.stringify([["À.txt", []], ["Ç.txt", []]]) &&
+    Array.isArray(flagged.issues) && flagged.issues.length === 0 && flagged.extractEntries === "ok",
+    JSON.stringify(flagged));
+
+  var dupMix = await _altNameOutcome(buildClassicZip([
+    plain(Buffer.from("├Ç.txt", "utf8"), "ONE\n", 0x0800), plain(A_GRAVE, "TWO\n")]));
+  check("zip name field decodes: a bit-11 name equal to another entry's code page 437 decode draws a critical " +
+    "duplicate-name issue and is refused by extractEntries()",
+    _hasAll(dupMix.issues, ["critical:archive.duplicate-name"]) && dupMix.extractEntries === "archive-read/guard-refused",
+    JSON.stringify(dupMix));
+
+  var direct = b.guardArchive.validateEntries([
+    { name: BENIGN, altNames: ["docs/other.txt", "../../evil.txt"], size: 1, compressedSize: 1 },
+  ], { profile: "balanced" });
+  check("zip name field decodes: b.guardArchive.validateEntries judges every entry of altNames",
+    direct.issues.some(function (x) { return x.ruleId === "archive.zip-slip" && x.severity === "critical" &&
+      x.snippet.indexOf("../../evil.txt") !== -1; }), JSON.stringify(direct.issues));
+  var bad = [ "x.txt", [7], [""], ["ok.txt", null] ];
+  for (var i = 0; i < bad.length; i += 1) {
+    var badRv = b.guardArchive.validateEntries([{ name: BENIGN, altNames: bad[i], size: 1, compressedSize: 1 }]);
+    check("zip name field decodes: altNames of " + JSON.stringify(bad[i]) + " is reported as archive.bad-entry-name",
+      badRv.issues.some(function (x) { return x.ruleId === "archive.bad-entry-name"; }), JSON.stringify(badRv.issues));
+  }
+}
+
+// A name field flagged UTF-8 (bit 11) must hold valid UTF-8. A name field
+// with bit 11 clear that is not valid UTF-8 has one decode a reader can
+// write, code page 437, and that decode is the name the entry is listed,
+// judged and extracted under.
+async function testZipNameFieldEncoding() {
+  var GOOD = Buffer.from("GOOD\n");
+  var INVALID = Buffer.from([0x64, 0x6F, 0x63, 0x73, 0x2F, 0xFF, 0x2E, 0x74, 0x78, 0x74]);
+  var flagged = await _readerOutcomes(buildClassicZip([{ name: "x", nameBytes: INVALID, data: GOOD, flags: 0x0800 }]));
+  var code = "archive-read/bad-utf8-name";
+  check("zip name encoding: a name field flagged UTF-8 (bit 11) that is not valid UTF-8 is refused by inspect(), " +
+    "b.guardArchive.inspect, extractEntries() and b.safeArchive.inspect",
+    flagged.inspect === code && flagged.guard === code && flagged.extract === code && flagged.safe === code,
+    JSON.stringify(flagged));
+  var flaggedValid = await _readerOutcomes(buildClassicZip([{ name: "x", nameBytes: Buffer.from("docs/é.txt", "utf8"),
+    data: GOOD, flags: 0x0800 }]));
+  check("zip name encoding: a valid UTF-8 name field flagged UTF-8 still reads",
+    flaggedValid.inspect === "ok" && flaggedValid.guard === "ok" && flaggedValid.extract === "ok" &&
+    flaggedValid.safe === "ok", JSON.stringify(flaggedValid));
+
+  var unflagged = await _altNameOutcome(buildClassicZip([{ name: "x", nameBytes: INVALID, data: GOOD }]));
+  check("zip name encoding: an unflagged name field that is not valid UTF-8 is listed under its code page 437 " +
+    "decode with no other decode",
+    JSON.stringify(unflagged.listed) === JSON.stringify([["docs/ .txt", []]]), JSON.stringify(unflagged));
+
+  var cp437Case = await _altNameOutcome(buildClassicZip([
+    { name: "x", nameBytes: Buffer.from([0x82, 0x2E, 0x74, 0x78, 0x74]), data: Buffer.from("ONE\n") },
+    { name: "x", nameBytes: Buffer.from([0x90, 0x2E, 0x74, 0x78, 0x74]), data: Buffer.from("TWO\n") },
+  ]));
+  check("zip name encoding: two unflagged non-UTF-8 name fields are judged by their code page 437 decodes " +
+    "(a case collision, not a duplicate of two U+FFFD names)",
+    JSON.stringify(cp437Case.listed) === JSON.stringify([["é.txt", []], ["É.txt", []]]) &&
+    _hasAll(cp437Case.issues, ["high:archive.case-collision"]) &&
+    cp437Case.issues.indexOf("critical:archive.duplicate-name") === -1 && cp437Case.extractEntries === "ok",
+    JSON.stringify(cp437Case));
+
+  var bsd = await _altNameOutcome(Buffer.from(BSDTAR_OEM_NAME_ARCHIVE, "base64"));
+  check("zip name encoding: the bsdtar archive with an OEM name field lists docs/café.txt and no U+FFFD name",
+    JSON.stringify(bsd.listed) === JSON.stringify([["docs/", []], ["docs/café.txt", []], ["plain.txt", []]]) &&
+    bsd.extractEntries === "ok", JSON.stringify(bsd));
+}
+
+function _manyEntryZip(n) {
+  var specs = [];
+  for (var i = 0; i < n; i += 1) {
+    specs.push({ name: "f" + String(i).padStart(6, "0") + ".txt", data: Buffer.from([0x61 + (i % 26)]) });
+  }
+  return buildClassicZip(specs);
+}
+
+async function _inspectReadCost(bytes) {
+  var counted = _countingAdapter(bytes);
+  var listed = await b.archive.read.zip(counted.adapter).inspect();
+  var total = 0;
+  for (var i = 0; i < counted.reads.length; i += 1) total += counted.reads[i].length;
+  return { entries: listed.length, reads: counted.reads.length, bytes: total };
+}
+
+// The inspect() local-header pass reads the local headers in windows taken in
+// file order, so the number of adapter reads follows the archive's size and
+// not its entry count.
+async function testInspectReadCost() {
+  var window = C.BYTES.kib(64);
+  var small = _manyEntryZip(6000);
+  var large = _manyEntryZip(60000);
+  var s = await _inspectReadCost(small);
+  var l = await _inspectReadCost(large);
+  check("zip inspect cost: 60000 entries take a number of reads bounded by the archive size, not the entry count",
+    l.entries === 60000 && l.reads <= 4 + Math.ceil(large.length / window),
+    "reads=" + l.reads + " size=" + large.length);
+  check("zip inspect cost: ten times the entries take at most twelve times the reads",
+    s.entries === 6000 && l.reads <= 12 * s.reads, "small=" + s.reads + " large=" + l.reads);
+  check("zip inspect cost: the bytes read stay within twice the archive size",
+    l.bytes <= 2 * large.length, "bytes=" + l.bytes + " size=" + large.length);
 }
 
 function _signedDescriptor(data) {
@@ -2079,6 +2929,8 @@ async function testEntryEndAmbiguity() {
 // the stored entry below at the hidden descriptor and extract evil.txt.
 // Bits 0 (encrypted), 6 (strong encryption) and 13 (masked local header)
 // also change how the entry data is read, so each must agree as well.
+// Bit 11 (UTF-8 name) changes how the name is decoded: Java's ZipInputStream
+// reads it from the local header and ZipFile from the central directory.
 async function testLfhCdFlagSkew() {
   var GOOD = Buffer.from("GOOD-CONTENT\n");
   var EVIL = Buffer.from("EVIL-PAYLOAD\n");
@@ -2099,7 +2951,7 @@ async function testLfhCdFlagSkew() {
   check("zip flag skew: flag bit 3 set only in the central directory is refused",
     _hasCode(e2, "archive-read/lfh-cd-skew"), e2 ? String(e2.code) : "read without error");
 
-  var skews = [0x0001, 0x0040, 0x2000];
+  var skews = [0x0001, 0x0040, 0x2000, 0x0800];
   for (var i = 0; i < skews.length; i += 1) {
     var e3 = await _extractEntriesErr(buildClassicZip([{ name: "a.txt", data: GOOD, flags: 0, lfhFlags: skews[i] }]),
       { guardProfile: false });
@@ -2107,12 +2959,32 @@ async function testLfhCdFlagSkew() {
       _hasCode(e3, "archive-read/lfh-cd-skew"), e3 ? String(e3.code) : "read without error");
   }
 
-  var utf8Only = null;
+  var A_GRAVE = Buffer.from([0xC3, 0x80, 0x2E, 0x74, 0x78, 0x74]);
+  var utf8Skews = [
+    { label: "local header", flags: 0, lfhFlags: 0x0800 },
+    { label: "central directory", flags: 0x0800, lfhFlags: 0 },
+  ];
+  for (var u = 0; u < utf8Skews.length; u += 1) {
+    var skewZip = buildClassicZip([{ name: "x", nameBytes: A_GRAVE, data: GOOD,
+      flags: utf8Skews[u].flags, lfhFlags: utf8Skews[u].lfhFlags }]);
+    var inspectErr = await _inspectErr(skewZip);
+    var guardedErr = null;
+    try { await b.guardArchive.inspect(b.archive.adapters.buffer(skewZip), { profile: "strict" }); }
+    catch (err) { guardedErr = err; }
+    var entriesErr = await _extractEntriesErr(skewZip, { guardProfile: false });
+    check("zip flag skew: UTF-8 name flag (bit 11) set only in the " + utf8Skews[u].label +
+      " on a non-ASCII name is refused by inspect(), b.guardArchive.inspect and extractEntries",
+      _hasCode(inspectErr, "archive-read/lfh-cd-skew") && _hasCode(guardedErr, "archive-read/lfh-cd-skew") &&
+      _hasCode(entriesErr, "archive-read/lfh-cd-skew"),
+      JSON.stringify([inspectErr && inspectErr.code, guardedErr && guardedErr.code, entriesErr && entriesErr.code]));
+  }
+  var utf8Both = null;
   try {
-    utf8Only = await _extractNames(buildClassicZip([{ name: "a.txt", data: GOOD, flags: 0, lfhFlags: 0x0800 }]));
-  } catch (err) { utf8Only = "ERR " + err.code; }
-  check("zip flag skew: a flag that does not change how the entry is read (UTF-8 name, bit 11) may differ",
-    utf8Only === "a.txt=GOOD-CONTENT\n", String(utf8Only));
+    utf8Both = await _extractNames(buildClassicZip([{ name: "x", nameBytes: A_GRAVE, data: GOOD,
+      flags: 0x0800, lfhFlags: 0x0800 }]));
+  } catch (err) { utf8Both = "ERR " + err.code; }
+  check("zip flag skew: UTF-8 name flag (bit 11) set in both headers still extracts",
+    utf8Both === "À.txt=GOOD-CONTENT\n", String(utf8Both));
   var control = null;
   try { control = await _extractNames(buildClassicZip([{ name: "a.txt", data: region }])); }
   catch (err) { control = "ERR " + err.code; }
@@ -2330,11 +3202,12 @@ async function testAbortStopsTheLayoutPreflight() {
 
   var reads2 = 0;
   var ac2 = new AbortController();
-  var midway = Object.assign({}, inner, {
+  var spread = b.archive.adapters.buffer(_spreadZip(50));
+  var midway = Object.assign({}, spread, {
     range: function (offset, length) {
       reads2 += 1;
       if (reads2 === 6) ac2.abort("stop midway");
-      return inner.range(offset, length);
+      return spread.range(offset, length);
     },
   });
   var e2 = null;
@@ -2364,6 +3237,12 @@ async function run() {
   await testCdPositionRefusals();
   await testHiddenArchiveRefusals();
   await testEmbeddedStructureRefusals();
+  await testInspectVerifiesLocalHeaders();
+  await testUnicodePathExtraField();
+  await testUnicodePathRawNameJudged();
+  await testZipNameFieldDecodesJudged();
+  await testZipNameFieldEncoding();
+  await testInspectReadCost();
   await testEntryEndAmbiguity();
   await testLfhCdFlagSkew();
   await testDescriptorScanCost();

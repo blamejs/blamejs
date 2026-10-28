@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.21.6",
-  "createdAt": "2026-10-28T01:08:59.651Z",
+  "frameworkVersion": "0.21.7",
+  "createdAt": "2026-10-28T15:42:12.994Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -19144,6 +19144,10 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
+                "reservedNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "sparseEntryPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -19214,6 +19218,10 @@
                   "valueType": "number"
                 },
                 "nestedArchivePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "reservedNamePolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -19290,6 +19298,10 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
+                "reservedNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "sparseEntryPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -19360,6 +19372,10 @@
                   "valueType": "number"
                 },
                 "nestedArchivePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "reservedNamePolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },
@@ -19439,6 +19455,10 @@
               "valueType": "string"
             },
             "nestedArchivePolicy": {
+              "type": "primitive",
+              "valueType": "string"
+            },
+            "reservedNamePolicy": {
               "type": "primitive",
               "valueType": "string"
             },
@@ -19532,6 +19552,10 @@
               "type": "instance",
               "ctorName": "Array"
             },
+            "reservedNamePolicy": {
+              "type": "instance",
+              "ctorName": "Array"
+            },
             "sparseEntryPolicy": {
               "type": "instance",
               "ctorName": "Array"
@@ -19604,6 +19628,10 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
+                "reservedNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "sparseEntryPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -19673,6 +19701,10 @@
                   "type": "primitive",
                   "valueType": "string"
                 },
+                "reservedNamePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
                 "sparseEntryPolicy": {
                   "type": "primitive",
                   "valueType": "string"
@@ -19739,6 +19771,10 @@
                   "valueType": "number"
                 },
                 "nestedArchivePolicy": {
+                  "type": "primitive",
+                  "valueType": "string"
+                },
+                "reservedNamePolicy": {
                   "type": "primitive",
                   "valueType": "string"
                 },

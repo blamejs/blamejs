@@ -135,10 +135,9 @@ function _postureKeysPresent(opts) {
   if (!opts) return false;
   if (opts.minVersion !== "TLSv1.3") return false;
   if (typeof opts.ecdhCurve !== "string" || opts.ecdhCurve.indexOf("MLKEM") === -1) return false;
-  var expected = b.constants.TLS_CERT_COMPRESSION();
-  if (expected.length === 0) return true;                   // runtime predates RFC 8879 support
-  return Array.isArray(opts.certificateCompression) &&
-         opts.certificateCompression.join(",") === expected.join(",");
+  // Certificate compression is off unless the caller lists algorithms, so a
+  // client the caller gave no list must not advertise one.
+  return opts.certificateCompression === undefined;
 }
 
 // Capture the options handed to tls.connect by `drive`, without letting a
@@ -183,13 +182,8 @@ function testOutboundPostureShape() {
   check("certificateCompressionAlgorithms hands back a copy the caller owns",
         reported !== algs && !Object.isFrozen(reported) &&
         b.network.tls.certificateCompressionAlgorithms() !== reported);
-  if (algs.length > 0) {
-    check("outboundPosture advertises certificate compression",
-          posture.certificateCompression.join(",") === algs.join(","));
-  } else {
-    check("outboundPosture omits certificateCompression when unsupported",
-          posture.certificateCompression === undefined);
-  }
+  check("outboundPosture advertises no certificate compression",
+        posture.certificateCompression === undefined);
 }
 
 // The posture exists so one edit reaches every outbound path. That only holds
@@ -336,11 +330,10 @@ async function testNarrowedGroupsReachEveryOutboundClient() {
 function testBuildOptionsCarriesCertCompression() {
   var algs = b.constants.TLS_CERT_COMPRESSION();
   var out = b.network.tls.buildOptions({});
+  check("buildOptions advertises no certificate compression by default",
+        out.certificateCompression === undefined);
   if (algs.length > 0) {
-    check("buildOptions defaults certificateCompression to the runtime list",
-          Array.isArray(out.certificateCompression) &&
-          out.certificateCompression.join(",") === algs.join(","));
-    check("buildOptions lets an operator narrow the algorithm list",
+    check("buildOptions lets an operator opt in to one algorithm",
           b.network.tls.buildOptions({ certificateCompression: [algs[0]] })
             .certificateCompression.join(",") === algs[0]);
     check("buildOptions lets an operator advertise none via []",
@@ -356,14 +349,10 @@ function testBuildOptionsCarriesCertCompression() {
     catch (e) { shapeErr = e; }
     check("buildOptions refuses the string form (node:tls requires an array)",
           shapeErr && shapeErr.code === "network-tls/bad-tls-options");
-  } else {
-    check("buildOptions omits certificateCompression on a runtime without it",
-          out.certificateCompression === undefined);
   }
   var ctx = b.network.tls.applyToContext({ base: {} });
-  check("applyToContext carries the same certificate-compression posture",
-        (algs.length === 0 && ctx.certificateCompression === undefined) ||
-        (algs.length > 0 && ctx.certificateCompression.join(",") === algs.join(",")));
+  check("applyToContext adds no certificate compression either",
+        ctx.certificateCompression === undefined);
   check("applyToContext keeps an operator's certificateCompression override",
         b.network.tls.applyToContext({ base: { certificateCompression: [] } })
           .certificateCompression.length === 0);
@@ -411,12 +400,14 @@ function testExplicitBrotliFollowsTheRuntime() {
 
 // b.wsClient and b.router forward a caller's TLS options to node:tls. Each
 // refuses an explicit brotli on a runtime whose Brotli decoder is unfixed.
-// The test replaces the version predicate, so it runs on every Node release.
+// The test replaces the Brotli verdict and refusal in lib/constants.js, so it
+// runs on every Node release.
 async function testExplicitBrotliThroughCallers() {
   var wsClient = require("../../lib/ws-client");
   var chain = require("../helpers/compromised-keys").tlsChain("control");
   var nodeTls = require("node:tls");
   var origPatched = C._brotliDecoderPatched;
+  var origRefusal = C._brotliRefusal;
   var origConnect = nodeTls.connect;
   var offered = [];
   var clients = [];
@@ -450,6 +441,7 @@ async function testExplicitBrotliThroughCallers() {
   }
   try {
     C._brotliDecoderPatched = function () { return false; };
+    C._brotliRefusal = function () { return origRefusal("24.21.0", { sharedBrotli: false }); };
     var wsCode = codeOf(function () { ws({ tlsOpts: { certificateCompression: ["zlib", "brotli"] } }); });
     check("wsClient.connect throws tls/unsafe-cert-compression for tlsOpts.certificateCompression " +
           "listing brotli on an unfixed runtime", wsCode === "tls/unsafe-cert-compression", wsCode);
@@ -478,9 +470,38 @@ async function testExplicitBrotliThroughCallers() {
     check("the shared merge helper refuses a merged list naming brotli on an unfixed runtime",
           stripCode === "tls/unsafe-cert-compression", stripCode);
 
+    var ocspPair = helpers.selfSignedPair();
+    var ocspCalls = [
+      ["ocsp.connect", function (list) {
+        return b.network.tls.ocsp.connect({ host: "127.0.0.1", port: 1, servername: "localhost",
+          certificateCompression: list });
+      }],
+      ["ocsp.requireStapled", function (list) {
+        return b.network.tls.ocsp.requireStapled({ host: "127.0.0.1", port: 1, servername: "localhost",
+          certificateCompression: list });
+      }],
+      ["ocsp.requireGood", function (list) {
+        return b.network.tls.ocsp.requireGood({ host: "127.0.0.1", port: 1, servername: "localhost",
+          issuerPem: ocspPair.cert, certificateCompression: list });
+      }],
+    ];
+    for (var oc = 0; oc < ocspCalls.length; oc += 1) {
+      var offeredBefore = offered.length;
+      var ocspCode = null;
+      try { await ocspCalls[oc][1](["brotli"]); } catch (e) { ocspCode = (e && e.code) || String(e); }
+      check("network.tls." + ocspCalls[oc][0] + " rejects tls/unsafe-cert-compression for certificateCompression " +
+            "listing brotli on an unfixed runtime", ocspCode === "tls/unsafe-cert-compression", ocspCode);
+      check("network.tls." + ocspCalls[oc][0] + " does not dial with a list naming brotli on an unfixed runtime",
+            offered.length === offeredBefore, JSON.stringify(offered.slice(offeredBefore)));
+      try { await ocspCalls[oc][1](["zstd"]); } catch (_e) { /* nothing listens on port 1 */ }
+      check("network.tls." + ocspCalls[oc][0] + " control: certificateCompression [\"zstd\"] reaches tls.connect",
+            offered.slice(offeredBefore).indexOf("zstd") !== -1, JSON.stringify(offered.slice(offeredBefore)));
+    }
+
     var runtimeHasBrotli = typeof nodeTls.getCertificateCompressionAlgorithms === "function" &&
       nodeTls.getCertificateCompressionAlgorithms().indexOf("brotli") !== -1;
     C._brotliDecoderPatched = function () { return true; };
+    C._brotliRefusal = function () { return null; };
     if (runtimeHasBrotli) {
       var fixedWs = codeOf(function () { ws({ tlsOpts: { certificateCompression: ["brotli"] } }); });
       check("wsClient.connect keeps an explicit brotli on a fixed runtime", fixedWs === null, fixedWs);
@@ -491,6 +512,7 @@ async function testExplicitBrotliThroughCallers() {
     }
   } finally {
     C._brotliDecoderPatched = origPatched;
+    C._brotliRefusal = origRefusal;
     nodeTls.connect = origConnect;
     clients.forEach(function (c) {
       try { c._teardown(b.wsClient.CLOSE_NORMAL, "", false); } catch (_e) { /* best-effort */ }
@@ -767,18 +789,21 @@ function testAnnotateOutboundFailure() {
       tlsOpts: { secureProtocol: "SSLv23_method", ecdhCurve: "X25519" } });
   check("SSLv23_method is read as the TLS 1.2 ceiling it is",
         /TLS 1\.3 cipher/.test(viaSslv23) === false);
-  // Same predicate, other consumer: the framework must not advertise a TLS 1.3
-  // extension on a context that cannot reach TLS 1.3. Node refuses the whole
-  // options object rather than ignoring it, so this is a bind-time crash.
+  // The framework must not add a TLS 1.3 extension to a context that cannot
+  // reach TLS 1.3. Node refuses the whole options object rather than ignoring
+  // it, so this is a bind-time crash.
   var cappedCtx = b.network.tls.applyToContext({ base: { maxVersion: "TLSv1.2" } });
   var methodCtx = b.network.tls.applyToContext({ base: { secureProtocol: "SSLv23_method" } });
-  var openCtx   = b.network.tls.applyToContext({ base: {} });
   check("certificate compression is left off a context capped below TLS 1.3",
         cappedCtx.certificateCompression === undefined &&
         methodCtx.certificateCompression === undefined);
-  check("and is still advertised on one that reaches it (control)",
-        Array.isArray(openCtx.certificateCompression) &&
-        openCtx.certificateCompression.length > 0);
+  var compressionAlgs = b.constants.TLS_CERT_COMPRESSION();
+  if (compressionAlgs.length > 0) {
+    var openCtx = b.network.tls.applyToContext({ base: { certificateCompression: [compressionAlgs[0]] } });
+    check("and a caller's list is kept on one that reaches it (control)",
+          Array.isArray(openCtx.certificateCompression) &&
+          openCtx.certificateCompression.join(",") === compressionAlgs[0]);
+  }
   var builtCapped = true, builtMethod = true;
   try { tls.createSecureContext(cappedCtx); } catch (_e4) { builtCapped = false; }
   try { tls.createSecureContext(methodCtx); } catch (_e5) { builtMethod = false; }

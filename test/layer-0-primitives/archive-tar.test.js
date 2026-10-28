@@ -38,6 +38,27 @@ async function testTarRoundTrip() {
   check("archive.read.tar.inspect: directory type", entries[2].entryType === "directory");
 }
 
+// A name too long for the ustar fields goes into a pax record, whose length
+// counts UTF-8 bytes; non-ASCII names must round-trip through the reader.
+async function testTarPaxNonAsciiNameRoundTrip() {
+  var names = ["a".repeat(110) + "é.txt", "d/" + "日".repeat(60) + ".txt",
+               "e".repeat(98) + "é" + "😀".repeat(3) + ".bin"];
+  var t = b.archive.tar();
+  names.forEach(function (n, i) { t.addFile(n, "body " + i); });
+  var reader = b.archive.read.tar(b.archive.adapters.buffer(t.toBuffer()));
+  var got = null;
+  try { got = (await reader.inspect()).map(function (e) { return e.name; }); }
+  catch (e) { got = e.code + ": " + e.message; }
+  check("archive.tar: long non-ASCII names written as pax records read back unchanged",
+        Array.isArray(got) && JSON.stringify(got) === JSON.stringify(names), JSON.stringify(got));
+  var bodies = [];
+  try {
+    for await (var entry of reader.extractEntries()) bodies.push(entry.bytes.toString("utf8"));
+  } catch (e) { bodies.push(e.code); }
+  check("archive.tar: long non-ASCII names extract with their bodies",
+        JSON.stringify(bodies) === JSON.stringify(["body 0", "body 1", "body 2"]), JSON.stringify(bodies));
+}
+
 async function testSafeArchiveTarExtract() {
   var t = b.archive.tar();
   t.addFile("a.txt", "alpha");
@@ -228,6 +249,7 @@ async function testBackupBundleTooLargeRefused() {
 
 async function run() {
   await testTarRoundTrip();
+  await testTarPaxNonAsciiNameRoundTrip();
   await testSafeArchiveTarExtract();
   testTarEntryPolicy();
   await testTarChecksumDetection();
