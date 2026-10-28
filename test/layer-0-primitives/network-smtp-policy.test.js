@@ -238,6 +238,85 @@ async function testDaneTlsaDomainGuard() {
         await asyncThrowsWithCode(function () { return b.network.smtp.dane.tlsa(""); }, /bad-domain/));
 }
 
+// ---- A domain that is not a DNS name is refused before any lookup ---------
+//
+// node:dns resolveTlsa() on Node before 24.22.1 passes the name to c-ares as
+// a NUL-terminated C string (CVE-2026-105482): "attacker.example\0.trusted
+// .example" queried _25._tcp.attacker.example. The DNSSEC assertion check ran
+// only after that query.
+
+var _BAD_DOMAINS = [
+  "attacker.example\u0000.trusted.example",
+  "attacker.example\r\n.trusted.example",
+  "attacker example.trusted.example",
+  ".",
+  "。",
+  "192.0.2.1",
+  "192.0.2.1.",
+  "::1",
+  "fe80::1%.attacker.example",
+  "[192.0.2.1]",
+  "evil%2Eexample.com",
+  "blocked.exampl%65",
+  "mx%2Eattacker.example",
+  "evil％2Eexample.com",
+  "bad!char.example",
+];
+
+async function testPolicyDomainRefusedBeforeLookup() {
+  var systemAsked = [];
+  var resolverAsked = [];
+  var lookupAsked = [];
+  var resolver = { queryTlsa: async function (n) { resolverAsked.push(n); return { rrs: [] }; } };
+  var dnsLookup = async function (n) { lookupAsked.push(n); return [["v=STSv1; id=X1"]]; };
+  await withFakeResolveTlsa(async function (n) { systemAsked.push(n); return []; }, async function () {
+    for (var i = 0; i < _BAD_DOMAINS.length; i += 1) {
+      var d = _BAD_DOMAINS[i];
+      check("dane.tlsa system path, DNSSEC asserted: " + JSON.stringify(d) + " → smtp/bad-domain",
+        await asyncThrowsWithCode(function () { return b.network.smtp.dane.tlsa(d, 25, { dnssecValidated: true }); }, /^smtp\/bad-domain$/));
+      check("dane.tlsa system path, no DNSSEC assertion: " + JSON.stringify(d) + " → smtp/bad-domain",
+        await asyncThrowsWithCode(function () { return b.network.smtp.dane.tlsa(d, 25); }, /^smtp\/bad-domain$/));
+      check("dane.tlsa resolver path: " + JSON.stringify(d) + " → smtp/bad-domain",
+        await asyncThrowsWithCode(function () { return b.network.smtp.dane.tlsa(d, 25, { dnssecValidated: true, resolver: resolver }); }, /^smtp\/bad-domain$/));
+      check("mtaSts.fetch: " + JSON.stringify(d) + " → smtp/bad-domain",
+        await asyncThrowsWithCode(function () { return b.network.smtp.mtaSts.fetch(d, { dnsLookup: dnsLookup }); }, /^smtp\/bad-domain$/));
+      check("tlsRpt.fetchPolicy: " + JSON.stringify(d) + " → smtp/tls-rpt-bad-domain",
+        await asyncThrowsWithCode(function () { return b.network.smtp.tlsRpt.fetchPolicy(d, { dnsLookup: dnsLookup }); }, /^smtp\/tls-rpt-bad-domain$/));
+    }
+    var ok = await b.network.smtp.dane.tlsa("Mx1.Example.COM.", 25, { dnssecValidated: true });
+    check("dane.tlsa: an ordinary domain is still looked up", Array.isArray(ok) && systemAsked.length === 1);
+  });
+  check("no system TLSA query for a bad domain (asked " + JSON.stringify(systemAsked) + ")",
+    systemAsked.length === 1 && systemAsked[0] === "_25._tcp.mx1.example.com.");
+  check("no resolver TLSA query for a bad domain", resolverAsked.length === 0);
+  check("no TXT lookup for a bad domain", lookupAsked.length === 0);
+}
+
+// The composed-name helper validates the host it is given, so a raw domain
+// passed to it is refused exactly as _mailDomainQname refuses it. Without
+// that, "evil%2Eexample.com" composed as "_x.evil.example.com".
+function testComposedQnameRefusesWhatMailDomainQnameRefuses() {
+  var sp = require("../../lib/network-smtp-policy");
+  check("_composedQname is exported for the c-ares detector's fixtures",
+    typeof sp._composedQname === "function");
+  if (typeof sp._composedQname !== "function") return;
+  var extra = ["exa%41mple.com", "evil\\.example.com", "a..example", "example.com\u0000", "a.example\\032b"];
+  var all = _BAD_DOMAINS.concat(extra);
+  for (var i = 0; i < all.length; i += 1) {
+    var d = all[i];
+    var mail = sp._mailDomainQname(d, "t");
+    var composed = sp._composedQname("_x.", d, "t");
+    check("_mailDomainQname refuses " + JSON.stringify(d), mail === null);
+    check("_composedQname refuses " + JSON.stringify(d) + " (got " + JSON.stringify(composed) + ")",
+      composed === null);
+  }
+  check("_composedQname composes a canonical name",
+    sp._composedQname("_25._tcp.", "Mx1.Example.COM.", "t") === "_25._tcp.mx1.example.com.");
+  check("_composedQname composes the A-label of a U-label host",
+    sp._composedQname("_mta-sts.", "Bücher.example", "t") === "_mta-sts.xn--bcher-kva.example");
+  check("_composedQname refuses a non-string host", sp._composedQname("_x.", 42, "t") === null);
+}
+
 // ---- DANE recordShape (dane.recordShape) — guard + every label -----------
 
 function testDaneRecordShapeGuard() {
@@ -1023,6 +1102,152 @@ async function testDaneTlsaRefusesWithoutDnssec() {
   check("dane.tlsa: no dnssecValidated → dane-no-dnssec (fail-closed)", threw);
 }
 
+async function testDaneTlsaChecksDnssecBeforeAnyQuery() {
+  var systemAsked = [];
+  var resolverAsked = [];
+  var resolver = { queryTlsa: async function (n) { resolverAsked.push(n); return { rrs: [] }; } };
+  await withFakeResolveTlsa(async function (n) {
+    systemAsked.push(n);
+    var e = new Error("nx"); e.code = "ENOTFOUND"; throw e;
+  }, async function () {
+    check("dane.tlsa system path, no opts: dane-no-dnssec",
+      await asyncThrowsWithCode(function () { return b.network.smtp.dane.tlsa("mx.example", 25); }, /^smtp\/dane-no-dnssec$/));
+    check("dane.tlsa system path, dnssecValidated false: dane-no-dnssec even when the name has no TLSA",
+      await asyncThrowsWithCode(function () { return b.network.smtp.dane.tlsa("mx.example", 25, { dnssecValidated: false }); }, /^smtp\/dane-no-dnssec$/));
+    check("dane.tlsa resolver path, no dnssecValidated: dane-no-dnssec",
+      await asyncThrowsWithCode(function () { return b.network.smtp.dane.tlsa("mx.example", 25, { resolver: resolver }); }, /^smtp\/dane-no-dnssec$/));
+    check("dane.tlsa resolver without queryTlsa, no dnssecValidated: dane-no-dnssec",
+      await asyncThrowsWithCode(function () { return b.network.smtp.dane.tlsa("mx.example", 25, { resolver: {} }); }, /^smtp\/dane-no-dnssec$/));
+  });
+  check("dane.tlsa: no system TLSA query without dnssecValidated (asked " + JSON.stringify(systemAsked) + ")",
+    systemAsked.length === 0);
+  check("dane.tlsa: no resolver TLSA query without dnssecValidated", resolverAsked.length === 0);
+}
+
+async function testDaneTlsaRefusesBadPort() {
+  var asked = [];
+  var resolverAsked = [];
+  var resolver = { queryTlsa: async function (n) { resolverAsked.push(n); return { rrs: [] }; } };
+  var bad = [NaN, Infinity, -Infinity, -1, 0, 65536, 70000, 1.5, "25", true, null, {}];
+  await withFakeResolveTlsa(async function (n) { asked.push(n); return []; }, async function () {
+    for (var i = 0; i < bad.length; i += 1) {
+      var p = bad[i];
+      var label = typeof p === "number" ? String(p) : JSON.stringify(p);
+      check("dane.tlsa: port " + label + " → smtp/bad-port",
+        await asyncThrowsWithCode(function () { return b.network.smtp.dane.tlsa("mx.example", p, { dnssecValidated: true }); }, /^smtp\/bad-port$/));
+      check("dane.tlsa resolver path: port " + label + " → smtp/bad-port",
+        await asyncThrowsWithCode(function () { return b.network.smtp.dane.tlsa("mx.example", p, { dnssecValidated: true, resolver: resolver }); }, /^smtp\/bad-port$/));
+    }
+    var lo = await b.network.smtp.dane.tlsa("mx.example", 1, { dnssecValidated: true });
+    var hi = await b.network.smtp.dane.tlsa("mx.example", 65535, { dnssecValidated: true });
+    check("dane.tlsa: ports 1 and 65535 are looked up", Array.isArray(lo) && Array.isArray(hi));
+  });
+  check("dane.tlsa: a bad port makes no TLSA query (asked " + JSON.stringify(asked) + ")",
+    asked.length === 2 && asked[0] === "_1._tcp.mx.example" && asked[1] === "_65535._tcp.mx.example");
+  check("dane.tlsa: a bad port makes no resolver query", resolverAsked.length === 0);
+}
+
+// ---- A policy name that cannot exist means the domain has no policy -------
+//
+// A legal domain of up to 253 octets can still produce a TXT or TLSA name
+// longer than a DNS name may be once the _smtp._tls., _mta-sts. or _25._tcp.
+// labels are prepended. No record can be published at such a name, so each
+// primitive returns its "no policy" value without making a query.
+
+function _domainOfLength(n) {
+  var l63 = "a".repeat(63);
+  return [l63, l63, l63, "a".repeat(n - 3 * 64)].join(".");
+}
+
+async function _resultOf(fn) {
+  try { return { value: await fn() }; }
+  catch (e) { return { code: (e && e.code) || String(e) }; }
+}
+
+async function testComposedPolicyNameThatCannotExistIsNoPolicy() {
+  var d253 = _domainOfLength(253);
+  var d245 = _domainOfLength(245);
+  var d244 = _domainOfLength(244);
+  var d242 = _domainOfLength(242);
+  var asked = [];
+  var resolver = {
+    queryTxt:  async function (n) { asked.push("R-TXT:" + n); return { rrs: [] }; },
+    queryTlsa: async function (n) { asked.push("R-TLSA:" + n); return { rrs: [] }; },
+  };
+  var dnsLookup = async function (n) { asked.push("L-TXT:" + n); return [["unrelated"]]; };
+  var tooLongForRpt = [d253, d245, d244, d253 + "."];
+  var tooLongForSts = [d253, d245, d253 + "."];
+  var httpCalls = 0;
+  await withFakeHttpRequest(async function () { httpCalls += 1; return { statusCode: 404, body: Buffer.alloc(0) }; }, async function () {
+    await withFakeResolveTlsa(async function (n) { asked.push("S-TLSA:" + n); return []; }, async function () {
+      for (var i = 0; i < tooLongForRpt.length; i += 1) {
+        var d = tooLongForRpt[i];
+        var label = d.length + "-character domain";
+        var r1 = await _resultOf(function () { return b.network.smtp.tlsRpt.fetchPolicy(d, { resolver: resolver }); });
+        check("tlsRpt.fetchPolicy resolver path: " + label + " has no policy (got " + JSON.stringify(r1) + ")",
+          r1.value === null);
+        var r2 = await _resultOf(function () { return b.network.smtp.tlsRpt.fetchPolicy(d, { dnsLookup: dnsLookup }); });
+        check("tlsRpt.fetchPolicy dnsLookup path: " + label + " has no policy (got " + JSON.stringify(r2) + ")",
+          r2.value === null);
+        var r3 = await _resultOf(function () { return b.network.smtp.policy.tlsRpt.fetchPolicy(d); });
+        check("tlsRpt.fetchPolicy shared resolver: " + label + " has no policy (got " + JSON.stringify(r3) + ")",
+          r3.value === null);
+      }
+      for (var j = 0; j < tooLongForSts.length; j += 1) {
+        var s = tooLongForSts[j];
+        var sl = s.length + "-character domain";
+        var s1 = await _resultOf(function () { return b.network.smtp.mtaSts.fetch(s, { resolver: resolver }); });
+        check("mtaSts.fetch resolver path: " + sl + " has no policy (got " + JSON.stringify(s1) + ")",
+          s1.value === null);
+        var s2 = await _resultOf(function () { return b.network.smtp.mtaSts.fetch(s, { dnsLookup: dnsLookup }); });
+        check("mtaSts.fetch dnsLookup path: " + sl + " has no policy (got " + JSON.stringify(s2) + ")",
+          s2.value === null);
+        var s3 = await _resultOf(function () { return b.network.smtp.policy.mtaSts.fetch(s); });
+        check("mtaSts.fetch shared resolver: " + sl + " has no policy (got " + JSON.stringify(s3) + ")",
+          s3.value === null);
+        var t1 = await _resultOf(function () { return b.network.smtp.dane.tlsa(s, 25, { dnssecValidated: true, resolver: resolver }); });
+        check("dane.tlsa resolver path: " + sl + " has no TLSA records (got " + JSON.stringify(t1) + ")",
+          Array.isArray(t1.value) && t1.value.length === 0);
+        var t2 = await _resultOf(function () { return b.network.smtp.dane.tlsa(s, 25, { dnssecValidated: true }); });
+        check("dane.tlsa system path: " + sl + " has no TLSA records (got " + JSON.stringify(t2) + ")",
+          Array.isArray(t2.value) && t2.value.length === 0);
+        check("dane.tlsa: " + sl + " still requires the DNSSEC assertion",
+          await asyncThrowsWithCode(function () { return b.network.smtp.dane.tlsa(s, 25); }, /^smtp\/dane-no-dnssec$/));
+        check("dane.tlsa: " + sl + " still requires queryTlsa on opts.resolver",
+          await asyncThrowsWithCode(function () { return b.network.smtp.dane.tlsa(s, 25, { dnssecValidated: true, resolver: {} }); }, /^smtp\/dane-resolver-no-tlsa$/));
+      }
+    });
+    check("no TXT, TLSA or HTTPS request for a policy name that cannot exist (asked " + JSON.stringify(asked) + ")",
+      asked.length === 0 && httpCalls === 0);
+
+    var d254 = _domainOfLength(254);
+    check("mtaSts.fetch: a 254-character relative domain is still refused",
+      await asyncThrowsWithCode(function () { return b.network.smtp.mtaSts.fetch(d254, { resolver: resolver }); }, /^smtp\/bad-domain$/));
+    check("tlsRpt.fetchPolicy: a 254-character relative domain is still refused",
+      await asyncThrowsWithCode(function () { return b.network.smtp.tlsRpt.fetchPolicy(d254, { resolver: resolver }); }, /^smtp\/tls-rpt-bad-domain$/));
+    check("dane.tlsa: a 254-character relative domain is still refused",
+      await asyncThrowsWithCode(function () { return b.network.smtp.dane.tlsa(d254, 25, { dnssecValidated: true, resolver: resolver }); }, /^smtp\/bad-domain$/));
+    var pct = d245.slice(0, -1) + "%";
+    check("mtaSts.fetch: a 245-character domain containing % is still refused",
+      await asyncThrowsWithCode(function () { return b.network.smtp.mtaSts.fetch(pct, { resolver: resolver }); }, /^smtp\/bad-domain$/));
+    check("tlsRpt.fetchPolicy: a 245-character domain containing % is still refused",
+      await asyncThrowsWithCode(function () { return b.network.smtp.tlsRpt.fetchPolicy(pct, { resolver: resolver }); }, /^smtp\/tls-rpt-bad-domain$/));
+    check("no lookup for a refused domain", asked.length === 0);
+
+    var rptOk = await b.network.smtp.tlsRpt.fetchPolicy(d242, { resolver: resolver });
+    var stsOk = await b.network.smtp.mtaSts.fetch(d244, { resolver: resolver });
+    var stsDot = await b.network.smtp.mtaSts.fetch(d242 + ".", { dnsLookup: dnsLookup });
+    check("tlsRpt.fetchPolicy: a 242-character domain is looked up", rptOk === null);
+    check("mtaSts.fetch: a 244-character domain is looked up", stsOk === null);
+    check("mtaSts.fetch: a 242-character absolute domain is looked up", stsDot === null);
+  });
+  check("the boundary domains are queried at their composed names",
+    asked.length === 3 &&
+    asked[0] === "R-TXT:_smtp._tls." + d242 &&
+    asked[1] === "R-TXT:_mta-sts." + d244 &&
+    asked[2] === "L-TXT:_mta-sts." + d242 + ".");
+}
+
 async function testDaneTlsaEmptyOnNxAndNoData() {
   // ENOTFOUND / ENODATA are "domain publishes no TLSA" → empty array, not
   // an error (and the DNSSEC gate is never reached because there are no
@@ -1398,9 +1623,14 @@ async function run() {
   await testMtaStsFetchTxtHardLookupFailure();
 
   await testDaneTlsaDomainGuard();
+  await testPolicyDomainRefusedBeforeLookup();
   await testDaneTlsaMapsRecordsWhenDnssecAsserted();
   await testDaneTlsaDefaultPortWhenOmitted();
   await testDaneTlsaRefusesWithoutDnssec();
+  await testDaneTlsaChecksDnssecBeforeAnyQuery();
+  await testDaneTlsaRefusesBadPort();
+  testComposedQnameRefusesWhatMailDomainQnameRefuses();
+  await testComposedPolicyNameThatCannotExistIsNoPolicy();
   await testDaneTlsaEmptyOnNxAndNoData();
   await testDaneTlsaLookupFailure();
   await testDaneTlsaNullRecordsYieldEmpty();

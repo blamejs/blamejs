@@ -291,18 +291,51 @@ async function testZip64Write() {
   cd.writeUInt32LE(0, 38);
   cd.writeUInt32LE(0, 42);
 
-  var localPart = Buffer.concat([lfh, nameBuf, lfhExtraBig, payload]);
-  var cdOffset  = localPart.length;
+  // The reader refuses an entry whose declared data runs past the central
+  // directory, so the archive is laid out at its logical size: the header
+  // bytes, `logical` bytes of entry data, then the CD and a ZIP64 trailer.
+  // A random-access adapter serves the headers and trailer and returns
+  // zeros for the data region, so nothing near 4 GiB is allocated.
+  var localHead = Buffer.concat([lfh, nameBuf, lfhExtraBig]);
+  var cdOffset  = localHead.length + logical;
   var cdRecord  = Buffer.concat([cd, nameBuf, cdExtraBig]);
+  var eocd64 = Buffer.alloc(56);
+  eocd64.writeUInt32LE(0x06064b50, 0);
+  eocd64.writeBigUInt64LE(44n, 4);
+  eocd64.writeUInt16LE(45, 12);
+  eocd64.writeUInt16LE(45, 14);
+  eocd64.writeBigUInt64LE(1n, 24);
+  eocd64.writeBigUInt64LE(1n, 32);
+  eocd64.writeBigUInt64LE(BigInt(cdRecord.length), 40);
+  eocd64.writeBigUInt64LE(BigInt(cdOffset), 48);
+  var locator = Buffer.alloc(20);
+  locator.writeUInt32LE(0x07064b50, 0);
+  locator.writeBigUInt64LE(BigInt(cdOffset + cdRecord.length), 8);
+  locator.writeUInt32LE(1, 16);
   var eocd = Buffer.alloc(22);
   eocd.writeUInt32LE(0x06054b50, 0);
   eocd.writeUInt16LE(1, 8);
   eocd.writeUInt16LE(1, 10);
   eocd.writeUInt32LE(cdRecord.length, 12);
-  eocd.writeUInt32LE(cdOffset, 16);
-  var synthetic = Buffer.concat([localPart, cdRecord, eocd]);
+  eocd.writeUInt32LE(z64.U32_SENTINEL, 16);
+  var tail = Buffer.concat([cdRecord, eocd64, locator, eocd]);
+  var syntheticSize = cdOffset + tail.length;
+  var syntheticAdapter = {
+    kind:  "random-access",
+    size:  syntheticSize,
+    range: async function (offset, length) {
+      var out = Buffer.alloc(length);
+      var segments = [[0, localHead], [cdOffset, tail]];
+      segments.forEach(function (seg) {
+        var start = Math.max(offset, seg[0]);
+        var end = Math.min(offset + length, seg[0] + seg[1].length);
+        if (start < end) seg[1].copy(out, start - offset, start - seg[0], end - seg[0]);
+      });
+      return out;
+    },
+  };
 
-  var z64Reader = b.archive.read.zip(b.archive.adapters.buffer(synthetic), {
+  var z64Reader = b.archive.read.zip(syntheticAdapter, {
     bombPolicy: {
       maxEntryDecompressedBytes: logical + 16,
       maxTotalDecompressedBytes: logical + 16,

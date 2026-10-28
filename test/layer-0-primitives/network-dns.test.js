@@ -823,6 +823,19 @@ function testReadDnsName() {
   var pres = rd(buf, 0);
   check("_readDnsName: forward pointer resolves + nextOff after pointer",
     pres.name === "x" && pres.nextOff === 4);
+
+  // Label bytes are returned in RFC 1035 presentation form: a dot or
+  // backslash inside a label is escaped and a byte outside 0x21-0x7E is
+  // \DDD, so the one label "svc.attacker" never reads as two labels and a
+  // NUL never reaches the caller raw.
+  var tricky = Buffer.from([7, 0x73, 0x76, 0x63, 0x2e, 0x61, 0x74, 0x6b, 4, 0x63, 0x00, 0xe9, 0x5c, 3, 0x63, 0x6f, 0x6d, 0]);
+  var tres = rd(tricky, 0);
+  check("_readDnsName: a dot, NUL, high byte and backslash in a label are escaped (got " + JSON.stringify(tres.name) + ")",
+    tres.name === "svc\\.atk.c\\000\\233\\\\.com" && tres.nextOff === tricky.length);
+  var svcbRd = Buffer.concat([Buffer.from([0, 1]), Buffer.from([8, 0x61, 0x2e, 0x65, 0x76, 0x69, 0x6c, 0x00, 0x78, 0])]);
+  var svcb = _parseAt0(svcbRd);
+  check("_parseSvcbRdata: an escaped TargetName is returned in presentation form (got " + JSON.stringify(svcb.target) + ")",
+    svcb.target === "a\\.evil\\000x");
 }
 
 // ======================================================================
@@ -2861,6 +2874,65 @@ async function testSystemResolverUdpSuccess() {
 }
 
 // ======================================================================
+// System-resolver names that are not DNS names never reach c-ares.
+// Node.js before 24.22.1 passes a resolve*() / reverse() name to c-ares as a
+// NUL-terminated C string, so "a.example\0.b.example" was queried as
+// "a.example" (CVE-2026-105482). Every name below is refused with a
+// permanent dns/bad-host or dns/bad-ip and the responder sees no query.
+// ======================================================================
+async function testSystemResolverRefusesNamesThatAreNotDnsNames() {
+  var badHosts = [
+    "attacker.example\u0000.trusted.example",
+    "attacker.example\u0000",
+    "\u0000trusted.example",
+    "attacker.example.\u0000",
+    "attacker.example\r\n.trusted.example",
+    "attacker example.trusted.example",
+    "attacker.example\u0001.trusted.example",
+    "attacker.example\u007f.trusted.example",
+    "attacker..trusted.example",
+  ];
+  var badIps = ["192.0.2.5\u0000.trusted.example", "192.0.2.5\u0000", "2001:db8::7\u0000", "192.0.2.5 "];
+  var fix = await _startUdpDnsResponder({ zone: _udpZone });
+  try {
+    await _withSystemResolverAt(fix, async function () {
+      dnsModule.setLookupTimeoutMs(5000);
+      var calls = [
+        ["resolve4",    function (h) { return dnsModule.resolve4(h); }],
+        ["resolve6",    function (h) { return dnsModule.resolve6(h); }],
+        ["resolveAaaa", function (h) { return dnsModule.resolveAaaa(h); }],
+        ["resolve A",   function (h) { return dnsModule.resolve(h, "A", { transport: "system" }); }],
+        ["resolve AAAA", function (h) { return dnsModule.resolve(h, "AAAA", { transport: "system" }); }],
+      ];
+      for (var i = 0; i < badHosts.length; i += 1) {
+        for (var c = 0; c < calls.length; c += 1) {
+          var err = null;
+          try { await calls[c][1](badHosts[i]); } catch (e) { err = e; }
+          check(calls[c][0] + "(" + JSON.stringify(badHosts[i]) + ") rejects with a permanent dns/bad-host",
+            err !== null && err.code === "dns/bad-host" && err.permanent === true,
+            err && (err.code + " " + err.message));
+        }
+      }
+      for (var j = 0; j < badIps.length; j += 1) {
+        var errIp = null;
+        try { await dnsModule.reverse(badIps[j]); } catch (e) { errIp = e; }
+        check("reverse(" + JSON.stringify(badIps[j]) + ") rejects with a permanent dns/bad-ip",
+          errIp !== null && errIp.code === "dns/bad-ip" && errIp.permanent === true,
+          errIp && (errIp.code + " " + errIp.message));
+      }
+      check("no query for a name that is not a DNS name reached the resolver (saw " + JSON.stringify(fix.seen) + ")",
+        fix.queries === 0);
+
+      var ok = await dnsModule.resolve4("trusted.example");
+      var okPtr = await dnsModule.reverse("192.0.2.5");
+      check("control: an ordinary name and an ordinary address are still queried and answered",
+        ok.length === 2 && okPtr.length === 2 &&
+        fix.seen.indexOf("trusted.example") !== -1 && fix.seen.indexOf("5.2.0.192.in-addr.arpa") !== -1);
+    });
+  } finally { fix.close(); }
+}
+
+// ======================================================================
 // reverse() deadline — the wall-clock timeout must surface as the typed
 // DnsError it already is, not re-wrapped as dns/reverse-failed
 // ======================================================================
@@ -3576,6 +3648,7 @@ async function _runTests() {
   // default-port fallbacks, DoT pool idle eviction, and per-entry
   // designated-resolver failure aggregation
   await testSystemResolverUdpSuccess();
+  await testSystemResolverRefusesNamesThatAreNotDnsNames();
   await testReverseDeadlineRethrowsDnsError();
   await testSystemRawQueryDefaultPortFallback();
   await testDohDefaultPortFallback();

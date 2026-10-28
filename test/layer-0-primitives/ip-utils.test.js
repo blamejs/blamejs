@@ -102,7 +102,30 @@ function run() {
   check("expandIpv6Hex(bad) null", ip.expandIpv6Hex("bad") === null);
   check("expandIpv6Groups ::1", JSON.stringify(ip.expandIpv6Groups("::1")) === JSON.stringify([0, 0, 0, 0, 0, 0, 0, 1]));
 
+  testEndsInANumber();
+
   return Promise.resolve();
+}
+
+// WHATWG URL "ends in a number": the last label, after one trailing empty
+// label is dropped, is all ASCII digits or an IPv4 hex number (0x / 0X then
+// zero or more hex digits).
+function testEndsInANumber() {
+  check("endsInANumber is a function", typeof ip.endsInANumber === "function");
+  if (typeof ip.endsInANumber !== "function") return;
+  ["1", "127.0.0.1", "127.1", "2130706433", "0x7f.0.0.1", "foo.0x", "a.b.0X1F", "127.0.0.1.",
+   "999.1.1.1", "a.08", "x.0xABCdef"]
+    .forEach(function (s) {
+      check("endsInANumber is true for " + JSON.stringify(s), ip.endsInANumber(s) === true);
+    });
+  ["", ".", "example.com", "a.0xg", "0x7f.example.com", "127.0.0.1..", "127.0.0.1.example.com",
+   "a.1b", "a.0x\u0010", "a.0x\u0019", "a." + String.fromCharCode(0x0660), "a.1 ", "a.0y1"]
+    .forEach(function (s) {
+      check("endsInANumber is false for " + JSON.stringify(s), ip.endsInANumber(s) === false);
+    });
+  [null, undefined, 1, {}].forEach(function (v) {
+    check("endsInANumber is false for a non-string", ip.endsInANumber(v) === false);
+  });
 }
 
 module.exports = { run: run };

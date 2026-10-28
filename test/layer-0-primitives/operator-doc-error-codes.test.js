@@ -1301,12 +1301,18 @@ function bodiesReachedFrom(startBody, helpers, shadowed) {
       var callable = maskLiteralsAndComments(body);
       var own = first && shadowed ? shadowed : namesDeclaredIn(callable);
       first = false;
+      var scopes = null;
       names.forEach(function (nm) {
         if (seen[nm] || own[nm]) return;
         // A MEMBER call is somebody else's function. `\b` is satisfied between
         // the dot and the name, so a bare word boundary let `JSON.parse(` match a
         // local helper called `parse` and drag its codes in.
-        if (!new RegExp("(?<![.\\w$])" + nm + "\\s*\\(").test(callable)) return;
+        var callRe = new RegExp("(?<![.\\w$])" + escapeRegExp(nm) + "\\s*\\(", "g");
+        if (!callRe.test(callable)) return;
+        // A call written inside a nested function that binds the name itself
+        // (a Promise executor's `resolve` parameter) calls that binding.
+        if (scopes === null) scopes = functionScopesIn(callable);
+        if (!callOutsideShadowingScope(callable, callRe, nm, scopes)) return;
         seen[nm] = true;
         reached.push(helpers[nm]);
         next.push(helpers[nm]);
@@ -1315,6 +1321,63 @@ function bodiesReachedFrom(startBody, helpers, shadowed) {
     frontier = next;
   }
   return reached;
+}
+
+// Every function written in `masked` (a `function` with any name, or an arrow
+// with a braced body) as { start, end, names }: the span from its parameter
+// list to its closing brace, and the names it binds for itself.
+var FUNCTION_HEAD_RE = /\bfunction\b\s*\*?\s*(?:[A-Za-z_$][\w$]*)?\s*\(|\(([^()]*)\)\s*=>\s*\{|(?<![\w$.])([A-Za-z_$][\w$]*)\s*=>\s*\{/g;
+function functionScopesIn(masked) {
+  var out = [];
+  var re = new RegExp(FUNCTION_HEAD_RE.source, "g");
+  var m;
+  while ((m = re.exec(masked)) !== null) {
+    var paramsAt;
+    var brace;
+    if (m[2] !== undefined) {
+      paramsAt = -1;
+      brace = m.index + m[0].length - 1;
+    } else if (m[1] !== undefined) {
+      paramsAt = m.index;
+      brace = m.index + m[0].length - 1;
+    } else {
+      paramsAt = m.index + m[0].length - 1;
+      var close = -1;
+      var depth = 0;
+      for (var p = paramsAt; p < masked.length; p += 1) {
+        if (masked[p] === "(") depth += 1;
+        else if (masked[p] === ")") { depth -= 1; if (depth === 0) { close = p; break; } }
+      }
+      if (close === -1) continue;
+      brace = masked.indexOf("{", close);
+      if (brace === -1 || masked.slice(close + 1, brace).trim() !== "") continue;
+    }
+    var inner = bracedBodyAt(masked, brace);
+    if (inner === null) continue;
+    var end = brace + inner.length + 2;
+    var head = paramsAt === -1 ? "(" + m[2] + ")" : masked.slice(paramsAt, brace);
+    out.push({
+      start: paramsAt === -1 ? m.index : paramsAt,
+      end:   end,
+      names: namesDeclaredIn(head + masked.slice(brace, end)),
+    });
+  }
+  return out;
+}
+
+// Whether `callRe` finds a call to `nm` in `masked` that no enclosing scope in
+// `scopes` rebinds.
+function callOutsideShadowingScope(masked, callRe, nm, scopes) {
+  callRe.lastIndex = 0;
+  var m;
+  while ((m = callRe.exec(masked)) !== null) {
+    var at = m.index;
+    var shadowedHere = scopes.some(function (s) {
+      return s.start <= at && at < s.end && s.names[nm] === true;
+    });
+    if (!shadowedHere) return true;
+  }
+  return false;
 }
 
 // The names a function's masked text binds for itself: its parameters, and the
@@ -2182,6 +2245,54 @@ function testANestedNameShadowsTheTopLevelFunction() {
         JSON.stringify(got));
 }
 
+function testANestedParameterInAReachedHelperShadowsTheTopLevelFunction() {
+  // A Promise executor's `resolve` parameter, inside a helper the primitive
+  // reaches, is that parameter and not the module's top-level `resolve`. The
+  // same holds for an arrow executor in the primitive's own body. A call to
+  // the top-level function from a nested body that does not rebind the name
+  // still reaches it.
+  var fixtureSrc = [
+    "function resolve(host) {",
+    "  if (!host) throw new FixtureError(\"fixture/resolve-bad-host\", \"x\");",
+    "  return host;",
+    "}",
+    "function _withTimeout(promise, ms) {",
+    "  if (ms <= 0) return promise;",
+    "  return new Promise(function (resolve, reject) {",
+    "    var timer = setTimeout(function () {",
+    "      reject(new FixtureError(\"fixture/timeout\", \"x\"));",
+    "    }, ms);",
+    "    promise.then(",
+    "      function (v) { clearTimeout(timer); resolve(v); },",
+    "      function (e) { clearTimeout(timer); reject(e); }",
+    "    );",
+    "  });",
+    "}",
+    "async function viaTimeout(opts) {",
+    "  return await _withTimeout(opts.p, 5);",
+    "}",
+    "function arrowExecutor(opts) {",
+    "  return new Promise((resolve) => { resolve(opts); });",
+    "}",
+    "function stillCallsTopLevel(opts) {",
+    "  return new Promise(function (ok) { ok(resolve(opts.host)); });",
+    "}",
+    "",
+  ].join("\n");
+  var got = {
+    viaTimeout:         fixtureThrown(fixtureSrc, "viaTimeout"),
+    arrowExecutor:      fixtureThrown(fixtureSrc, "arrowExecutor"),
+    stillCallsTopLevel: fixtureThrown(fixtureSrc, "stillCallsTopLevel"),
+  };
+  check("a nested function's parameter in a reached helper or in the primitive " +
+        "shadows the top-level function of that name, and a nested body that " +
+        "does not rebind it still reaches the top-level function",
+        got.viaTimeout.indexOf("fixture/resolve-bad-host") === -1 &&
+          got.arrowExecutor === "" &&
+          got.stillCallsTopLevel === "fixture/resolve-bad-host",
+        JSON.stringify(got));
+}
+
 function testAnArrowCallbackRunsLikeAFunctionExpression() {
   // An arrow handed to a synchronous call runs during that call, exactly as a
   // `function` expression does, so its throws reach the caller. One handed to
@@ -2294,6 +2405,7 @@ async function run() {
   testARegexLiteralAndAOneLineFunctionAreRead();
   testAHelperThrowCaughtAndReturnedStaysInTheContract();
   testANestedNameShadowsTheTopLevelFunction();
+  testANestedParameterInAReachedHelperShadowsTheTopLevelFunction();
   testAnArrowCallbackRunsLikeAFunctionExpression();
   testACatchThatNeverReadsTheErrorConsumesIt();
   testEveryDocumentedCodeListIsComplete();

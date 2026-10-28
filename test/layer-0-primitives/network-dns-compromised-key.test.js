@@ -385,7 +385,7 @@ async function testDohIgnoresGlobalAgentOptions() {
   }
 }
 
-async function testDohQueriesShareOneCheckedConnection() {
+async function testDohQueriesEachOpenACheckedConnection() {
   var ctl = await _startDoh("control");
   _reset();
   dns.useDnsOverHttps({ url: "https://127.0.0.1:" + ctl.port + "/dns-query", ca: ctl.rootCa });
@@ -401,8 +401,8 @@ async function testDohQueriesShareOneCheckedConnection() {
   }
   _reset();
   _close(ctl);
-  check("dns doh pooling: eight DoH queries through b.network.dns and its resolver share one TLS connection",
-        answered === 8 && ctl.requests === 8 && ctl.connections === 1,
+  check("dns doh connections: eight DoH queries through b.network.dns and its resolver each open their own TLS connection",
+        answered === 8 && ctl.requests === 8 && ctl.connections === 8,
         "answered=" + answered + " requests=" + ctl.requests + " connections=" + ctl.connections +
           (firstErr ? " " + firstErr.code + " " + firstErr.message : ""));
 
@@ -429,7 +429,7 @@ async function run() {
   await testDecoyForACompromisedDefaultAnchorIsRefused();
   await testDohDoesNotRideAnUncheckedConnection();
   await testDohIgnoresGlobalAgentOptions();
-  await testDohQueriesShareOneCheckedConnection();
+  await testDohQueriesEachOpenACheckedConnection();
   _reset();
 }
 
@@ -443,7 +443,7 @@ module.exports = {
   testDecoyForACompromisedDefaultAnchorIsRefused:  testDecoyForACompromisedDefaultAnchorIsRefused,
   testDohDoesNotRideAnUncheckedConnection:         testDohDoesNotRideAnUncheckedConnection,
   testDohIgnoresGlobalAgentOptions:                testDohIgnoresGlobalAgentOptions,
-  testDohQueriesShareOneCheckedConnection:         testDohQueriesShareOneCheckedConnection,
+  testDohQueriesEachOpenACheckedConnection:        testDohQueriesEachOpenACheckedConnection,
 };
 
 if (require.main === module) {

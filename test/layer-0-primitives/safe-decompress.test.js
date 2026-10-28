@@ -93,12 +93,88 @@ function testDeflateRawRoundTrip() {
 }
 
 function testBrotliRoundTrip() {
+  if (!C._brotliDecoderPatched(process.versions.node)) return;
   var plain = "hello world ".repeat(50);
   var br = zlib.brotliCompressSync(Buffer.from(plain, "utf8"));
   var out = b.safeDecompress(br, {
     algorithm: "brotli", maxOutputBytes: C.BYTES.kib(64),
   });
   check("brotli round-trip preserves bytes", out.toString("utf8") === plain);
+}
+
+// CVE-2026-111497: the Brotli decoder bundled with Node before 22.23.4,
+// 24.22.1 and 26.12.1 writes past an 8-byte input buffer on an invalid block
+// switch. On such a runtime the "brotli" algorithm refuses before any byte
+// reaches the decoder; on a fixed runtime it decompresses. The RED proof runs
+// this file under node:24.21.0.
+function testBrotliRefusedOnUnfixedRuntime() {
+  var br = zlib.brotliCompressSync(Buffer.from("hello world ".repeat(50), "utf8"));
+  var threw = null;
+  var out = null;
+  try {
+    out = b.safeDecompress(br, { algorithm: "brotli", maxOutputBytes: C.BYTES.kib(64) });
+  } catch (e) { threw = e; }
+  if (C._brotliDecoderPatched(process.versions.node)) {
+    check("fixed runtime " + process.versions.node + ": brotli decompresses",
+          threw === null && out !== null && out.length === 600,
+          threw && threw.code);
+  } else {
+    check("unfixed runtime " + process.versions.node +
+          ": brotli refuses with safe-decompress/unsafe-runtime",
+          threw && threw.code === "safe-decompress/unsafe-runtime",
+          threw ? threw.code + " " + threw.message : "decompressed " + (out && out.length) + " bytes");
+    check("unfixed runtime: the refusal names the CVE",
+          threw && /CVE-2026-111497/.test(threw.message));
+  }
+}
+
+// The refusal reads process.versions.node at call time, so a test can report
+// an unfixed release on any host. The input is refused before it reaches the
+// decoder, so no byte is decoded under the reported version.
+function _asNodeVersion(version, fn) {
+  var descriptor = Object.getOwnPropertyDescriptor(process.versions, "node");
+  Object.defineProperty(process.versions, "node",
+    { value: version, configurable: true, enumerable: true, writable: false });
+  try { return fn(); }
+  finally { Object.defineProperty(process.versions, "node", descriptor); }
+}
+
+function testUnsafeRuntimeRefusalIsAudited() {
+  var br = zlib.brotliCompressSync(Buffer.from("hello world ".repeat(50), "utf8"));
+  ["24.21.0", "26.12.0", "24.22.1-pre", "27.0.0-nightly20260101abc"].forEach(function (v) {
+    var captured = [];
+    var threw = null;
+    _asNodeVersion(v, function () {
+      try {
+        b.safeDecompress(br, {
+          algorithm: "brotli", maxOutputBytes: C.BYTES.kib(64), ctx: "unsafe-runtime-test",
+          audit: { safeEmit: function (e) { captured.push(e); } },
+        });
+      } catch (e) { threw = e; }
+    });
+    check("Node " + v + ": brotli refuses with safe-decompress/unsafe-runtime",
+          threw && threw.code === "safe-decompress/unsafe-runtime",
+          threw ? threw.code + " " + threw.message : "no refusal");
+    check("Node " + v + ": the refusal emits one safe_decompress.refused audit event",
+          captured.length === 1 &&
+          captured[0].action === "system.safe_decompress.refused" &&
+          captured[0].outcome === "denied" &&
+          captured[0].metadata.code === "safe-decompress/unsafe-runtime" &&
+          captured[0].metadata.algorithm === "brotli" &&
+          captured[0].metadata.ctx === "unsafe-runtime-test",
+          JSON.stringify(captured));
+    check("Node " + v + ": the refusal names the CVE and the reported version",
+          threw && /CVE-2026-111497/.test(threw.message) &&
+          threw.message.indexOf(v) !== -1, threw && threw.message);
+    check("Node " + v + ": the upgrade advice names 24.22.1 and 26.12.1 only",
+          threw && /24\.22\.1/.test(threw.message) && /26\.12\.1/.test(threw.message) &&
+          !/22\.23\.4/.test(threw.message), threw && threw.message);
+  });
+  var gz = zlib.gzipSync(Buffer.from("hello world ".repeat(50), "utf8"));
+  var gzOut = _asNodeVersion("24.21.0", function () {
+    return b.safeDecompress(gz, { algorithm: "gzip", maxOutputBytes: C.BYTES.kib(64) });
+  });
+  check("Node 24.21.0: gzip is unaffected", gzOut.length === 600);
 }
 
 // ---- maxOutputBytes refusal (pre-allocation, via zlib's maxOutputLength) ----
@@ -270,14 +346,58 @@ function testAuditEmittedOnRatioRefusal() {
   }
 }
 
+// requireFullInput refuses input bytes left over after the compressed stream
+// ends; without it the leftover bytes are ignored.
+function testRequireFullInput() {
+  var plain = Buffer.from("hello world ".repeat(20), "utf8");
+  var cases = [
+    ["deflate-raw", zlib.deflateRawSync(plain)],
+    ["deflate",     zlib.deflateSync(plain)],
+  ];
+  if (C._brotliDecoderPatched(process.versions.node)) cases.push(["brotli", zlib.brotliCompressSync(plain)]);
+  cases.forEach(function (c) {
+    var trailing = Buffer.concat([c[1], Buffer.from("PK\u0003\u0004trailing")]);
+    var loose = b.safeDecompress(trailing, { algorithm: c[0], maxOutputBytes: C.BYTES.kib(64) });
+    check("requireFullInput: " + c[0] + " ignores trailing bytes when the option is off", loose.equals(plain));
+    var captured = [];
+    var threw = null;
+    try {
+      b.safeDecompress(trailing, {
+        algorithm: c[0], maxOutputBytes: C.BYTES.kib(64), requireFullInput: true,
+        audit: { safeEmit: function (e) { captured.push(e); } },
+      });
+    } catch (e) { threw = e; }
+    check("requireFullInput: " + c[0] + " refuses trailing bytes",
+      threw && threw.code === "safe-decompress/trailing-input", threw ? threw.code : "no error");
+    check("requireFullInput: " + c[0] + " refusal is audited",
+      captured.length === 1 && captured[0].metadata.code === "safe-decompress/trailing-input");
+    var exact = b.safeDecompress(c[1], { algorithm: c[0], maxOutputBytes: C.BYTES.kib(64), requireFullInput: true });
+    check("requireFullInput: " + c[0] + " accepts a stream that ends at the last input byte", exact.equals(plain));
+  });
+  var gz = zlib.gzipSync(plain);
+  var twoMembers = b.safeDecompress(Buffer.concat([gz, gz]), {
+    algorithm: "gzip", maxOutputBytes: C.BYTES.kib(64), requireFullInput: true,
+  });
+  check("requireFullInput: two concatenated gzip members are read in full",
+    twoMembers.equals(Buffer.concat([plain, plain])));
+  var badFlag = null;
+  try { b.safeDecompress(gz, { algorithm: "gzip", maxOutputBytes: 1024, requireFullInput: "yes" }); }
+  catch (e) { badFlag = e; }
+  check("requireFullInput: a non-boolean value is refused",
+    badFlag && badFlag.code === "safe-decompress/bad-arg", badFlag ? badFlag.code : "no error");
+}
+
 async function run() {
   testSurface();
+  testRequireFullInput();
   testAlgorithmRequired();
   testAlgorithmAllowlistRefusesUnknown();
   testAlgorithmAllowlistRefusesPrototypeKeys();
   testGzipRoundTrip();
   testDeflateRawRoundTrip();
   testBrotliRoundTrip();
+  testBrotliRefusedOnUnfixedRuntime();
+  testUnsafeRuntimeRefusalIsAudited();
   testMaxOutputBytesRefusal();
   testMaxRatioRefusal();
   testMaxRatioZeroUnlimited();

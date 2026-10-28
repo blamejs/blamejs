@@ -16,6 +16,7 @@ var tls     = require("node:tls");
 var helpers = require("../helpers");
 var b       = helpers.b;
 var check   = helpers.check;
+var C       = require("../../lib/constants");
 
 function testPreferredGroupsSurface() {
   check("network.tls.preferredGroups.set is a function",
@@ -340,8 +341,8 @@ function testBuildOptionsCarriesCertCompression() {
           Array.isArray(out.certificateCompression) &&
           out.certificateCompression.join(",") === algs.join(","));
     check("buildOptions lets an operator narrow the algorithm list",
-          b.network.tls.buildOptions({ certificateCompression: ["brotli"] })
-            .certificateCompression.join(",") === "brotli");
+          b.network.tls.buildOptions({ certificateCompression: [algs[0]] })
+            .certificateCompression.join(",") === algs[0]);
     check("buildOptions lets an operator advertise none via []",
           b.network.tls.buildOptions({ certificateCompression: [] })
             .certificateCompression === undefined);
@@ -366,6 +367,135 @@ function testBuildOptionsCarriesCertCompression() {
   check("applyToContext keeps an operator's certificateCompression override",
         b.network.tls.applyToContext({ base: { certificateCompression: [] } })
           .certificateCompression.length === 0);
+}
+
+// On a Node release whose Brotli decoder predates the CVE-2026-111497 fix,
+// an explicit "brotli" in certificateCompression is refused by buildOptions
+// and by applyToContext alike, with tls/unsafe-cert-compression naming the
+// CVE. On a fixed release both pass it through.
+function testExplicitBrotliFollowsTheRuntime() {
+  var fixed = C._brotliDecoderPatched(process.versions.node);
+  var runtimeHasBrotli = tls.getCertificateCompressionAlgorithms === undefined ? false :
+    tls.getCertificateCompressionAlgorithms().indexOf("brotli") !== -1;
+  if (!runtimeHasBrotli) {
+    helpers.unavailable("explicit brotli certificate compression", "this Node build reports no brotli");
+    return;
+  }
+  var calls = [
+    ["buildOptions", function () {
+      return b.network.tls.buildOptions({ certificateCompression: ["zlib", "brotli"] }).certificateCompression;
+    }],
+    ["applyToContext (client)", function () {
+      return b.network.tls.applyToContext({ role: "client", base: { certificateCompression: ["zlib", "brotli"] } })
+        .certificateCompression;
+    }],
+    ["applyToContext (server)", function () {
+      return b.network.tls.applyToContext({ base: { certificateCompression: ["brotli"] } }).certificateCompression;
+    }],
+  ];
+  calls.forEach(function (c) {
+    var err = null; var out = null;
+    try { out = c[1](); } catch (e) { err = e; }
+    if (fixed) {
+      check(c[0] + " keeps an explicit brotli on Node " + process.versions.node,
+            err === null && Array.isArray(out) && out.indexOf("brotli") !== -1,
+            err ? err.code + " " + err.message : JSON.stringify(out));
+    } else {
+      check(c[0] + " refuses an explicit brotli on Node " + process.versions.node +
+            " with tls/unsafe-cert-compression naming CVE-2026-111497",
+            err !== null && err.code === "tls/unsafe-cert-compression" && /CVE-2026-111497/.test(err.message),
+            err ? err.code + " " + err.message : JSON.stringify(out));
+    }
+  });
+}
+
+// b.wsClient and b.router forward a caller's TLS options to node:tls. Each
+// refuses an explicit brotli on a runtime whose Brotli decoder is unfixed.
+// The test replaces the version predicate, so it runs on every Node release.
+async function testExplicitBrotliThroughCallers() {
+  var wsClient = require("../../lib/ws-client");
+  var chain = require("../helpers/compromised-keys").tlsChain("control");
+  var nodeTls = require("node:tls");
+  var origPatched = C._brotliDecoderPatched;
+  var origConnect = nodeTls.connect;
+  var offered = [];
+  var clients = [];
+  nodeTls.connect = function (o) {
+    if (o && Array.isArray(o.certificateCompression)) offered.push(o.certificateCompression.join(","));
+    var s = origConnect.call(nodeTls, { host: "127.0.0.1", port: 1 });
+    s.on("error", function () { /* nothing listens on port 1 */ });
+    return s;
+  };
+  function codeOf(fn) {
+    try { fn(); return null; } catch (e) { return (e && e.code) || String(e); }
+  }
+  function ws(opts) {
+    var c = wsClient.connect("wss://127.0.0.1:1/", Object.assign({
+      reconnect: false, audit: false, allowInternal: true, handshakeTimeoutMs: 500,
+    }, opts));
+    c.firstError = null;
+    c.on("error", function (e) { if (c.firstError === null) c.firstError = e; });
+    clients.push(c);
+    return c;
+  }
+  function listen(list) {
+    var server = null;
+    var code = codeOf(function () {
+      server = b.router.create().listen(0, function () {}, {
+        key: chain.key, cert: chain.cert, certificateCompression: list,
+      }, "127.0.0.1");
+    });
+    if (server) server.close();
+    return code;
+  }
+  try {
+    C._brotliDecoderPatched = function () { return false; };
+    var wsCode = codeOf(function () { ws({ tlsOpts: { certificateCompression: ["zlib", "brotli"] } }); });
+    check("wsClient.connect throws tls/unsafe-cert-compression for tlsOpts.certificateCompression " +
+          "listing brotli on an unfixed runtime", wsCode === "tls/unsafe-cert-compression", wsCode);
+    var forClient = ws({ tlsOptsFor: function () { return { certificateCompression: ["brotli"] }; } });
+    await helpers.waitUntil(function () { return forClient.firstError !== null; },
+      { timeoutMs: 5000, label: "explicit brotli: tlsOptsFor dial settles" });
+    check("wsClient reports tls/unsafe-cert-compression on error for a tlsOptsFor list naming brotli",
+          forClient.firstError.code === "tls/unsafe-cert-compression",
+          forClient.firstError.code + " " + forClient.firstError.message);
+    var zstdClient = ws({ tlsOpts: { certificateCompression: ["zstd"] } });
+    await helpers.waitUntil(function () { return zstdClient.firstError !== null; },
+      { timeoutMs: 5000, label: "explicit brotli: zstd control dial settles" });
+    check("wsClient control: tlsOpts.certificateCompression [\"zstd\"] reaches tls.connect",
+          offered.indexOf("zstd") !== -1, JSON.stringify(offered));
+    check("no wsClient dial offered brotli to tls.connect on an unfixed runtime",
+          offered.every(function (l) { return l.split(",").indexOf("brotli") === -1; }), JSON.stringify(offered));
+    var routerCode = listen(["brotli"]);
+    check("router listen throws tls/unsafe-cert-compression for tlsOptions.certificateCompression " +
+          "listing brotli on an unfixed runtime", routerCode === "tls/unsafe-cert-compression", routerCode);
+    var routerZstd = listen(["zstd"]);
+    check("router listen control: tlsOptions.certificateCompression [\"zstd\"] listens", routerZstd === null,
+          routerZstd);
+    var stripCode = codeOf(function () {
+      b.network.tls._stripUnreachableCertCompression({ certificateCompression: ["brotli"] }, {});
+    });
+    check("the shared merge helper refuses a merged list naming brotli on an unfixed runtime",
+          stripCode === "tls/unsafe-cert-compression", stripCode);
+
+    var runtimeHasBrotli = typeof nodeTls.getCertificateCompressionAlgorithms === "function" &&
+      nodeTls.getCertificateCompressionAlgorithms().indexOf("brotli") !== -1;
+    C._brotliDecoderPatched = function () { return true; };
+    if (runtimeHasBrotli) {
+      var fixedWs = codeOf(function () { ws({ tlsOpts: { certificateCompression: ["brotli"] } }); });
+      check("wsClient.connect keeps an explicit brotli on a fixed runtime", fixedWs === null, fixedWs);
+      var fixedRouter = listen(["brotli"]);
+      check("router listen keeps an explicit brotli on a fixed runtime", fixedRouter === null, fixedRouter);
+    } else {
+      helpers.unavailable("explicit brotli on a fixed runtime", "this Node build reports no brotli");
+    }
+  } finally {
+    C._brotliDecoderPatched = origPatched;
+    nodeTls.connect = origConnect;
+    clients.forEach(function (c) {
+      try { c._teardown(b.wsClient.CLOSE_NORMAL, "", false); } catch (_e) { /* best-effort */ }
+    });
+  }
 }
 
 async function testRedisClientAppliesThePosture() {
@@ -479,6 +609,8 @@ async function run() {
   await testCappedDialIsNotBlamedOnTls13();
   await testNarrowedGroupsReachEveryOutboundClient();
   testBuildOptionsCarriesCertCompression();
+  testExplicitBrotliFollowsTheRuntime();
+  await testExplicitBrotliThroughCallers();
   await testRedisClientAppliesThePosture();
   await testSyslogSinkAppliesThePosture();
   await testWsClientAppliesThePosture();

@@ -12,9 +12,11 @@ var asn1 = require("../../lib/asn1-der");
 // framework state happens to be initialized in the fork.
 function _resolvers(vaultMode, dbAtRest, auditMode) {
   return {
-    vault:        function () { return vaultMode; },
-    dbAtRest:     function () { return dbAtRest; },
-    auditSigning: function () { return auditMode; },
+    vault:          function () { return vaultMode; },
+    dbAtRest:       function () { return dbAtRest; },
+    auditSigning:   function () { return auditMode; },
+    nodeVersion:    function () { return "24.22.1"; },
+    opensslVersion: function () { return "3.5.9"; },
   };
 }
 
@@ -362,6 +364,230 @@ async function _testMinNodeMajor() {
   try { await b.security.assertProduction(_cleanBase({ minNodeMajor: false })); }
   catch (e) { optOut = e; }
   check("minNodeMajor:false : opts out, no throw", optOut === null);
+
+  var zero = await _assertErr(_cleanBase({ minNodeMajor: 0 }));
+  check("minNodeMajor:0 : accepted, every major satisfies it", zero === null, zero && zero.message);
+
+  var badValues = [["the string \"24\"", "24"], ["null", null], ["true", true], ["NaN", NaN],
+                   ["Infinity", Infinity], ["-1", -1], ["24.5", 24.5], ["an object", { major: 24 }]];
+  for (var bi = 0; bi < badValues.length; bi++) {
+    var badErr = await _assertErr(_cleanBase({ minNodeMajor: badValues[bi][1] }));
+    check("minNodeMajor given " + badValues[bi][0] + " raises security-assert/bad-opt",
+          badErr instanceof b.security.SecurityAssertError &&
+          badErr.code === "security-assert/bad-opt" && /minNodeMajor/.test(badErr.message),
+          badErr && (badErr.code + " " + badErr.message));
+  }
+
+  var badRuns = 0;
+  var badResolvers = _resolvers("wrapped", "encrypted", "wrapped");
+  badResolvers.nodeVersion = function () { badRuns += 1; return "24.22.1"; };
+  await _assertErr(_cleanBase({ minNodeMajor: "24", resolvers: badResolvers }));
+  check("minNodeMajor given a bad value throws before any runtime version is read",
+        badRuns === 0, "nodeVersion resolver ran " + badRuns + " time(s)");
+
+  await _testMinNodeMajorReadsTheResolver();
+}
+
+async function _testMinNodeMajorReadsTheResolver() {
+  function _nodeOnly(version, overrides) {
+    var r = _resolvers("wrapped", "encrypted", "wrapped");
+    r.nodeVersion = typeof version === "function" ? version : function () { return version; };
+    var o = { resolvers: r, runtimePatchFloor: false };
+    if (overrides) Object.keys(overrides).forEach(function (k) { o[k] = overrides[k]; });
+    return _cleanBase(o);
+  }
+
+  var old = await _assertErr(_nodeOnly("22.0.0"));
+  var oldMsg = _failureMessage(old, "security/node-version");
+  check("nodeVersion resolver 22.0.0 under the default floor 24: fails security/node-version " +
+        "and the message names 22.0.0", oldMsg !== null && /^Node 22\.0\.0 /.test(oldMsg),
+        old && old.message);
+
+  var future = await _assertErr(_nodeOnly("30.0.0", { minNodeMajor: 28, runtimePatchFloor: true }));
+  check("nodeVersion resolver 30.0.0 with minNodeMajor 28: both Node checks pass",
+        future === null, future && future.message);
+
+  var agree = await _assertErr(_withVersions("22.0.0", "3.5.9"));
+  check("nodeVersion resolver 22.0.0: minNodeMajor and runtimePatchFloor judge the same version",
+        _hasCode(agree, "security/node-version") && _hasCode(agree, "security/node-patch-level") &&
+        /^Node 22\.0\.0 /.test(_failureMessage(agree, "security/node-version") || ""),
+        agree && agree.message);
+
+  var vPrefix = await _assertErr(_nodeOnly("v24.22.1"));
+  check("nodeVersion resolver \"v24.22.1\" parses and passes the default floor",
+        vPrefix === null, vPrefix && vPrefix.message);
+
+  var threw = await _assertErr(_nodeOnly(function () { throw new Error("major-boom"); }));
+  var threwMsg = _failureMessage(threw, "security/node-version");
+  check("a throwing nodeVersion resolver fails security/node-version and carries the error",
+        threwMsg !== null && /could not be read/.test(threwMsg) && /major-boom/.test(threwMsg),
+        threw && threw.message);
+
+  var nonString = await _assertErr(_nodeOnly(24));
+  var nonStringMsg = _failureMessage(nonString, "security/node-version");
+  check("a non-string nodeVersion fails security/node-version and names what was returned",
+        nonStringMsg !== null && /could not be read/.test(nonStringMsg) && /number/.test(nonStringMsg),
+        nonString && nonString.message);
+
+  var garbage = await _assertErr(_nodeOnly("garbage-node"));
+  var garbageMsg = _failureMessage(garbage, "security/node-version");
+  check("an unparsable nodeVersion fails security/node-version and quotes it",
+        garbageMsg !== null && /could not be parsed/.test(garbageMsg) && /"garbage-node"/.test(garbageMsg),
+        garbage && garbage.message);
+
+  var skipped = await _assertErr(_nodeOnly("garbage-node", { minNodeMajor: false }));
+  check("minNodeMajor:false and runtimePatchFloor:false: an unparsable nodeVersion is not read",
+        skipped === null, skipped && skipped.message);
+}
+
+// ---- runtime patch floor: Node (CVE-2026-111497) + OpenSSL (CVE-2026-35189) ----
+function _withVersions(nodeVersion, opensslVersion, overrides) {
+  var r = _resolvers("wrapped", "encrypted", "wrapped");
+  r.nodeVersion    = function () { return nodeVersion; };
+  r.opensslVersion = function () { return opensslVersion; };
+  var o = { resolvers: r };
+  if (overrides) Object.keys(overrides).forEach(function (k) { o[k] = overrides[k]; });
+  return _cleanBase(o);
+}
+
+async function _assertErr(opts) {
+  try { await b.security.assertProduction(opts); return null; }
+  catch (e) { return e; }
+}
+
+function _failureMessage(err, code) {
+  if (!err || !Array.isArray(err.failures)) return null;
+  var hit = err.failures.filter(function (f) { return f.code === code; })[0];
+  return hit ? hit.message : null;
+}
+
+async function _testRuntimePatchFloorDiagnostics() {
+  var throwing = _resolvers("wrapped", "encrypted", "wrapped");
+  throwing.nodeVersion = function () { throw new Error("node-boom"); };
+  throwing.opensslVersion = function () { throw new Error("ssl-boom"); };
+  var e1 = await _assertErr(_cleanBase({ resolvers: throwing }));
+  var nodeMsg = _failureMessage(e1, "security/node-patch-level");
+  var sslMsg = _failureMessage(e1, "security/openssl-version");
+  check("throwing nodeVersion resolver: the message says the version could not be read " +
+        "and carries the resolver error",
+        nodeMsg !== null && /could not be read/.test(nodeMsg) && /node-boom/.test(nodeMsg) &&
+        !/null/.test(nodeMsg) && !/predates/.test(nodeMsg), nodeMsg);
+  check("throwing opensslVersion resolver: the message says the version could not be read " +
+        "and carries the resolver error",
+        sslMsg !== null && /could not be read/.test(sslMsg) && /ssl-boom/.test(sslMsg) &&
+        !/null/.test(sslMsg) && !/predates/.test(sslMsg), sslMsg);
+
+  var e2 = await _assertErr(_withVersions(24, undefined));
+  var m2n = _failureMessage(e2, "security/node-patch-level");
+  var m2s = _failureMessage(e2, "security/openssl-version");
+  check("non-string nodeVersion: the message names what the resolver returned",
+        m2n !== null && /could not be read/.test(m2n) && /number/.test(m2n) &&
+        !/predates/.test(m2n), m2n);
+  check("undefined opensslVersion: the message names what the resolver returned",
+        m2s !== null && /could not be read/.test(m2s) && /undefined/.test(m2s) &&
+        !/predates/.test(m2s), m2s);
+
+  var e3 = await _assertErr(_withVersions("garbage-node", "garbage-ssl"));
+  var m3n = _failureMessage(e3, "security/node-patch-level");
+  var m3s = _failureMessage(e3, "security/openssl-version");
+  check("unparsable nodeVersion: the message says it could not be parsed and quotes it",
+        m3n !== null && /could not be parsed/.test(m3n) && /"garbage-node"/.test(m3n) &&
+        !/predates/.test(m3n), m3n);
+  check("unparsable opensslVersion: the message says it could not be parsed and quotes it",
+        m3s !== null && /could not be parsed/.test(m3s) && /"garbage-ssl"/.test(m3s) &&
+        !/predates/.test(m3s), m3s);
+
+  var ok = await _assertErr(_withVersions("24.22.1", "OpenSSL 3.5.9"));
+  check("opensslVersion \"OpenSSL 3.5.9\" parses and passes", ok === null, ok && ok.message);
+  var e4 = await _assertErr(_withVersions("24.22.1", "OpenSSL 3.5.8"));
+  var m4 = _failureMessage(e4, "security/openssl-version");
+  check("opensslVersion \"OpenSSL 3.5.8\" fails and the message reads \"OpenSSL 3.5.8\" once",
+        m4 !== null && /^OpenSSL 3\.5\.8 predates/.test(m4) && !/OpenSSL OpenSSL/.test(m4), m4);
+
+  var e5 = await _assertErr(_withVersions("24.22.1-pre", "3.5.9-dev"));
+  check("prerelease builds at the floor fail both checks",
+        _hasCode(e5, "security/node-patch-level") && _hasCode(e5, "security/openssl-version"),
+        e5 && e5.message);
+
+  var e6 = await _assertErr(_withVersions("24.21.0", "3.5.9"));
+  var m6 = _failureMessage(e6, "security/node-patch-level");
+  check("node-patch-level advice names only 24.22.1 and 26.12.1 as upgrade targets",
+        m6 !== null && /24\.22\.1/.test(m6) && /26\.12\.1/.test(m6) && !/22\.23\.4/.test(m6), m6);
+  check("node-patch-level message reads \"Node 24.21.0\"", m6 !== null && /^Node 24\.21\.0 /.test(m6), m6);
+}
+
+async function _testRuntimePatchFloor() {
+  check("DEFAULT_RESOLVERS.nodeVersion reads process.versions.node",
+        typeof b.security.DEFAULT_RESOLVERS.nodeVersion === "function" &&
+        b.security.DEFAULT_RESOLVERS.nodeVersion() === process.versions.node);
+  check("DEFAULT_RESOLVERS.opensslVersion reads process.versions.openssl",
+        typeof b.security.DEFAULT_RESOLVERS.opensslVersion === "function" &&
+        b.security.DEFAULT_RESOLVERS.opensslVersion() === process.versions.openssl);
+
+  var unfixedNode = ["24.21.0", "24.22.0", "26.12.0", "22.23.3", "25.1.0", "garbage"];
+  for (var i = 0; i < unfixedNode.length; i++) {
+    var e1 = await _assertErr(_withVersions(unfixedNode[i], "3.5.9"));
+    check("Node " + unfixedNode[i] + ": fails security/node-patch-level",
+          _hasCode(e1, "security/node-patch-level"), e1 && e1.message);
+    check("Node " + unfixedNode[i] + ": the OpenSSL check passes on 3.5.9",
+          !_hasCode(e1, "security/openssl-version"));
+  }
+  var e1m = await _assertErr(_withVersions("24.21.0", "3.5.9"));
+  check("node-patch-level message names the CVE and the fixed release",
+        e1m && /CVE-2026-111497/.test(e1m.message) && /24\.22\.1/.test(e1m.message));
+
+  var unfixedSsl = ["3.5.8", "3.6.4", "4.0.2", "3.0.15", "garbage"];
+  for (var j = 0; j < unfixedSsl.length; j++) {
+    var e2 = await _assertErr(_withVersions("24.22.1", unfixedSsl[j]));
+    check("OpenSSL " + unfixedSsl[j] + ": fails security/openssl-version",
+          _hasCode(e2, "security/openssl-version"), e2 && e2.message);
+    check("OpenSSL " + unfixedSsl[j] + ": the Node check passes on 24.22.1",
+          !_hasCode(e2, "security/node-patch-level"));
+  }
+  var e2m = await _assertErr(_withVersions("24.22.1", "3.5.8"));
+  check("openssl-version message names the CVE and the fixed release",
+        e2m && /CVE-2026-35189/.test(e2m.message) && /3\.5\.9/.test(e2m.message));
+
+  var fixedPairs = [["24.22.1", "3.5.9"], ["26.12.1", "3.5.9"], ["22.23.4", "3.6.5"],
+    ["27.0.0", "4.0.3"], ["24.22.1", "3.5.9+quic"]];
+  for (var k = 0; k < fixedPairs.length; k++) {
+    var e3 = await _assertErr(_withVersions(fixedPairs[k][0], fixedPairs[k][1], { minNodeMajor: 22 }));
+    check("Node " + fixedPairs[k][0] + " / OpenSSL " + fixedPairs[k][1] + ": passes",
+          e3 === null, e3 && e3.message);
+  }
+
+  var both = await _assertErr(_withVersions("24.21.0", "3.5.8"));
+  check("both below the floor: both failures are reported in one call",
+        _hasCode(both, "security/node-patch-level") && _hasCode(both, "security/openssl-version"));
+
+  var throwing = _resolvers("wrapped", "encrypted", "wrapped");
+  throwing.nodeVersion = function () { throw new Error("boom"); };
+  throwing.opensslVersion = function () { throw new Error("boom"); };
+  var e4 = await _assertErr(_cleanBase({ resolvers: throwing }));
+  check("a throwing version resolver fails closed",
+        _hasCode(e4, "security/node-patch-level") && _hasCode(e4, "security/openssl-version"));
+
+  await _testRuntimePatchFloorDiagnostics();
+
+  var optOut = await _assertErr(_withVersions("24.21.0", "3.5.8", { runtimePatchFloor: false }));
+  check("runtimePatchFloor:false skips both checks", optOut === null, optOut && optOut.message);
+
+  var badOpt = await _assertErr(_withVersions("24.22.1", "3.5.9", { runtimePatchFloor: "no" }));
+  check("runtimePatchFloor given a non-boolean raises security-assert/bad-opt",
+        badOpt && badOpt.code === "security-assert/bad-opt");
+
+  var liveResolvers = _resolvers("wrapped", "encrypted", "wrapped");
+  delete liveResolvers.nodeVersion;
+  delete liveResolvers.opensslVersion;
+  var live = await _assertErr(_cleanBase({ resolvers: liveResolvers }));
+  var liveFixed = b.constants._brotliDecoderPatched(process.versions.node) &&
+                  b.constants._opensslCrldpPatched(process.versions.openssl);
+  check("the live runtime (" + process.versions.node + " / OpenSSL " +
+        process.versions.openssl + ") is judged by the same tables",
+        liveFixed ? live === null
+                  : (_hasCode(live, "security/node-patch-level") ||
+                     _hasCode(live, "security/openssl-version")),
+        live && live.message);
 }
 
 // ---- minTlsVersion vocabulary + rank compare ----
@@ -761,6 +987,7 @@ async function run() {
   await _testRequireMiddleware();
   await _testCorsAllowAll();
   await _testMinNodeMajor();
+  await _testRuntimePatchFloor();
   await _testMinTlsVersion();
   await _testRequireEnv();
   await _testForbidEnv();
