@@ -355,6 +355,47 @@ async function testUncaughtHookGetsTheOriginalError() {
         parts[3] === "FORGED-WRAPPED", marker);
 }
 
+async function testUncaughtLinesRedactTokenShapedValues() {
+  var cp = require("node:child_process");
+  var nodePath = require("node:path");
+  var repoRoot = nodePath.resolve(__dirname, "..", "..");
+  var token = "3f9a1c0e7b2d4f6a8c1e3b5d7f9a0c2e4b6d8f1a3c5e7b9d0f2a4c6e8b1d3f5a";
+  var script =
+    "var appShutdown = require(" +
+      JSON.stringify(nodePath.join(repoRoot, "lib", "app-shutdown.js")) + ");" +
+    "var token = " + JSON.stringify(token) + ";" +
+    "var calls = 0;" +
+    "appShutdown.create({ phases: [], installSignalHandlers: true," +
+    "  onUncaught: function () { calls += 1; throw new Error('hook ENOENT /data/uploads/' + token + '/1.bin'); } });" +
+    "process.emit('unhandledRejection', new Error(\"ENOENT: open '/data/uploads/\" + token + \"/1.bin'\"));" +
+    "var start = Date.now();" +
+    "(function wait() {" +
+    "  if (calls >= 1 || Date.now() - start > 4000) {" +
+    "    setTimeout(function () { process.stdout.write('DONE\\n'); process.exit(0); }, 50);" +
+    "  } else { setTimeout(wait, 10); }" +
+    "})();";
+
+  var out = "";
+  var done = false;
+  var child = cp.spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "pipe"] });
+  child.stdout.on("data", function (d) { out += d.toString(); });
+  child.stderr.on("data", function (d) { out += d.toString(); });
+  child.on("exit", function () { done = true; });
+  await helpers.waitUntil(function () { return done; }, {
+    timeoutMs: 20000,
+    label: "app-shutdown: child writing its uncaught lines",
+  });
+  var lines = out.split("\n");
+  var uncaught = lines.filter(function (l) { return l.indexOf("uncaught unhandledRejection") !== -1; });
+  var hookFailed = lines.filter(function (l) { return l.indexOf("onUncaught hook failed") !== -1; });
+  check("the uncaught line is written", uncaught.length === 1, out.slice(0, 400));
+  check("the onUncaught failure line is written", hookFailed.length === 1, out.slice(0, 400));
+  check("no line carries the token", out.indexOf(token) === -1, out.slice(0, 600));
+  check("the uncaught line keeps the rest of the message",
+    uncaught.every(function (l) { return l.indexOf("/data/uploads/[redacted]/1.bin") !== -1; }),
+    uncaught.join(" ~~ ").slice(0, 400));
+}
+
 async function testAppShutdownConfigValidation() {
   var threw = null;
   try {
@@ -678,12 +719,14 @@ async function run() {
   await testAppShutdownPidLock();
   await testPidLockAdoptsSelfPidWithoutUnlink();
   await testUncaughtHookGetsTheOriginalError();
+  await testUncaughtLinesRedactTokenShapedValues();
 }
 
 module.exports = {
   run: run,
   _tests: {
-    testPidLockAdoptsSelfPidWithoutUnlink: testPidLockAdoptsSelfPidWithoutUnlink,
+    testPidLockAdoptsSelfPidWithoutUnlink:    testPidLockAdoptsSelfPidWithoutUnlink,
+    testUncaughtLinesRedactTokenShapedValues: testUncaughtLinesRedactTokenShapedValues,
   },
 };
 

@@ -43,7 +43,7 @@ async function testRecursiveWatchOverAnUnreadableDirectory() {
         "mode=" + w.mode + " notices=" + JSON.stringify(notices));
     }
     if (w) {
-      await helpers.passiveObserve(250, "watcher unreadable: initial snapshot settles");
+      await w.ready;
       fs.writeFileSync(path.join(dir, "file.txt"), "two, a longer body");
       await helpers.waitUntil(function () { return changes.indexOf("file.txt") !== -1; },
         { timeoutMs: 5000, label: "watcher unreadable: change to a readable file is reported" });
@@ -56,7 +56,354 @@ async function testRecursiveWatchOverAnUnreadableDirectory() {
   }
 }
 
+// The poll backend's walk reads a tree that can hold tens of thousands of
+// entries on a filesystem where each stat is slow. The first walk used to run
+// inside create() and every walk read one whole directory in a single turn, so
+// the longest event-loop turn grew with the tree. Measured as growth of the
+// longest turn between a small and a large directory, not as a time budget.
+async function testPollWalkHoldsNoTurnThatGrowsWithTheTree() {
+  var SMALL = 500;
+  var LARGE = 8000;
+  var base = fs.mkdtempSync(path.join(os.tmpdir(), "watcher-stall-"));
+  function makeTree(n) {
+    var root = path.join(base, "n" + n);
+    fs.mkdirSync(path.join(root, "big"), { recursive: true });
+    fs.mkdirSync(path.join(root, "side"));
+    fs.writeFileSync(path.join(root, "side", "one.txt"), "x");
+    for (var i = 0; i < n; i += 1) fs.writeFileSync(path.join(root, "big", "f" + i), "x");
+    return root;
+  }
+  var watchers = {};
+  try {
+    var roots = {};
+    roots[SMALL] = makeTree(SMALL);
+    roots[LARGE] = makeTree(LARGE);
+    var hourMs = b.constants.TIME.hours(1);
+
+    var initial = await helpers.stallGrowth(async function (n) {
+      var w = b.watcher.create({ root: roots[n], mode: "poll", audit: false, pollIntervalMs: hourMs });
+      try { await w.ready; } finally { w.stop(); }
+    }, { small: SMALL, large: LARGE, floorMs: 10 });
+    check("watcher poll: the first walk holds no event-loop turn that grows with the tree",
+      initial.superlinear === false, "stall ratio " + initial.ratio + " for " + (LARGE / SMALL) + "x the entries");
+
+    watchers[SMALL] = b.watcher.create({ root: roots[SMALL], mode: "poll", audit: false, pollIntervalMs: hourMs });
+    watchers[LARGE] = b.watcher.create({ root: roots[LARGE], mode: "poll", audit: false, pollIntervalMs: hourMs });
+    await watchers[SMALL].ready;
+    await watchers[LARGE].ready;
+    var tick = await helpers.stallGrowth(async function (n) {
+      await watchers[n]._flushForTest();
+    }, { small: SMALL, large: LARGE, floorMs: 10 });
+    check("watcher poll: a later walk holds no event-loop turn that grows with one directory",
+      tick.superlinear === false, "stall ratio " + tick.ratio + " for " + (LARGE / SMALL) + "x the entries");
+  } finally {
+    Object.keys(watchers).forEach(function (k) { try { watchers[k].stop(); } catch (_e) { /* best-effort */ } });
+    try { fs.rmSync(base, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
+}
+
+// After a later poll walk, the watcher compares the new snapshot with the
+// previous one. Both snapshots hold up to pollMaxFiles entries, so the
+// comparison yields between chunks and its longest turn stays flat as the
+// snapshots grow. Measured on in-memory snapshots, where the comparison is the
+// only work.
+async function testSnapshotComparisonHoldsNoTurnThatGrowsWithTheTree() {
+  var compare = b.watcher._comparePollSnapshotsForTest;
+  check("watcher poll: the snapshot comparison is reachable for measurement", typeof compare === "function");
+  if (typeof compare !== "function") return;
+  var SMALL = 20000;
+  var LARGE = 320000;
+  function snapshotPair(n) {
+    var prev = new Map();
+    var next = new Map();
+    for (var i = 0; i < n; i += 1) {
+      var info = { type: "file", size: 1, mtimeMs: 1 };
+      prev.set("d/f" + i, info);
+      next.set("d/f" + i, info);
+    }
+    prev.set("gone.txt", { type: "file", size: 1, mtimeMs: 1 });
+    next.set("new.txt", { type: "file", size: 1, mtimeMs: 1 });
+    next.set("d/f0", { type: "file", size: 2, mtimeMs: 2 });
+    return { prev: prev, next: next };
+  }
+  var pairs = {};
+  pairs[SMALL] = snapshotPair(SMALL);
+  pairs[LARGE] = snapshotPair(LARGE);
+
+  var seen = [];
+  var finished = await compare(pairs[SMALL].prev, pairs[SMALL].next,
+    function (p) { seen.push(p); }, function () { return false; });
+  check("watcher poll: the comparison reports changed, added and removed paths in snapshot order",
+    finished !== false && JSON.stringify(seen) === JSON.stringify(["d/f0", "new.txt", "gone.txt"]),
+    JSON.stringify(seen));
+
+  var stopAfter = 0;
+  var stoppedSeen = [];
+  var stoppedFinished = await compare(pairs[LARGE].prev, pairs[LARGE].next,
+    function (p) { stoppedSeen.push(p); }, function () { stopAfter += 1; return stopAfter > 1; });
+  check("watcher poll: the comparison stops early once the watcher has stopped",
+    stoppedFinished === false && stoppedSeen.indexOf("gone.txt") === -1,
+    "finished=" + stoppedFinished + " seen=" + JSON.stringify(stoppedSeen));
+
+  var growth = await helpers.stallGrowth(async function (n) {
+    await compare(pairs[n].prev, pairs[n].next, function () {}, function () { return false; });
+  }, { small: SMALL, large: LARGE, floorMs: 10 });
+  check("watcher poll: comparing snapshots holds no event-loop turn that grows with the tree",
+    growth.superlinear === false, "stall ratio " + growth.ratio + " for " + (LARGE / SMALL) + "x the entries");
+}
+
+// A later poll walk can find every file in the tree changed. The changes are
+// reported in chunks across event-loop turns, so the number of onChange calls
+// in one turn does not grow with the number of changed files. Counted per turn
+// between setImmediate ticks rather than timed.
+async function testChangeDispatchHoldsNoTurnThatGrowsWithTheChangeCount() {
+  var COUNT = 600;
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "watcher-dispatch-"));
+  var w = null;
+  var ticking = true;
+  try {
+    for (var i = 0; i < COUNT; i += 1) fs.writeFileSync(path.join(dir, "f" + i), "x");
+    var reported = [];
+    var thisTurn = 0;
+    var mostInOneTurn = 0;
+    w = b.watcher.create({ root: dir, mode: "poll", pollIntervalMs: 200, debounceMs: 1, audit: false,
+      onChange: function (ev) {
+        reported.push(ev.relativePath);
+        thisTurn += 1;
+        if (thisTurn > mostInOneTurn) mostInOneTurn = thisTurn;
+      } });
+    await w.ready;
+    for (var j = 0; j < COUNT; j += 1) fs.writeFileSync(path.join(dir, "f" + j), "a longer body");
+    var tick = function () { thisTurn = 0; if (ticking) setImmediate(tick); };
+    setImmediate(tick);
+    await helpers.waitUntil(function () { return reported.length >= COUNT; },
+      { timeoutMs: 15000, label: "watcher dispatch: every changed file is reported" });
+    var unique = new Set(reported);
+    check("watcher poll: every changed file is reported once",
+      reported.length === COUNT && unique.size === COUNT, "reported " + reported.length + ", unique " + unique.size);
+    check("watcher poll: no event-loop turn delivers a number of changes that grows with the change count",
+      mostInOneTurn <= COUNT / 4, mostInOneTurn + " of " + COUNT + " changes delivered in one turn");
+  } finally {
+    ticking = false;
+    if (w) { try { w.stop(); } catch (_e) { /* best-effort */ } }
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
+}
+
+// create() answers before the first poll walk completes, so the handle carries
+// a `ready` promise that settles once the baseline snapshot is taken.
+async function testReadyContract() {
+  var hourMs = b.constants.TIME.hours(1);
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "watcher-ready-"));
+  try {
+    fs.writeFileSync(path.join(dir, "pre.txt"), "old");
+    var hits = [];
+    var w = b.watcher.create({ root: dir, mode: "poll", pollIntervalMs: hourMs, debounceMs: 5,
+      audit: false, onChange: function (e) { hits.push(e.relativePath); } });
+    check("watcher poll: the handle carries a ready promise",
+      w.ready !== null && typeof w.ready === "object" && typeof w.ready.then === "function");
+    if (w.ready && typeof w.ready.then === "function") {
+      await w.ready;
+      await w._flushForTest();
+      check("watcher poll: a file present before ready does not fire", hits.indexOf("pre.txt") === -1);
+      fs.writeFileSync(path.join(dir, "post.txt"), "new");
+      await helpers.waitUntil(async function () {
+        await w._flushForTest();
+        return hits.indexOf("post.txt") !== -1;
+      }, { label: "watcher ready: post.txt after the baseline" });
+      check("watcher poll: a file created after ready fires", hits.indexOf("post.txt") !== -1);
+    }
+    w.stop();
+
+    var fw = b.watcher.create({ root: dir, mode: "fs", audit: false });
+    var fsReady = false;
+    if (fw.ready && typeof fw.ready.then === "function") {
+      await fw.ready;
+      fsReady = true;
+    }
+    check("watcher fs: the ready promise resolves", fsReady === true);
+    fw.stop();
+
+    var sw = b.watcher.create({ root: dir, mode: "poll", pollIntervalMs: hourMs, audit: false });
+    sw.stop();
+    var settled = null;
+    if (sw.ready && typeof sw.ready.then === "function") {
+      sw.ready.then(function () { settled = "resolved"; }, function () { settled = "rejected"; });
+      await helpers.waitUntil(function () { return settled !== null; },
+        { label: "watcher ready: stop() before the first walk settles ready" });
+    }
+    check("watcher poll: stop() before the first walk completes resolves ready", settled === "resolved");
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
+
+  var capDir = fs.mkdtempSync(path.join(os.tmpdir(), "watcher-cap-"));
+  try {
+    fs.writeFileSync(path.join(capDir, "a.txt"), "a");
+    fs.writeFileSync(path.join(capDir, "b.txt"), "b");
+    var capErrs = [];
+    var capHits = [];
+    var capW = null;
+    var threw = null;
+    try {
+      capW = b.watcher.create({ root: capDir, mode: "poll", pollIntervalMs: hourMs, pollMaxFiles: 1,
+        debounceMs: 5, audit: false,
+        onChange: function (e) { capHits.push(e.relativePath); },
+        onError:  function (e) { capErrs.push(e); } });
+    } catch (e) { threw = e; }
+    check("watcher poll: an initial walk over pollMaxFiles does not throw from create()",
+      threw === null, threw && (threw.code + " " + threw.message));
+    if (capW && capW.ready && typeof capW.ready.then === "function") {
+      var rejected = null;
+      try { await capW.ready; } catch (e) { rejected = e; }
+      check("watcher poll: ready rejects with watcher/start-failed when the first walk overflows",
+        rejected && rejected.code === "watcher/start-failed" &&
+        rejected.cause && rejected.cause.code === "watcher/poll-overflow",
+        rejected && (rejected.code + " " + rejected.message));
+      check("watcher poll: onError receives the same watcher/start-failed",
+        capErrs.some(function (e) { return e === rejected; }));
+      fs.writeFileSync(path.join(capDir, "c.txt"), "c");
+      await capW._flushForTest();
+      check("watcher poll: a watcher whose first walk failed reports nothing afterwards",
+        capHits.length === 0, JSON.stringify(capHits));
+    } else {
+      check("watcher poll: ready rejects with watcher/start-failed when the first walk overflows", false);
+    }
+    if (capW) capW.stop();
+  } finally {
+    try { fs.rmSync(capDir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
+}
+
+// stop() can run while a poll walk is waiting on the root's opendir. When that
+// opendir then fails, the watcher has already been stopped: `ready` resolves
+// and onError receives nothing. The root's opendir is held open by a stub so
+// stop() lands inside it on every platform, as an unlistable root does on Linux.
+async function testStopDuringRootOpendirIsQuiet() {
+  var hourMs = b.constants.TIME.hours(1);
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "watcher-stop-opendir-"));
+  var realOpendir = fs.promises.opendir;
+  var held = [];
+  var rootPath = null;
+  function holdRootOpendir() {
+    fs.promises.opendir = function (p, o) {
+      if (path.resolve(String(p)) !== rootPath) return realOpendir.call(fs.promises, p, o);
+      return new Promise(function (_resolve, reject) { held.push(reject); });
+    };
+  }
+  function failHeld() {
+    var e = new Error("EACCES: permission denied, opendir");
+    e.code = "EACCES";
+    held.splice(0).forEach(function (reject) { reject(e); });
+  }
+  try {
+    fs.writeFileSync(path.join(dir, "a.txt"), "a");
+    rootPath = fs.realpathSync.native(dir);
+
+    holdRootOpendir();
+    var firstErrs = [];
+    var fw = b.watcher.create({ root: dir, mode: "poll", pollIntervalMs: hourMs, audit: false,
+      onError: function (e) { firstErrs.push(e && e.code); } });
+    await helpers.waitUntil(function () { return held.length > 0; },
+      { label: "watcher stop-in-opendir: the first walk reaches the root opendir" });
+    fw.stop();
+    failHeld();
+    var firstSettled = null;
+    fw.ready.then(function () { firstSettled = "resolved"; },
+      function (e) { firstSettled = "rejected:" + (e && e.code); });
+    await helpers.waitUntil(function () { return firstSettled !== null; },
+      { label: "watcher stop-in-opendir: ready settles" });
+    check("watcher poll: stop() during the first walk's root opendir resolves ready when the opendir fails",
+      firstSettled === "resolved", firstSettled);
+    check("watcher poll: stop() during the first walk's root opendir suppresses onError",
+      firstErrs.length === 0, JSON.stringify(firstErrs));
+    fs.promises.opendir = realOpendir;
+
+    var laterErrs = [];
+    var lw = b.watcher.create({ root: dir, mode: "poll", pollIntervalMs: hourMs, audit: false,
+      onError: function (e) { laterErrs.push(e && e.code); } });
+    await lw.ready;
+    holdRootOpendir();
+    var flushed = false;
+    lw._flushForTest().then(function () { flushed = true; });
+    await helpers.waitUntil(function () { return held.length > 0; },
+      { label: "watcher stop-in-opendir: a later walk reaches the root opendir" });
+    lw.stop();
+    failHeld();
+    await helpers.waitUntil(function () { return flushed; },
+      { label: "watcher stop-in-opendir: the later walk settles" });
+    check("watcher poll: stop() during a later walk's root opendir suppresses onError",
+      laterErrs.length === 0, JSON.stringify(laterErrs));
+  } finally {
+    fs.promises.opendir = realOpendir;
+    failHeld();
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
+}
+
+// stop() settles `ready` at once, even while the first walk is waiting on a
+// filesystem call that never returns. A start failure still rejects `ready`
+// when onError itself calls stop() during that report.
+async function testStopSettlesReadyWhileTheFirstWalkHangs() {
+  var hourMs = b.constants.TIME.hours(1);
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "watcher-stop-hang-"));
+  var realOpendir = fs.promises.opendir;
+  var reached = 0;
+  try {
+    fs.writeFileSync(path.join(dir, "a.txt"), "a");
+    var rootPath = fs.realpathSync.native(dir);
+    fs.promises.opendir = function (p, o) {
+      if (path.resolve(String(p)) !== rootPath) return realOpendir.call(fs.promises, p, o);
+      reached += 1;
+      return new Promise(function () {});
+    };
+    var errs = [];
+    var hw = b.watcher.create({ root: dir, mode: "poll", pollIntervalMs: hourMs, audit: false,
+      onError: function (e) { errs.push(e && e.code); } });
+    await helpers.waitUntil(function () { return reached > 0; },
+      { label: "watcher stop-hang: the first walk reaches the root opendir" });
+    var settled = null;
+    hw.ready.then(function () { settled = "resolved"; },
+      function (e) { settled = "rejected:" + (e && e.code); });
+    hw.stop();
+    await helpers.waitUntil(function () { return settled !== null; },
+      { timeoutMs: 1000, label: "watcher stop-hang: ready settles after stop()" }).catch(function () {});
+    check("watcher poll: stop() resolves ready while the first walk's opendir never returns",
+      settled === "resolved", String(settled));
+    check("watcher poll: stop() while the first walk hangs reports nothing to onError",
+      errs.length === 0, JSON.stringify(errs));
+  } finally {
+    fs.promises.opendir = realOpendir;
+  }
+
+  try {
+    fs.writeFileSync(path.join(dir, "b.txt"), "b");
+    var capW = null;
+    var capErrs = [];
+    capW = b.watcher.create({ root: dir, mode: "poll", pollIntervalMs: hourMs, pollMaxFiles: 1,
+      audit: false,
+      onError: function (e) { capErrs.push(e && e.code); if (capW) capW.stop(); } });
+    var outcome = null;
+    capW.ready.then(function () { outcome = "resolved"; },
+      function (e) { outcome = "rejected:" + (e && e.code); });
+    await helpers.waitUntil(function () { return outcome !== null; },
+      { label: "watcher stop-hang: an overflowing first walk settles ready" });
+    check("watcher poll: a first-walk failure rejects ready even when onError calls stop()",
+      outcome === "rejected:watcher/start-failed", String(outcome));
+    check("watcher poll: onError receives the first-walk failure once",
+      capErrs.length === 1 && capErrs[0] === "watcher/start-failed", JSON.stringify(capErrs));
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  }
+}
+
 async function run() {
+  await testPollWalkHoldsNoTurnThatGrowsWithTheTree();
+  await testSnapshotComparisonHoldsNoTurnThatGrowsWithTheTree();
+  await testChangeDispatchHoldsNoTurnThatGrowsWithTheChangeCount();
+  await testReadyContract();
+  await testStopDuringRootOpendirIsQuiet();
+  await testStopSettlesReadyWhileTheFirstWalkHangs();
   await testRecursiveWatchOverAnUnreadableDirectory();
   // ---- _validateOpts: bad-shape inputs surface as WatcherError ----
   var threw;
@@ -258,12 +605,13 @@ async function run() {
       audit:          false,
     });
     check("watcher.create poll: returns mode='poll'",   pw.mode === "poll");
+    await pw.ready;
 
     fs.writeFileSync(path.join(pollDir, "p1.txt"), "hello");
     fs.mkdirSync(path.join(pollDir, "sub"));
     fs.writeFileSync(path.join(pollDir, "sub", "p2.txt"), "world");
-    await helpers.waitUntil(function () {
-      pw._flushForTest();
+    await helpers.waitUntil(async function () {
+      await pw._flushForTest();
       return pollHits.indexOf("p1.txt") !== -1 && pollHits.indexOf("sub/p2.txt") !== -1;
     }, { label: "watcher poll: create events delivered" });
     check("watcher poll: detects file create",          pollHits.indexOf("p1.txt") !== -1);
@@ -272,16 +620,16 @@ async function run() {
     // Modify the file — size changes, mtime changes, polling detects.
     pollHits.length = 0;
     fs.writeFileSync(path.join(pollDir, "p1.txt"), "hello world (modified)");
-    await helpers.waitUntil(function () {
-      pw._flushForTest();
+    await helpers.waitUntil(async function () {
+      await pw._flushForTest();
       return pollHits.indexOf("p1.txt") !== -1;
     }, { label: "watcher poll: modify event delivered" });
     check("watcher poll: detects file modify",          pollHits.indexOf("p1.txt") !== -1);
 
     // Delete a file — diff produces missing-from-snapshot, fires onDelete.
     fs.unlinkSync(path.join(pollDir, "p1.txt"));
-    await helpers.waitUntil(function () {
-      pw._flushForTest();
+    await helpers.waitUntil(async function () {
+      await pw._flushForTest();
       return pollDeletes.indexOf("p1.txt") !== -1;
     }, { label: "watcher poll: delete event delivered" });
     check("watcher poll: detects file delete",          pollDeletes.indexOf("p1.txt") !== -1);
@@ -301,35 +649,6 @@ async function run() {
   try { b.watcher.create({ root: os.tmpdir(), pollIntervalMs: -1 }); } catch (e) { threwP = e; }
   check("watcher.create: negative pollIntervalMs refused",
     threwP && threwP.code === "watcher/bad-poll-interval-ms");
-
-  // pollMaxFiles overflow — point at a tree with one file but cap=0
-  // (which we refuse at config time) → require positive integer; use
-  // cap=1 + create 2 files instead.
-  var capDir = fs.mkdtempSync(path.join(os.tmpdir(), "watcher-cap-"));
-  try {
-    fs.writeFileSync(path.join(capDir, "a.txt"), "a");
-    fs.writeFileSync(path.join(capDir, "b.txt"), "b");
-    var capErrs = [];
-    var capW = b.watcher.create({
-      root:           capDir,
-      mode:           "poll",
-      pollIntervalMs: 50,
-      pollMaxFiles:   1,
-      onChange:       function () {},
-      onError:        function (e) { capErrs.push(e); },
-      audit:          false,
-    });
-    // Initial walk happens synchronously in create() — overflow there
-    // throws watcher/start-failed wrapping watcher/poll-overflow.
-    check("watcher poll: pollMaxFiles cap fires (or surfaces)",
-      capW && (capErrs.length > 0 || true));
-    capW.stop();
-  } catch (e) {
-    check("watcher poll: pollMaxFiles cap fires at start",
-      e && (e.code === "watcher/start-failed" || /poll-overflow/.test(e.message)));
-  } finally {
-    try { fs.rmSync(capDir, { recursive: true, force: true }); } catch (_e) {}
-  }
 
   // ---- mode: "auto" — Docker bind-mount / non-inotify fs detector ----
   // On the host (non-Linux OR no /proc/self/mountinfo), auto resolves
@@ -445,14 +764,15 @@ async function run() {
       onChange:       function (e) { globHits.push(e.relativePath); },
       audit:          false,
     });
+    await gw.ready;
     fs.writeFileSync(path.join(globDir, "keep.txt"), "x");           // not ignored → fires
     fs.writeFileSync(path.join(globDir, "scratch.tmp"), "x");        // *.tmp
     fs.writeFileSync(path.join(globDir, "cache-abc"), "x");          // cache-*
     fs.writeFileSync(path.join(globDir, "aXXbYYc.dat"), "x");        // a*b*c.dat
     fs.writeFileSync(path.join(globDir, "exact-ignore.txt"), "x");   // exact
     fs.writeFileSync(path.join(globDir, "notcache.txt"), "x");       // NOT cache-* → fires
-    await helpers.waitUntil(function () {
-      gw._flushForTest();
+    await helpers.waitUntil(async function () {
+      await gw._flushForTest();
       return globHits.indexOf("keep.txt") !== -1;
     }, { label: "watcher glob: keep.txt onChange" });
 
@@ -487,14 +807,15 @@ async function run() {
       audit:          false,
     });
     // One tick over an unchanged tree — no events for the baseline file.
-    bw._flushForTest();
+    await bw.ready;
+    await bw._flushForTest();
     check("watcher poll: pre-existing file does not fire on first tick",
       baseHits.indexOf("pre-existing.txt") === -1);
 
     // A brand-new file after start DOES fire.
     fs.writeFileSync(path.join(baseDir, "fresh.txt"), "new");
-    await helpers.waitUntil(function () {
-      bw._flushForTest();
+    await helpers.waitUntil(async function () {
+      await bw._flushForTest();
       return baseHits.indexOf("fresh.txt") !== -1;
     }, { label: "watcher poll: fresh.txt after baseline" });
     check("watcher poll: post-start create fires onChange", baseHits.indexOf("fresh.txt") !== -1);
@@ -518,10 +839,11 @@ async function run() {
       onDelete:       function (e) { dirDeletes.push(e.relativePath); },
       audit:          false,
     });
+    await dw.ready;
     fs.mkdirSync(path.join(dirDir, "created-dir"));
     fs.writeFileSync(path.join(dirDir, "created-dir", "child.txt"), "x");
-    await helpers.waitUntil(function () {
-      dw._flushForTest();
+    await helpers.waitUntil(async function () {
+      await dw._flushForTest();
       return dirChanges.some(function (e) { return e.relativePath === "created-dir" && e.type === "dir"; });
     }, { label: "watcher poll: created-dir onChange(type=dir)" });
     check("watcher poll: directory create fires onChange type='dir'",
@@ -531,8 +853,8 @@ async function run() {
 
     // Remove the whole directory subtree → onDelete for both entries.
     fs.rmSync(path.join(dirDir, "created-dir"), { recursive: true, force: true });
-    await helpers.waitUntil(function () {
-      dw._flushForTest();
+    await helpers.waitUntil(async function () {
+      await dw._flushForTest();
       return dirDeletes.indexOf("created-dir") !== -1;
     }, { label: "watcher poll: created-dir onDelete" });
     check("watcher poll: directory delete fires onDelete", dirDeletes.indexOf("created-dir") !== -1);
@@ -557,6 +879,7 @@ async function run() {
         onChange:       function (e) { symHits.push(e.relativePath); },
         audit:          false,
       });
+      await symW.ready;
       var symlinkMade = false;
       try {
         fs.symlinkSync(os.tmpdir(), path.join(symDir, "link-out"));
@@ -565,8 +888,8 @@ async function run() {
       // Also drop a real file so we have a positive control that the
       // tick ran and delivered SOMETHING.
       fs.writeFileSync(path.join(symDir, "real.txt"), "x");
-      await helpers.waitUntil(function () {
-        symW._flushForTest();
+      await helpers.waitUntil(async function () {
+        await symW._flushForTest();
         return symHits.indexOf("real.txt") !== -1;
       }, { label: "watcher poll: real.txt control" });
       if (symlinkMade) {
@@ -598,18 +921,19 @@ async function run() {
       onError:        function (e) { ovErrs.push(e); },
       audit:          false,
     });
+    await ow.ready;
     // Create more distinct new files than maxPending in a single tick.
     for (var oi = 0; oi < 5; oi += 1) {
       fs.writeFileSync(path.join(ovDir, "ov-" + oi + ".txt"), "x");
     }
-    ow._flushForTest();   // one synchronous tick enqueues → overflow
+    await ow._flushForTest();   // one tick enqueues → overflow
     check("watcher: maxPending overflow surfaces onError(watcher/overflow)",
       ovErrs.some(function (e) { return e && e.code === "watcher/overflow"; }));
 
     // Post-overflow the watcher self-stopped; a later change is dropped.
     ovHits.length = 0;
     fs.writeFileSync(path.join(ovDir, "after-stop.txt"), "x");
-    ow._flushForTest();
+    await ow._flushForTest();
     check("watcher: overflow self-stops — later events dropped",
       ovHits.indexOf("after-stop.txt") === -1);
     ow.stop();   // idempotent after self-stop
@@ -618,8 +942,8 @@ async function run() {
   }
 
   // ---- poll: running-tick pollMaxFiles overflow routes through onError
-  // (distinct from the create()-time initial-walk overflow tested above,
-  // which throws watcher/start-failed) ----
+  // (distinct from the first-walk overflow in testReadyContract, which
+  // rejects ready with watcher/start-failed) ----
   var tickCapDir = fs.mkdtempSync(path.join(os.tmpdir(), "watcher-tickcap-"));
   try {
     var tickErrs = [];
@@ -633,9 +957,10 @@ async function run() {
       audit:          false,
     });
     // Now blow past the cap so the NEXT tick's walk throws.
+    await tw.ready;
     fs.writeFileSync(path.join(tickCapDir, "t1.txt"), "x");
     fs.writeFileSync(path.join(tickCapDir, "t2.txt"), "x");
-    tw._flushForTest();
+    await tw._flushForTest();
     check("watcher poll: running-tick pollMaxFiles overflow surfaces onError(poll-overflow)",
       tickErrs.some(function (e) { return e && e.code === "watcher/poll-overflow"; }));
     tw.stop();
@@ -659,9 +984,10 @@ async function run() {
       onDelete:       function () { throw new Error("operator onDelete blew up"); },
       audit:          false,
     });
+    await thw.ready;
     fs.writeFileSync(path.join(throwDir, "boom.txt"), "x");
-    await helpers.waitUntil(function () {
-      thw._flushForTest();
+    await helpers.waitUntil(async function () {
+      await thw._flushForTest();
       return afterChange.indexOf("boom.txt") !== -1;
     }, { label: "watcher: throwing onChange still dispatched" });
     check("watcher: throwing onChange hook does not crash dispatch",
@@ -670,8 +996,8 @@ async function run() {
     // A second, distinct change still dispatches (proves dispatch loop
     // survived the earlier throw).
     fs.writeFileSync(path.join(throwDir, "boom2.txt"), "x");
-    await helpers.waitUntil(function () {
-      thw._flushForTest();
+    await helpers.waitUntil(async function () {
+      await thw._flushForTest();
       return afterChange.indexOf("boom2.txt") !== -1;
     }, { label: "watcher: dispatch survives prior hook throw" });
     check("watcher: dispatch continues after a hook throw",
@@ -681,8 +1007,8 @@ async function run() {
     fs.unlinkSync(path.join(throwDir, "boom.txt"));
     var delThrewCrash = false;
     try {
-      await helpers.waitUntil(function () {
-        thw._flushForTest();
+      await helpers.waitUntil(async function () {
+        await thw._flushForTest();
         // We can't observe onDelete's arg (it throws), but reaching here
         // without an unhandled exception is the assertion.
         return true;
@@ -710,10 +1036,11 @@ async function run() {
       onError:        function () { throw new Error("operator onError blew up"); },
       audit:          false,
     });
+    await ew.ready;
     fs.writeFileSync(path.join(errThrowDir, "e1.txt"), "x");
     fs.writeFileSync(path.join(errThrowDir, "e2.txt"), "x");
     fs.writeFileSync(path.join(errThrowDir, "e3.txt"), "x");
-    ew._flushForTest();   // overflow → _safeError → onError throws → swallowed
+    await ew._flushForTest();   // overflow → _safeError → onError throws → swallowed
     reachedAfter = true;
     check("watcher: throwing onError hook does not crash the watcher", reachedAfter);
     ew.stop();
@@ -734,12 +1061,12 @@ async function run() {
       onChange:       function (e) { if (e.relativePath === "c.txt") coalCount += 1; },
       audit:          false,
     });
-    cw._flushForTest();          // baseline (empty tree)
+    await cw.ready;              // baseline (empty tree)
     coalCount = 0;
 
     fs.writeFileSync(path.join(coalDir, "c.txt"), "one");
-    await helpers.waitUntil(function () {
-      cw._flushForTest();
+    await helpers.waitUntil(async function () {
+      await cw._flushForTest();
       return coalCount >= 1;
     }, { label: "watcher debounce: c.txt first dispatch" });
     check("watcher: a single observed change dispatches exactly one onChange",
@@ -747,14 +1074,14 @@ async function run() {
 
     // No further change → no further dispatch across extra ticks (the
     // snapshot diff is empty, so nothing re-enqueues).
-    cw._flushForTest();
-    cw._flushForTest();
+    await cw._flushForTest();
+    await cw._flushForTest();
     check("watcher: an unchanged tree re-tick fires no onChange", coalCount === 1);
 
     // A real modification (content grows → size + mtime differ) re-fires.
     fs.writeFileSync(path.join(coalDir, "c.txt"), "one-two-three");
-    await helpers.waitUntil(function () {
-      cw._flushForTest();
+    await helpers.waitUntil(async function () {
+      await cw._flushForTest();
       return coalCount >= 2;
     }, { label: "watcher debounce: c.txt modify re-dispatch" });
     check("watcher: a subsequent modification re-fires onChange", coalCount === 2);
@@ -808,13 +1135,14 @@ async function run() {
       onChange:       function (e) { cfHits.push(e.relativePath); },
       audit:          false,
     });
+    await cfW.ready;
     fs.mkdirSync(path.join(cfDir, "Node_Modules"));
     fs.writeFileSync(path.join(cfDir, "Node_Modules", "pkg.js"), "x"); // prefix ignore, case-folded
     fs.writeFileSync(path.join(cfDir, "App.LOG"), "x");                // glob ignore, case-folded
     fs.writeFileSync(path.join(cfDir, "Exact-Ignore.TXT"), "x");       // exact ignore, case-folded
     fs.writeFileSync(path.join(cfDir, "keep.txt"), "x");               // NOT ignored → fires (control)
-    await helpers.waitUntil(function () {
-      cfW._flushForTest();
+    await helpers.waitUntil(async function () {
+      await cfW._flushForTest();
       return cfHits.indexOf("keep.txt") !== -1;
     }, { label: "watcher casefold: keep.txt control" });
     check("watcher ignoreCaseFold: case-different dir pruned by prefix ignore",
@@ -837,10 +1165,11 @@ async function run() {
       ignore: ["node_modules/**"],
       onChange: function (e) { csHits.push(e.relativePath); }, audit: false,
     });
+    await csW.ready;
     fs.mkdirSync(path.join(csDir, "Node_Modules"));
     fs.writeFileSync(path.join(csDir, "Node_Modules", "pkg.js"), "x");
-    await helpers.waitUntil(function () {
-      csW._flushForTest();
+    await helpers.waitUntil(async function () {
+      await csW._flushForTest();
       return csHits.indexOf("Node_Modules/pkg.js") !== -1;
     }, { label: "watcher case-sensitive default: Node_Modules NOT pruned" });
     check("watcher: default (no ignoreCaseFold) stays case-sensitive",
@@ -867,13 +1196,14 @@ async function run() {
     onError:        function (e) { rlErrs.push(e); },
     audit:          false,
   });
+  await rlW.ready;
   fs.writeFileSync(path.join(rlDir, "one.txt"), "x");
   fs.writeFileSync(path.join(rlDir, "two.txt"), "x");
-  rlW._flushForTest();          // baseline snapshot: one.txt, two.txt
+  await rlW._flushForTest();    // one.txt and two.txt are now tracked
   rlDeletes.length = 0;
   // Remove the ROOT out from under the watcher (models an unmounted volume).
   fs.rmSync(rlDir, { recursive: true, force: true });
-  rlW._flushForTest();          // tick over an unreadable root
+  await rlW._flushForTest();    // tick over an unreadable root
   check("watcher: a lost root surfaces watcher/root-lost via onError",
     rlErrs.some(function (e) { return e && e.code === "watcher/root-lost"; }));
   check("watcher: a lost root does NOT mass-delete every tracked entry",

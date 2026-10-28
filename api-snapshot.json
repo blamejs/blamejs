@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.21.7",
-  "createdAt": "2026-10-28T16:26:03.251Z",
+  "frameworkVersion": "0.21.8",
+  "createdAt": "2026-10-28T20:39:26.236Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -48835,6 +48835,10 @@
               }
             },
             "reverse": {
+              "type": "function",
+              "arity": 1
+            },
+            "setCacheTtlBounds": {
               "type": "function",
               "arity": 1
             },

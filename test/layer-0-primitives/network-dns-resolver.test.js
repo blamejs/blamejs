@@ -8,9 +8,13 @@
  * following + AD-bit surfacing + DNSSEC opt-in validate refusal.
  */
 
+var nodeHttps = require("node:https");
+var nodeNet   = require("node:net");
+
 var helpers = require("../helpers");
 var b       = helpers.b;
 var check   = helpers.check;
+var ck      = require("../helpers/compromised-keys");
 
 // ---- Wire-format helpers (mirror safe-dns.test.js) ----
 
@@ -416,9 +420,51 @@ async function testNxdomainRefused() {
   var threw2 = null;
   try { await r2.queryA("sf.example.com"); }
   catch (e) { threw2 = e; }
-  check("a non-NXDOMAIN RCODE surfaces as a query FAILURE, not as absence",
-        threw2 && threw2.code === "resolver/query-failed",
+  check("a SERVFAIL reply surfaces as the server failure, not as absence",
+        threw2 && threw2.code === "resolver/server-failure",
         String(threw2 && threw2.code));
+  check("a SERVFAIL rejection is transient, so b.retry retries it",
+        threw2 && threw2.permanent === false && b.retry.isRetryable(threw2) === true,
+        String(threw2 && threw2.permanent));
+
+  var refused = _fakeTransport({
+    "rf.example.com|1": _rcodeResponse("rf.example.com", 5),   // REFUSED
+  });
+  var threw3 = null;
+  try { await b.network.dns.resolver.create({ transport: refused }).queryA("rf.example.com"); }
+  catch (e) { threw3 = e; }
+  check("a REFUSED reply surfaces as the transient server failure",
+        threw3 && threw3.code === "resolver/server-failure" && threw3.permanent === false,
+        String(threw3 && threw3.code) + " permanent=" + String(threw3 && threw3.permanent));
+
+  var formerr = _fakeTransport({
+    "fe.example.com|1": _rcodeResponse("fe.example.com", 1),   // FORMERR
+  });
+  var threw4 = null;
+  try { await b.network.dns.resolver.create({ transport: formerr }).queryA("fe.example.com"); }
+  catch (e) { threw4 = e; }
+  check("any other non-zero RCODE surfaces as the permanent query failure",
+        threw4 && threw4.code === "resolver/query-failed" && threw4.permanent === true,
+        String(threw4 && threw4.code) + " permanent=" + String(threw4 && threw4.permanent));
+  check("an NXDOMAIN rejection stays permanent", threw && threw.permanent === true);
+  check("an NXDOMAIN rejection is not retried by b.retry", b.retry.isRetryable(threw) === false);
+
+  var calls = 0;
+  var flaky = {
+    lookup: function () {
+      calls += 1;
+      return Promise.resolve(calls === 1
+        ? _aRecordResponse("st.example.com", "192.0.2.9", 1, false)
+        : _rcodeResponse("st.example.com", 2));
+    },
+  };
+  var rs = b.network.dns.resolver.create({ transport: flaky, minTtlMs: 1, maxTtlMs: 20, serveStale: 60000 });
+  await rs.queryA("st.example.com");
+  await helpers.passiveObserve(80, "dns-resolver: cache TTL elapsed for serve-stale-on-SERVFAIL test");
+  var staleOnServfail = await rs.queryA("st.example.com");
+  check("a SERVFAIL reply is answered from the serve-stale window like any upstream failure",
+        staleOnServfail.stale === true && staleOnServfail.rrs[0].decoded === "192.0.2.9",
+        JSON.stringify({ stale: staleOnServfail.stale }));
 }
 
 async function testBadInput() {
@@ -560,6 +606,144 @@ async function run() {
   await testTtlCapping();
   await testTtlFloor();
   await testSafeResolveTxtTreatsAbsenceAsAbsence();
+  await testUpstreamFailureClassification();
+}
+
+function _questionName(query) {
+  var labels = [];
+  var off = 12;
+  while (query[off] !== 0) {
+    labels.push(query.toString("ascii", off + 1, off + 1 + query[off]));
+    off += query[off] + 1;
+  }
+  return labels.join(".");
+}
+
+function _startStatusDoh(chain) {
+  var server = nodeHttps.createServer({ key: chain.key, cert: chain.cert }, function (req, res) {
+    var u = new URL(req.url, "https://localhost");
+    var name = _questionName(Buffer.from(u.searchParams.get("dns"), "base64url"));
+    var status = { "notfound.example.com": 404, "forbidden.example.com": 403,
+      "limited.example.com": 429, "unavailable.example.com": 503 }[name];
+    if (status) { res.statusCode = status; res.end("no"); return; }
+    res.setHeader("content-type", "application/dns-message");
+    if (name === "big.example.com") { res.end(Buffer.alloc(70000)); return; }
+    res.end(_aRecordResponse(name, "192.0.2.44", 60, false));
+  });
+  server.on("tlsClientError", function () { /* the client refused the chain */ });
+  return new Promise(function (resolve) {
+    server.listen(0, "127.0.0.1", function () { resolve(server); });
+  });
+}
+
+function _closedPort() {
+  return new Promise(function (resolve) {
+    var probe = nodeNet.createServer();
+    probe.listen(0, "127.0.0.1", function () {
+      var port = probe.address().port;
+      probe.close(function () { resolve(port); });
+    });
+  });
+}
+
+async function _rejection(promise) {
+  try { await promise; return { code: "no-throw" }; }
+  catch (e) { return { code: e && e.code, permanent: e && e.permanent, statusCode: e && e.statusCode, error: e }; }
+}
+
+async function testUpstreamFailureClassification() {
+  var chain = ck.tlsChain("control");
+  var server = await _startStatusDoh(chain);
+  var dns = b.network.dns;
+  dns._resetForTest();
+  dns.useDnsOverHttps({ url: "https://127.0.0.1:" + server.address().port + "/dns-query", ca: chain.rootCa });
+  try {
+    var r = dns.resolver.create({ serveStale: false });
+    var ok = await r.queryA("ok.example.com");
+    check("resolver (DoH): an answer is returned", ok.rrs[0].decoded === "192.0.2.44");
+    var cases = [
+      ["HTTP 404",             "notfound.example.com",    "resolver/upstream-rejected",  true,  404],
+      ["HTTP 403",             "forbidden.example.com",   "resolver/upstream-rejected",  true,  403],
+      ["HTTP 429",             "limited.example.com",     "resolver/upstream-http",      false, 429],
+      ["HTTP 503",             "unavailable.example.com", "resolver/upstream-http",      false, 503],
+      ["a reply over 64 KiB",  "big.example.com",         "resolver/upstream-too-large", true,  undefined],
+    ];
+    for (var i = 0; i < cases.length; i++) {
+      var c = cases[i];
+      var got = await _rejection(r.queryA(c[1]));
+      check("resolver (DoH): " + c[0] + " rejects with " + c[2] + " (got " + got.code + ")", got.code === c[2]);
+      check("resolver (DoH): " + c[0] + " has permanent=" + c[3] + " (got " + got.permanent + ")",
+            got.permanent === c[3]);
+      check("resolver (DoH): b.retry.isRetryable is " + !c[3] + " for " + c[0],
+            got.error !== undefined && b.retry.isRetryable(got.error) === !c[3]);
+      if (c[4] !== undefined) {
+        check("resolver (DoH): " + c[0] + " carries statusCode " + c[4] + " (got " + got.statusCode + ")",
+              got.statusCode === c[4]);
+      }
+    }
+
+    var port = await _closedPort();
+    dns.useDnsOverHttps({ url: "https://127.0.0.1:" + port + "/dns-query", ca: chain.rootCa });
+    var refused = await _rejection(dns.resolver.create({ serveStale: false }).queryA("ok.example.com"));
+    check("resolver (DoH): a refused connection rejects with the transient resolver/upstream-connection-failed " +
+          "(got " + refused.code + ", permanent=" + refused.permanent + ")",
+          refused.code === "resolver/upstream-connection-failed" && refused.permanent === false &&
+          b.retry.isRetryable(refused.error) === true);
+  } finally {
+    server.close();
+    if (typeof server.closeAllConnections === "function") server.closeAllConnections();
+    dns._resetForTest();
+  }
+
+  function custom(lookup, timeoutMs) {
+    return dns.resolver.create({ serveStale: false, timeoutMs: timeoutMs || 2000, transport: { lookup: lookup } });
+  }
+  var operatorBug = await _rejection(custom(function () {
+    return Promise.reject(new TypeError("x is undefined"));
+  }).queryA("a.example.com"));
+  check("resolver (custom transport): an error that is not a network failure rejects with the permanent " +
+        "resolver/upstream-failed (got " + operatorBug.code + ", permanent=" + operatorBug.permanent + ")",
+        operatorBug.code === "resolver/upstream-failed" && operatorBug.permanent === true &&
+        b.retry.isRetryable(operatorBug.error) === false);
+
+  var reset = await _rejection(custom(function () {
+    var e = new Error("socket hang up");
+    e.code = "ECONNRESET";
+    return Promise.reject(e);
+  }).queryA("a.example.com"));
+  check("resolver (custom transport): an ECONNRESET rejects with the transient " +
+        "resolver/upstream-connection-failed (got " + reset.code + ", permanent=" + reset.permanent + ")",
+        reset.code === "resolver/upstream-connection-failed" && reset.permanent === false);
+
+  var hung = await _rejection(custom(function () { return new Promise(function () { /* never settles */ }); }, 50)
+    .queryA("a.example.com"));
+  check("resolver (custom transport): a transport that does not answer within timeoutMs rejects with the " +
+        "transient resolver/upstream-timeout (got " + hung.code + ", permanent=" + hung.permanent + ")",
+        hung.code === "resolver/upstream-timeout" && hung.permanent === false);
+
+  var http503 = await _rejection(custom(function () {
+    var e = new Error("upstream answered 503");
+    e.statusCode = 503;
+    return Promise.reject(e);
+  }).queryA("a.example.com"));
+  check("resolver (custom transport): an error carrying statusCode 503 rejects with the transient " +
+        "resolver/upstream-http (got " + http503.code + ")",
+        http503.code === "resolver/upstream-http" && http503.permanent === false && http503.statusCode === 503);
+
+  var rethrown = [
+    ["dns/server-failure", "resolver/server-failure"],
+    ["dns/lookup-timeout", "resolver/upstream-timeout"],
+  ];
+  for (var ri = 0; ri < rethrown.length; ri++) {
+    var dnsCode = rethrown[ri][0];
+    var resolverCode = rethrown[ri][1];
+    var mapped = await _rejection(custom(function () {
+      return Promise.reject(new dns.DnsError(dnsCode, "rethrown from b.network.dns"));
+    }).queryA("a.example.com"));
+    check("resolver (custom transport): a rethrown " + dnsCode + " rejects with the transient " + resolverCode +
+          " (got " + mapped.code + ", permanent=" + mapped.permanent + ")",
+          mapped.code === resolverCode && mapped.permanent === false && b.retry.isRetryable(mapped.error) === true);
+  }
 }
 
 // `safeResolveTxt` documents itself as the policy-fetch convention where

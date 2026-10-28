@@ -758,6 +758,328 @@ async function testRouteErrorLineIsScrubbedAndLevelled() {
     busy.join(" ~~ ").slice(0, 200));
 }
 
+async function _captureConsole(fn) {
+  var lines = [];
+  var realError = console.error;
+  var realLog = console.log;
+  var realLevel = process.env.BLAMEJS_BOOT_LOG_LEVEL;
+  process.env.BLAMEJS_BOOT_LOG_LEVEL = "debug";
+  console.error = function (m) { lines.push(String(m)); };
+  console.log = function (m) { lines.push(String(m)); };
+  try { await fn(); }
+  finally {
+    console.error = realError;
+    console.log = realLog;
+    if (realLevel === undefined) delete process.env.BLAMEJS_BOOT_LOG_LEVEL;
+    else process.env.BLAMEJS_BOOT_LOG_LEVEL = realLevel;
+  }
+  return lines;
+}
+
+var HEX_TOKEN = "ab".repeat(32);
+var B64_TOKEN = "Zq3xT9vB2mK7pLw4Rn8YcH1sJd6Fg0Ae5Ui-Qo_Vt2";
+var UUID_TOKEN = "3f2b8c1e-9a4d-4e7b-8c2f-1d0e5a6b7c8d";
+var LOWER_TOKEN = "k7x2m9q4w8e3r6t1y5u0i9o8p7a6s5d4f3g2";
+
+function _tokenMessage() {
+  return "ENOENT: no such file or directory, open '/data/uploads/bundles/" +
+    HEX_TOKEN + "/1.bin' share " + B64_TOKEN + " object " + UUID_TOKEN +
+    " key " + LOWER_TOKEN +
+    " under /srv/app/node_modules/some-really-long-package-name-here/x.js";
+}
+
+function _leaks(lines) {
+  return lines.filter(function (l) {
+    return l.indexOf(HEX_TOKEN) !== -1 || l.indexOf(B64_TOKEN) !== -1 ||
+      l.indexOf(UUID_TOKEN) !== -1 || l.indexOf(LOWER_TOKEN) !== -1;
+  });
+}
+
+async function testRouteErrorLineRedactsTokenShapedSegments() {
+  var r = b.router.create();
+  r.get("/files/:id", function () { throw new Error(_tokenMessage()); });
+  r.get("/refused", function () {
+    var e = new Error(_tokenMessage());
+    e.statusCode = 404;
+    throw e;
+  });
+  r.onError(function (err, req, res) { res.writeHead(500); res.end("handled"); });
+  var server = r.listen(0);
+  await _listening(server);
+  var port = server.address().port;
+  var lines;
+  try {
+    lines = await _captureConsole(async function () {
+      await _get(port, "/files/1");
+      await _get(port, "/refused");
+    });
+  } finally {
+    await _close(server);
+  }
+  var routeLines = lines.filter(function (l) {
+    return l.indexOf("route error:") !== -1 || l.indexOf("route refused:") !== -1;
+  });
+  check("the error-level line and the refusal line are both written",
+    routeLines.length === 2, lines.join(" ~~ ").slice(0, 400));
+  check("no line carries a token-shaped path segment or identifier",
+    _leaks(lines).length === 0, _leaks(lines).join(" ~~ ").slice(0, 400));
+  check("the token is replaced by the redaction marker in the message and the frames",
+    routeLines.every(function (l) { return l.indexOf("[redacted]") !== -1; }),
+    routeLines.join(" ~~ ").slice(0, 400));
+  check("the rest of the message survives redaction",
+    routeLines.every(function (l) {
+      return l.indexOf("ENOENT: no such file or directory") !== -1 &&
+        l.indexOf("/data/uploads/bundles/") !== -1 && l.indexOf("/1.bin") !== -1;
+    }), routeLines.join(" ~~ ").slice(0, 400));
+  check("an ordinary long path segment is not mistaken for a token",
+    routeLines.every(function (l) {
+      return l.indexOf("some-really-long-package-name-here") !== -1;
+    }), routeLines.join(" ~~ ").slice(0, 400));
+}
+
+var MIXED_HEX = "3f9a1c0e7b2d4f6a8c1e3b5d7f9a0c2e4b6d8f1a3c5e7b9d0f2a4c6e8b1d3f5a";
+var JOINED_TOKENS = {
+  hexAfterWord:         { text: "bundle-" + MIXED_HEX,               kept: "bundle-[redacted]" },
+  uuidAfterUnderscore:  { text: "share_" + UUID_TOKEN,                kept: "share_[redacted]" },
+  hexBeforeSuffix:      { text: MIXED_HEX + "_v2",                    kept: "[redacted]_v2" },
+  hexAfterShortPrefix:  { text: "tok_" + MIXED_HEX,                   kept: "tok_[redacted]" },
+  hex31:                { text: MIXED_HEX.slice(0, 31),               kept: null },
+  objectId24:           { text: "5f8d0d55b54764421b7156c3",           kept: null },
+  ulid:                 { text: "01ARZ3NDEKTSV4RRFFQ69G5FAV",         kept: null },
+  cuid2:                { text: "tz4a98xxat96iws9zmbrgj3a",           kept: null },
+  cuid2AfterPrefix:     { text: "user_tz4a98xxat96iws9zmbrgj3a",      kept: "user_[redacted]" },
+  base64Standard:       { text: "q3xT9vB+mK7pLw4/n8YcH1sJd6Fg0Ae5Ui+QoVt2Wk8=", kept: null },
+  base64SlashFirst:     { text: "AbCdEfGh/IjKlMnOpQrS1w==",            kept: "[redacted]" },
+  base64UrlDash:        { text: "yE4WtJBkUv5rB-OL5Ml9RlxMePEG9vDU",     kept: "[redacted]" },
+  base64UrlUnderscore:  { text: "KsBJZ50BIr_zOs2_BRnfww",               kept: "[redacted]" },
+  nanoid:               { text: "PWnbmByTEKdD01cN-Xpxf4gAiRbhR2fY",     kept: "[redacted]" },
+  hexAfterHexWord:      { text: "facade-" + MIXED_HEX,               kept: "facade-[redacted]" },
+  hexAfterHexWords:     { text: "deadbeef-cafe-" + MIXED_HEX,        kept: "deadbeef-cafe-[redacted]" },
+  hexBeforeHexWord:     { text: MIXED_HEX + "-cafe",                 kept: "[redacted]-cafe" },
+  dashGroupedCode:      { text: "x7k2-m9p4-q8r3-t5v6-w1y0-z3a2",      kept: null },
+  dashGroupedCodeUpper: { text: "X7K2-M9P4-Q8R3-T5V6-W1Y0-Z3A2",      kept: null },
+  dashCodeAfterWord:    { text: "user-x7k2-m9p4-q8r3-t5v6-w1y0-z3a2", kept: "user-[redacted]" },
+};
+
+async function testRouteErrorLineRedactsJoinedAndOtherTokenEncodings() {
+  var r = b.router.create();
+  r.get("/t/:name", function (req) {
+    throw new Error("ENOENT: open '/data/uploads/" + JOINED_TOKENS[req.params.name].text + "/1.bin'");
+  });
+  r.onError(function (err, req, res) { res.writeHead(500); res.end("handled"); });
+  var server = r.listen(0);
+  await _listening(server);
+  var port = server.address().port;
+  var names = Object.keys(JOINED_TOKENS);
+  var byName = {};
+  try {
+    for (var i = 0; i < names.length; i += 1) {
+      byName[names[i]] = await _captureConsole(async function () {
+        await _get(port, "/t/" + names[i]);
+      });
+    }
+  } finally {
+    await _close(server);
+  }
+  names.forEach(function (name) {
+    var spec = JOINED_TOKENS[name];
+    var routeLines = byName[name].filter(function (l) { return l.indexOf("route error:") !== -1; });
+    check("route error line written for " + name, routeLines.length === 1,
+      byName[name].join(" ~~ ").slice(0, 300));
+    check("the " + name + " token is not written in full",
+      routeLines.every(function (l) { return l.indexOf(spec.text) === -1; }),
+      routeLines.join(" ~~ ").slice(0, 400));
+    check("the " + name + " line carries the redaction marker in the message",
+      routeLines.every(function (l) { return l.indexOf("'/data/uploads/") !== -1 && l.indexOf("[redacted]") !== -1; }),
+      routeLines.join(" ~~ ").slice(0, 400));
+    if (spec.kept) {
+      check("the word joined to the " + name + " token survives as " + spec.kept,
+        routeLines.every(function (l) { return l.indexOf("/data/uploads/" + spec.kept + "/1.bin") !== -1; }),
+        routeLines.join(" ~~ ").slice(0, 400));
+    }
+  });
+}
+
+async function testRouteErrorLineKeepsOrdinaryIdentifiers() {
+  var words = [
+    "Http2ServerRequestHandler1", "getUserById2FactorAuth", "readFileSyncUtf8V2Fallback",
+    "processTicksAndRejections1", "ERR_HTTP2_STREAM_CANCEL", "application/vnd.api+json",
+    "x-amz-server-side-encryption", "18446744073709551615", "2026-10-28T12:00:00.000Z",
+    "a-bad-cafe-face-beef-dead-1", "deadbeef-cafe-face", "my-variable-name-2024-v2",
+    "aws-sdk-client-s3-v3-2024", "node-v24-22-1-linux-x64-musl-2026", "release-2024-10-28-build-1234",
+  ];
+  var r = b.router.create();
+  r.get("/w", function Http2ServerRequestHandler1() {
+    throw new Error("words " + words.join(" "));
+  });
+  r.onError(function (err, req, res) { res.writeHead(500); res.end("handled"); });
+  var server = r.listen(0);
+  await _listening(server);
+  var port = server.address().port;
+  var lines;
+  try {
+    lines = await _captureConsole(async function () { await _get(port, "/w"); });
+  } finally {
+    await _close(server);
+  }
+  var routeLines = lines.filter(function (l) { return l.indexOf("route error:") !== -1; });
+  check("the route error line is written", routeLines.length === 1, lines.join(" ~~ ").slice(0, 300));
+  words.forEach(function (w) {
+    check("an ordinary identifier survives the redaction: " + w,
+      routeLines.every(function (l) { return l.indexOf(w) !== -1; }),
+      routeLines.join(" ~~ ").slice(0, 600));
+  });
+  check("the stack frame names the handler function",
+    routeLines.every(function (l) { return l.indexOf("at Http2ServerRequestHandler1") !== -1; }),
+    routeLines.join(" ~~ ").slice(0, 600));
+  check("no marker is written when nothing token-shaped is present",
+    routeLines.every(function (l) { return l.indexOf("[redacted]") === -1; }),
+    routeLines.join(" ~~ ").slice(0, 600));
+}
+
+async function testRouterLogErrorsOption() {
+  check("create({ logErrors: 'no' }) refuses a non-boolean",
+    /logErrors must be a boolean/.test(_throwMsg(function () {
+      b.router.create({ logErrors: "no" });
+    })));
+
+  var handled = 0;
+  var r = b.router.create({ logErrors: false });
+  r.get("/boom", function () { throw new Error("quiet failure " + HEX_TOKEN); });
+  r.get("/refused", function () {
+    var e = new Error("quiet refusal");
+    e.statusCode = 401;
+    throw e;
+  });
+  r.onError(function (err, req, res) {
+    handled += 1;
+    res.writeHead(500);
+    res.end("handled:" + (err && err.message === "quiet failure " + HEX_TOKEN));
+  });
+  var bare = b.router.create({ logErrors: false });
+  bare.get("/boom", function () { throw new Error("quiet failure without onError"); });
+
+  var server = r.listen(0);
+  var bareServer = bare.listen(0);
+  await _listening(server);
+  await _listening(bareServer);
+  var boom, refused, bareBoom;
+  var lines;
+  try {
+    lines = await _captureConsole(async function () {
+      boom = await _get(server.address().port, "/boom");
+      refused = await _get(server.address().port, "/refused");
+      bareBoom = await _get(bareServer.address().port, "/boom");
+    });
+  } finally {
+    await _close(server);
+    await _close(bareServer);
+  }
+  var routeLines = lines.filter(function (l) {
+    return l.indexOf("route error:") !== -1 || l.indexOf("route refused:") !== -1 ||
+      l.indexOf("quiet ") !== -1;
+  });
+  check("logErrors: false writes no failure line at any level",
+    routeLines.length === 0, routeLines.join(" ~~ ").slice(0, 400));
+  check("onError still receives the original error",
+    handled === 2 && boom.status === 500 && boom.body === "handled:true" &&
+    refused.status === 500, "handled=" + handled + " body=" + (boom && boom.body));
+  check("without onError the last-resort 500 is still sent",
+    bareBoom.status === 500 && /Internal Server Error/.test(bareBoom.body),
+    "status=" + (bareBoom && bareBoom.status));
+
+  var defaulted = b.router.create();
+  defaulted.get("/boom", function () { throw new Error("loud failure"); });
+  defaulted.onError(function (err, req, res) { res.writeHead(500); res.end("handled"); });
+  var dServer = defaulted.listen(0);
+  await _listening(dServer);
+  var dLines;
+  try {
+    dLines = await _captureConsole(async function () {
+      await _get(dServer.address().port, "/boom");
+    });
+  } finally {
+    await _close(dServer);
+  }
+  check("the failure line is still written by default when onError is registered",
+    dLines.filter(function (l) { return l.indexOf("loud failure") !== -1; }).length === 1,
+    dLines.join(" ~~ ").slice(0, 400));
+}
+
+async function testResponseValidationLinesRedactTokenKeys() {
+  var r = b.router.create();
+  var spec = { response: s.record(s.string(), s.number()), validateResponse: "warn" };
+  r.get("/shares", spec, function (req, res) {
+    var body = {};
+    body[HEX_TOKEN] = "not-a-number";
+    res.json(body);
+  });
+  r.get("/late", { response: spec.response, validateResponse: "throw" }, function (req, res) {
+    var body = {};
+    body[HEX_TOKEN] = "not-a-number";
+    res.writeHead(200);
+    res.end(JSON.stringify(body));
+  });
+  var lines = await _captureConsole(async function () {
+    var w = _res();
+    w.json = function (v) { w.writeHead(200); w.end(JSON.stringify(v)); };
+    await r.handle(_req("GET", "/shares"), w);
+    await r.handle(_req("GET", "/late"), _res());
+  });
+  var drift = lines.filter(function (l) { return l.indexOf("response-validation") !== -1; });
+  check("both response-validation lines are written", drift.length === 2,
+    lines.join(" ~~ ").slice(0, 400));
+  check("a token used as a response key does not reach the response-validation line",
+    _leaks(drift).length === 0, drift.join(" ~~ ").slice(0, 400));
+}
+
+async function testWsHandlerFailureLineIsRedacted() {
+  var r = b.router.create();
+  r.ws("/ws-boom", function () { throw new Error(_tokenMessage()); }, { origins: "*" });
+  r.ws("/ws-null", function () { var nothing = null; throw nothing; }, { origins: "*" });
+  var quiet = b.router.create({ logErrors: false });
+  quiet.ws("/ws-quiet", function () { throw new Error("quiet ws failure"); }, { origins: "*" });
+  var uncaught = [];
+  function onUncaught(e) { uncaught.push(e); }
+  process.on("uncaughtException", onUncaught);
+  var server = r.listen(0);
+  var quietServer = quiet.listen(0);
+  await _listening(server);
+  await _listening(quietServer);
+  var port = server.address().port;
+  var socks = [];
+  var lines;
+  try {
+    lines = await _captureConsole(async function () {
+      var a = await _rawUpgrade(port, "/ws-boom");
+      socks.push(a.sock);
+      var n = await _rawUpgrade(port, "/ws-null");
+      socks.push(n.sock);
+      var q = await _rawUpgrade(quietServer.address().port, "/ws-quiet");
+      socks.push(q.sock);
+      await helpers.waitUntil(function () {
+        return r.activeWebSockets() === 0 && quiet.activeWebSockets() === 0;
+      }, { timeoutMs: 4000, label: "router ws: failed handlers' connections closed" });
+    });
+  } finally {
+    process.removeListener("uncaughtException", onUncaught);
+    socks.forEach(function (sk) { try { sk.destroy(); } catch (_e) { /* best-effort */ } });
+    await _close(server);
+    await _close(quietServer);
+  }
+  check("logErrors: false writes no ws handler failure line",
+    lines.filter(function (l) { return l.indexOf("quiet ws failure") !== -1; }).length === 0,
+    lines.join(" ~~ ").slice(0, 400));
+  var wsLines = lines.filter(function (l) { return l.indexOf("ws handler threw") !== -1; });
+  check("a ws handler failure writes one line per failed handler",
+    wsLines.length === 2, lines.join(" ~~ ").slice(0, 400));
+  check("the ws handler failure line carries no token-shaped segment",
+    _leaks(wsLines).length === 0, wsLines.join(" ~~ ").slice(0, 400));
+  check("a ws handler that throws a non-Error does not crash the listener",
+    uncaught.length === 0,
+    uncaught.map(function (e) { return String(e && e.message); }).join(" ~~ "));
+}
+
 // The route-error logger runs first in the unguarded catch, ahead of the error
 // handler and the last-resort 500. Reading the status and the code widened what
 // it touches on a thrown value from {message, stack} to five properties, so a
@@ -1587,6 +1909,130 @@ async function testTlsSniCallbackThrows() {
   }
 }
 
+async function _sniFailureLines(routerOpts, thrown) {
+  var cert = await _makeClassicalServerCert();
+  var r = b.router.create(routerOpts);
+  r.get("/e", function (req, res) { res.json({ ok: 1 }); });
+  var invoked = false;
+  var server = r.listen(0, function () {}, {
+    key: cert.key, cert: cert.cert,
+    SNICallback: function () { invoked = true; throw thrown; },
+  });
+  await _listening(server);
+  var port = server.address().port;
+  var outcome = null;
+  var client = null;
+  var lines;
+  var connections = -1;
+  try {
+    lines = await _captureConsole(async function () {
+      client = http2.connect("https://localhost:" + port, { ca: cert.cert, servername: "localhost" });
+      client.on("error", function () { if (outcome === null) outcome = "error"; });
+      client.on("connect", function () { if (outcome === null) outcome = "connect"; });
+      try {
+        await helpers.waitUntil(function () { return invoked && outcome !== null; },
+          { timeoutMs: 4000, label: "tls: throwing SNICallback invoked + handshake resolved" });
+      } catch (_e) { outcome = "timeout"; }
+      if (outcome === "error") {
+        try {
+          await helpers.waitUntil(async function () {
+            connections = await new Promise(function (resolve) {
+              server.getConnections(function (e, n) { resolve(e ? -1 : n); });
+            });
+            return connections === 0;
+          }, { timeoutMs: 4000, label: "tls: server released the failed handshake" });
+        } catch (_e) { /* connections keeps the last count read */ }
+      }
+    });
+  } finally {
+    try { if (client) client.destroy(); } catch (_e) { /* best-effort */ }
+    await _close(server);
+  }
+  return {
+    outcome:     outcome,
+    connections: connections,
+    sniLines:    lines.filter(function (l) { return l.indexOf("SNICallback threw") !== -1; }),
+  };
+}
+
+async function testTlsSniCallbackFailureLineIsRedacted() {
+  var hostile = {};
+  Object.defineProperty(hostile, "message", { get: function () { throw new Error("getter"); } });
+  var h = await _sniFailureLines(undefined, hostile);
+  check("an SNICallback that throws a value with a throwing message getter still fails only the handshake",
+    h.outcome === "error" && h.sniLines.length === 1, h.sniLines.join(" ~~ ").slice(0, 300));
+  var hostileError = new Error("x");
+  Object.defineProperty(hostileError, "message", { get: function () { throw new Error("getter"); } });
+  var he = await _sniFailureLines(undefined, hostileError);
+  check("an SNICallback that throws an Error with a throwing message getter fails the handshake promptly",
+    he.outcome === "error", String(he.outcome));
+  check("and the server releases that connection", he.connections === 0, String(he.connections));
+  check("and writes one readable failure line",
+    he.sniLines.length === 1 && he.sniLines[0].indexOf("(unreadable error)") !== -1,
+    he.sniLines.join(" ~~ ").slice(0, 300));
+  var n = await _sniFailureLines(undefined, null);
+  check("an SNICallback that throws null writes a readable line",
+    n.sniLines.length === 1 && n.sniLines[0].indexOf("(unreadable error)") !== -1,
+    n.sniLines.join(" ~~ ").slice(0, 300));
+  check("an SNICallback that throws null still fails the handshake", n.outcome === "error",
+    String(n.outcome));
+
+  var message = "ENOENT: open '/etc/certs/" + MIXED_HEX + "/key.pem'";
+  var on =await _sniFailureLines(undefined, new Error(message));
+  check("a throwing SNICallback writes one failure line", on.sniLines.length === 1,
+    on.sniLines.join(" ~~ ").slice(0, 300));
+  check("the SNICallback failure line does not carry the token",
+    on.sniLines.every(function (l) { return l.indexOf(MIXED_HEX) === -1; }),
+    on.sniLines.join(" ~~ ").slice(0, 300));
+  check("the SNICallback failure line keeps the rest of the message",
+    on.sniLines.every(function (l) {
+      return l.indexOf("/etc/certs/[redacted]/key.pem") !== -1 && l.indexOf("servername=") !== -1 && l.indexOf("localhost") !== -1;
+    }), on.sniLines.join(" ~~ ").slice(0, 300));
+  check("the handshake still fails for the client", on.outcome === "error", String(on.outcome));
+
+  var off = await _sniFailureLines({ logErrors: false }, new Error(message));
+  check("logErrors: false leaves the SNICallback failure line in place, still redacted",
+    off.sniLines.length === 1 && off.sniLines[0].indexOf(MIXED_HEX) === -1,
+    off.sniLines.join(" ~~ ").slice(0, 300));
+}
+
+async function testTlsSniCallbackIsAnsweredOnce() {
+  var cert = await _makeClassicalServerCert();
+  var r = b.router.create();
+  r.get("/e", function (req, res) { res.json({ ok: 1 }); });
+  var invoked = false;
+  var server = r.listen(0, function () {}, {
+    key: cert.key, cert: cert.cert,
+    SNICallback: function (servername, cb) {
+      invoked = true;
+      cb(null, null);
+      throw new Error("after answering");
+    },
+  });
+  var clientErrors = [];
+  server.on("tlsClientError", function (e) { clientErrors.push(String(e && e.message)); });
+  await _listening(server);
+  var port = server.address().port;
+  var outcome = null;
+  var client = null;
+  try {
+    await _captureConsole(async function () {
+      client = http2.connect("https://localhost:" + port, { ca: cert.cert, servername: "localhost" });
+      client.on("error", function () { if (outcome === null) outcome = "error"; });
+      client.on("connect", function () { if (outcome === null) outcome = "connect"; });
+      await helpers.waitUntil(function () { return invoked && outcome !== null; },
+        { timeoutMs: 4000, label: "tls: SNICallback that answered then threw resolved" });
+    });
+  } finally {
+    try { if (client) client.destroy(); } catch (_e) { /* best-effort */ }
+    await _close(server);
+  }
+  check("an SNICallback that answers and then throws keeps its answer", outcome === "connect", String(outcome));
+  check("the router does not call the handshake callback a second time",
+    clientErrors.every(function (m) { return m.indexOf("multiple times") === -1; }),
+    clientErrors.join(" ~~ "));
+}
+
 // ---- listen(): h1 WebSocket upgrade routing ----
 
 async function _rawUpgrade(port, path, extraHeaders) {
@@ -1744,9 +2190,23 @@ async function run() {
   await testRouteErrorLineIsScrubbedAndLevelled();
   await testRouteErrorLoggingLevelTargetAndDuplication();
   await testRouteErrorLoggingCannotCostTheResponse();
+  await testRouteErrorLineRedactsTokenShapedSegments();
+  await testRouteErrorLineRedactsJoinedAndOtherTokenEncodings();
+  await testRouteErrorLineKeepsOrdinaryIdentifiers();
+  await testTlsSniCallbackFailureLineIsRedacted();
+  await testTlsSniCallbackIsAnsweredOnce();
+  await testRouterLogErrorsOption();
+  await testResponseValidationLinesRedactTokenKeys();
+  await testWsHandlerFailureLineIsRedacted();
 }
 
-module.exports = { run: run };
+module.exports = {
+  run: run,
+  testRouteErrorLineRedactsJoinedAndOtherTokenEncodings: testRouteErrorLineRedactsJoinedAndOtherTokenEncodings,
+  testRouteErrorLineKeepsOrdinaryIdentifiers:            testRouteErrorLineKeepsOrdinaryIdentifiers,
+  testTlsSniCallbackFailureLineIsRedacted:               testTlsSniCallbackFailureLineIsRedacted,
+  testTlsSniCallbackIsAnsweredOnce:                      testTlsSniCallbackIsAnsweredOnce,
+};
 
 if (require.main === module) {
   run().then(
