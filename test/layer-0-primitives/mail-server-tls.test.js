@@ -306,12 +306,12 @@ async function run() {
   check("MX no-tls-context error: points at b.acme for provisioning",
     threwNoTls && /b\.acme/.test(threwNoTls.message));
   await testServerContextAcceptsEveryRegisteredEcdheCurve();
-  await testStarttlsUpgradeCompressesTheCertificateChain();
+  await testStarttlsUpgradeCompressesTheCertificateChainWhenListed();
 }
 
-// The release advertises RFC 8879 certificate compression on every TLS
-// connection the framework makes or accepts, and a mail listener builds its
-// own secure context rather than handing options to tls.createServer.
+// A mail listener built with opts.certificateCompression advertises RFC 8879
+// certificate compression, and a mail listener builds its own secure context
+// rather than handing options to tls.createServer.
 //
 // Assert the EFFECT, not the plumbing. The first version of this test checked
 // that `certificateCompression` appeared in the options handed to TLSSocket —
@@ -404,7 +404,7 @@ async function testServerContextAcceptsEveryRegisteredEcdheCurve() {
   }
 }
 
-async function testStarttlsUpgradeCompressesTheCertificateChain() {
+async function testStarttlsUpgradeCompressesTheCertificateChainWhenListed() {
   var nodeTls = require("node:tls");
   var net = require("node:net");
   var expected = b.constants.TLS_CERT_COMPRESSION();
@@ -482,14 +482,15 @@ async function testStarttlsUpgradeCompressesTheCertificateChain() {
   fs2.writeFileSync(keyFile, pair.key);
   // context() returns a handle that owns the SecureContext plus its reload
   // machinery; the socket wants the context itself.
-  var handle = b.mail.server.tls.context({ certFile: certFile, keyFile: keyFile });
+  var handle = b.mail.server.tls.context({ certFile: certFile, keyFile: keyFile,
+    certificateCompression: expected });
   var compressed = await handshakeBytes(handle.secureContext);
   if (handle && typeof handle.stop === "function") {
     try { handle.stop(); } catch (_e) { /* best-effort */ }
   }
   try { fs2.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
 
-  check("the mail secure context compresses the certificate chain on the wire " +
+  check("the mail secure context listing certificateCompression compresses the certificate chain on the wire " +
         "(" + compressed + " bytes vs " + uncompressed + " uncompressed)",
     compressed > 0 && uncompressed > 0 && compressed < uncompressed * 0.9);
 }

@@ -507,7 +507,159 @@ async function testPrivateCryptoKeysAreJudgedByTheirPublicHalf() {
         _id(badKey) === "small-ec-scalar");
 }
 
+function testEverySmallScalarOnEveryCurveIsReported() {
+  Object.keys(ck.CURVES).forEach(function (curve) {
+    var width = ck.CURVES[curve][1];
+    var table = b.crypto._smallScalarSet(curve);
+    var absent = [];
+    var unreported = [];
+    for (var d = 1n; d < 256n; d += 1n) {
+      var ecdh = nodeCrypto.createECDH(curve);
+      ecdh.setPrivateKey(ck.scalarBytes(curve, d));
+      if (!table.has(ecdh.getPublicKey().subarray(1, 1 + width).toString("hex"))) absent.push(String(d));
+      var found = _id(ck.ecKeyPair(curve, d).publicKey);
+      if (found !== "small-ec-scalar" && found !== "listed") unreported.push(String(d));
+    }
+    check("crypto._smallScalarSet: " + curve + " holds the x coordinate setPrivateKey gives for every scalar from 1 to 255",
+          absent.length === 0, absent.join(","));
+    check("crypto._smallScalarSet: " + curve + " holds 255 entries and nothing else", table.size === 255, String(table.size));
+    check("compromisedKey: every scalar from 1 to 255 on " + curve + " is reported",
+          unreported.length === 0, unreported.join(","));
+  });
+}
+
+// Runs in a fresh process, so each curve's first check is the first one the
+// process makes. Prints, per curve, how many scalar multiplications that first
+// check made, its time, and the best time of a check on another key.
+var _FIRST_CHECK_CHILD = [
+  "var nodeCrypto = require('node:crypto');",
+  "var calls = 0;",
+  "var setPrivateKey = nodeCrypto.ECDH.prototype.setPrivateKey;",
+  "nodeCrypto.ECDH.prototype.setPrivateKey = function () { calls += 1; return setPrivateKey.apply(this, arguments); };",
+  "var crypto = require(process.argv[1]);",
+  "var growth = require(process.argv[2]);",
+  "crypto.compromisedKey(nodeCrypto.generateKeyPairSync('ed25519').publicKey);",
+  "var out = {};",
+  "[['prime256v1', 'P-256'], ['secp384r1', 'P-384'], ['secp521r1', 'P-521'], ['secp256k1', 'secp256k1']].forEach(function (c) {",
+  "  var keys = [0, 1, 2, 3].map(function () { return nodeCrypto.generateKeyPairSync('ec', { namedCurve: c[1] }).publicKey; });",
+  "  calls = 0;",
+  "  var t0 = process.hrtime.bigint();",
+  "  crypto.compromisedKey(keys[0]);",
+  "  var firstMs = Number(process.hrtime.bigint() - t0) / 1e6;",
+  "  var work = calls;",
+  "  var next = 1;",
+  "  var laterMs = growth.bestMs(function () { crypto.compromisedKey(keys[next]); next += 1; }, 3);",
+  "  out[c[0]] = { work: work, firstMs: firstMs, laterMs: laterMs };",
+  "});",
+  "process.stdout.write(JSON.stringify(out));",
+].join("\n");
+
+function _firstCheckReading() {
+  var cp = require("node:child_process");
+  var r = cp.spawnSync(process.execPath,
+    ["-e", _FIRST_CHECK_CHILD, require.resolve("../../lib/crypto.js"), require.resolve("../helpers/growth.js")],
+    { encoding: "utf8", timeout: 120000 });
+  if (r.status !== 0) throw new Error("first-check child failed: " + (r.stderr || r.error));
+  return JSON.parse(r.stdout);
+}
+
+function testFirstCheckPerCurveIsNotDominatedByTheTable() {
+  var reading = _firstCheckReading();
+  var curves = Object.keys(ck.CURVES);
+  curves.forEach(function (curve) {
+    check("compromisedKey: the first check of a " + curve + " key makes at most one scalar multiplication",
+          reading[curve].work <= 1, JSON.stringify(reading[curve]));
+  });
+  var bound = 250;
+  var ratio = Infinity;
+  for (var attempt = 0; attempt < 3 && ratio > bound; attempt += 1) {
+    if (attempt > 0) reading = _firstCheckReading();
+    var first = 0;
+    var later = 0;
+    curves.forEach(function (curve) { first += reading[curve].firstMs; later += reading[curve].laterMs; });
+    ratio = Math.min(ratio, first / Math.max(later, 0.05));
+  }
+  check("compromisedKey: the first check per curve costs less than " + bound + " later checks",
+        ratio <= bound, "first/later = " + ratio.toFixed(1) + " " + JSON.stringify(reading));
+}
+
+// Runs in a fresh process: builds one pqcAgent with node's root bundle as `ca`
+// and prints how many scalar multiplications that made, with the number of EC
+// roots in the bundle and how many distinct curves they use.
+var _ROOT_BUNDLE_CHILD = [
+  "var nodeCrypto = require('node:crypto');",
+  "var tls = require('node:tls');",
+  "var calls = 0;",
+  "var setPrivateKey = nodeCrypto.ECDH.prototype.setPrivateKey;",
+  "nodeCrypto.ECDH.prototype.setPrivateKey = function () { calls += 1; return setPrivateKey.apply(this, arguments); };",
+  "var b = require(process.argv[1]);",
+  "var curves = {};",
+  "var ecRoots = 0;",
+  "tls.rootCertificates.forEach(function (pem) {",
+  "  var key = new nodeCrypto.X509Certificate(pem).publicKey;",
+  "  if (key.asymmetricKeyType === 'ec') { ecRoots += 1; curves[key.asymmetricKeyDetails.namedCurve] = true; }",
+  "});",
+  "calls = 0;",
+  "var agent = b.pqcAgent.create({ ca: tls.rootCertificates.slice() });",
+  "process.stdout.write(JSON.stringify({ work: calls, ecRoots: ecRoots, curves: Object.keys(curves).length, made: !!agent }));",
+].join("\n");
+
+function testRootBundleAgentMakesOneScalarMultiplicationPerCurve() {
+  var cp = require("node:child_process");
+  var r = cp.spawnSync(process.execPath, ["-e", _ROOT_BUNDLE_CHILD, require.resolve("../../index.js")],
+    { encoding: "utf8", timeout: 120000 });
+  if (r.status !== 0) throw new Error("root-bundle child failed: " + (r.stderr || r.error));
+  var reading = JSON.parse(r.stdout);
+  check("compromised key fixture: node's root bundle holds EC roots on at least one curve",
+        reading.made === true && reading.ecRoots > 0 && reading.curves > 0, JSON.stringify(reading));
+  check("pqcAgent.create({ ca: tls.rootCertificates }): the first agent makes at most one scalar multiplication per curve",
+        reading.work <= reading.curves, JSON.stringify(reading));
+}
+
+function _compressedSpki(pair) {
+  var spki = pair.publicKey.export({ type: "spki", format: "der" });
+  var alg = asn1.readSequence(asn1.readNode(spki, 0).value)[0].raw;
+  var jwk = pair.publicKey.export({ format: "jwk" });
+  var x = Buffer.from(jwk.x, "base64url");
+  var yOdd = Buffer.from(jwk.y, "base64url")[31] & 1;
+  return asn1.writeSequence([alg, asn1.writeBitString(Buffer.concat([Buffer.from([yOdd ? 3 : 2]), x]))]);
+}
+
+function testLintRunsOnlyWhenPkiReadsAnotherEncoding() {
+  var lintCalls = 0;
+  var lint = pki.lint.certificate;
+  pki.lint.certificate = function () { lintCalls += 1; return lint.apply(this, arguments); };
+  try {
+    var plain = crafted.selfSignedCa(crafted.CONTROL_CA);
+    lintCalls = 0;
+    check("compromisedKey: an ordinary certificate is not compromised", _id(plain) === null);
+    check("compromisedKey: a certificate whose key node and @blamejs/pki read as the same bytes is not linted again",
+          lintCalls === 0, String(lintCalls));
+    [["an ordinary key", crafted.CONTROL_CA, null], ["the scalar-1 key", crafted.COMPROMISED, "small-ec-scalar"]]
+      .forEach(function (c) {
+        var der = crafted.rebuild(ck.P256_CONTROL_CA_DER, {
+          publicKey: { export: function () { return _compressedSpki(c[1]); } },
+          signingKey: c[1].privateKey,
+        });
+        check("compromised key fixture: node reads a compressed point for " + c[0] + " as the same key",
+              _x(new nodeCrypto.X509Certificate(der).publicKey) === _x(c[1].publicKey));
+        lintCalls = 0;
+        check("compromisedKey: a certificate with a compressed point for " + c[0] + " is " + c[2], _id(der) === c[2]);
+        if (c[2] === null) {
+          check("compromisedKey: a certificate whose key @blamejs/pki reads in another encoding is linted",
+                lintCalls === 1, String(lintCalls));
+        }
+      });
+  } finally {
+    pki.lint.certificate = lint;
+  }
+}
+
 async function run() {
+  testLintRunsOnlyWhenPkiReadsAnotherEncoding();
+  testRootBundleAgentMakesOneScalarMultiplicationPerCurve();
+  testFirstCheckPerCurveIsNotDominatedByTheTable();
+  testEverySmallScalarOnEveryCurveIsReported();
   await testPrivateCryptoKeysAreJudgedByTheirPublicHalf();
   testWrappedKeyObjectsAreRead();
   testExplicitCurveParametersAreNotTrusted();

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) blamejs contributors
+// SMOKE_RUN_SOLO: growth checks here compare wall-clock time across name shapes and sizes, which a CPU shared with the smoke pool distorts.
 "use strict";
 /**
  * guard-archive — archive content-safety primitive (b.guardArchive).
@@ -189,6 +190,265 @@ function testGuardArchiveCaseInsensitiveCollision() {
   ], { profile: "strict" });
   check("case-insensitive collision detected (strict)",
         rv.issues.some(function (issue) { return issue.kind === "case-insensitive-collision"; }));
+}
+
+var NFC_NAME = "café.txt";
+var NFD_NAME = "café.txt";
+
+function _ruleIds(rv) {
+  return rv.issues.map(function (issue) { return issue.severity + ":" + issue.ruleId; });
+}
+
+async function testGuardArchiveNfcEqualNames() {
+  var direct = b.guardArchive.validateEntries([
+    { name: NFC_NAME, size: 1, compressedSize: 1 },
+    { name: NFD_NAME, size: 1, compressedSize: 1 },
+  ], { profile: "strict" });
+  check("NFC-equal names are a critical duplicate (validateEntries)",
+        _ruleIds(direct).indexOf("critical:archive.duplicate-name") !== -1, JSON.stringify(_ruleIds(direct)));
+
+  var balanced = b.guardArchive.validateEntries([
+    { name: "docs/" + NFD_NAME, size: 1, compressedSize: 1 },
+    { name: "docs/" + NFC_NAME, size: 1, compressedSize: 1 },
+  ], { profile: "balanced" });
+  check("NFC-equal names are a critical duplicate in either order (balanced)",
+        _ruleIds(balanced).indexOf("critical:archive.duplicate-name") !== -1, JSON.stringify(_ruleIds(balanced)));
+
+  var folded = b.guardArchive.validateEntries([
+    { name: "CAFÉ.txt", size: 1, compressedSize: 1 },
+    { name: NFD_NAME, size: 1, compressedSize: 1 },
+  ], { profile: "strict" });
+  check("names equal after NFC and case folding draw a case collision",
+        _ruleIds(folded).indexOf("high:archive.case-collision") !== -1, JSON.stringify(_ruleIds(folded)));
+
+  var distinct = b.guardArchive.validateEntries([
+    { name: NFC_NAME, size: 1, compressedSize: 1 },
+    { name: "cafe.txt", size: 1, compressedSize: 1 },
+  ], { profile: "strict" });
+  check("names that differ after NFC draw no duplicate or collision",
+        !distinct.issues.some(function (issue) {
+          return issue.ruleId === "archive.duplicate-name" || issue.ruleId === "archive.case-collision";
+        }), JSON.stringify(_ruleIds(distinct)));
+
+  var z = b.archive.zip();
+  z.addFile(NFC_NAME, "ONE\n");
+  z.addFile(NFD_NAME, "TWO\n");
+  var zipBytes = z.toBuffer();
+  var zipGuarded = await b.guardArchive.inspect(b.archive.adapters.buffer(zipBytes), { profile: "strict" });
+  check("NFC-equal zip entry names are a critical duplicate (b.guardArchive.inspect)",
+        _ruleIds(zipGuarded).indexOf("critical:archive.duplicate-name") !== -1, JSON.stringify(_ruleIds(zipGuarded)));
+  var zipErr = null;
+  try {
+    for await (var ze of b.archive.read.zip(b.archive.adapters.buffer(zipBytes)).extractEntries()) { void ze; }
+  } catch (e) { zipErr = e; }
+  check("NFC-equal zip entry names are refused by extractEntries()",
+        zipErr && zipErr.code === "archive-read/guard-refused", String(zipErr && (zipErr.code || zipErr.message)));
+
+  var t = b.archive.tar();
+  t.addFile(NFC_NAME, "ONE\n");
+  t.addFile(NFD_NAME, "TWO\n");
+  var tarErr = null;
+  try {
+    for await (var te of b.archive.read.tar(b.archive.adapters.buffer(t.toBuffer())).extractEntries()) { void te; }
+  } catch (e) { tarErr = e; }
+  check("NFC-equal tar entry names are refused by extractEntries()",
+        tarErr && tarErr.code === "archive-tar/guard-refused", String(tarErr && (tarErr.code || tarErr.message)));
+}
+
+function _validated(names, profile) {
+  return b.guardArchive.validateEntries(names.map(function (n) {
+    return { name: n, size: 1, compressedSize: 1, isDirectory: n.charAt(n.length - 1) === "/" };
+  }), { profile: profile || "strict" });
+}
+
+function testGuardArchiveBackslashEqualNames() {
+  var pairs = [["d/a.txt", "d\\a.txt"], ["d\\a.txt", "d/a.txt"], ["a\\b\\c.txt", "a/b\\c.txt"]];
+  for (var p = 0; p < pairs.length; p += 1) {
+    var rv = _validated(pairs[p], "balanced");
+    check("names equal once a backslash reads as a separator are a critical duplicate: " + JSON.stringify(pairs[p]),
+          _ruleIds(rv).indexOf("critical:archive.duplicate-name") !== -1, JSON.stringify(_ruleIds(rv)));
+  }
+  var folded = _validated(["D\\A.txt", "d/a.txt"]);
+  check("names equal after reading a backslash as a separator and case folding draw a case collision",
+        _ruleIds(folded).indexOf("high:archive.case-collision") !== -1, JSON.stringify(_ruleIds(folded)));
+  var distinct = _validated(["d/a.txt", "d\\b.txt"]);
+  check("names that still differ after reading a backslash as a separator draw no duplicate or collision",
+        !distinct.issues.some(function (issue) {
+          return issue.ruleId === "archive.duplicate-name" || issue.ruleId === "archive.case-collision";
+        }), JSON.stringify(_ruleIds(distinct)));
+}
+
+function _segmentEdgeIssues(name) {
+  return _validated([name], "balanced").issues.filter(function (issue) {
+    return issue.ruleId === "archive.filename.leading-trailing";
+  });
+}
+
+function testGuardArchiveSegmentLeadingTrailing() {
+  var hits = ["dir./a.txt", "dir /a.txt", "a/ b/c.txt", "a/b./c/d.txt", "dir./", "dir.\\a.txt", "a\\ b\\c.txt"];
+  for (var h = 0; h < hits.length; h += 1) {
+    var issues = _segmentEdgeIssues(hits[h]);
+    check("a path segment with a trailing dot or a leading/trailing space draws archive.filename.leading-trailing: " +
+          JSON.stringify(hits[h]), issues.length === 1, JSON.stringify(issues));
+  }
+  var misses = ["docs/readme.txt", "docs/", "./docs/a.txt", ".hidden/a.txt", "a/.b/c.txt", "my docs/a b.txt"];
+  for (var m = 0; m < misses.length; m += 1) {
+    var none = _segmentEdgeIssues(misses[m]);
+    check("a path with no edge-dot or edge-space segment draws no leading-trailing issue: " +
+          JSON.stringify(misses[m]), none.length === 0, JSON.stringify(none));
+  }
+  var whole = _segmentEdgeIssues("a/b.txt.");
+  check("a trailing dot on the last segment is reported once", whole.length === 1, JSON.stringify(whole));
+}
+
+async function _extractEntriesCode(kind, names) {
+  var w = kind === "zip" ? b.archive.zip() : b.archive.tar();
+  for (var n = 0; n < names.length; n += 1) w.addFile(names[n], "ENTRY" + n + "\n");
+  var reader = b.archive.read[kind](b.archive.adapters.buffer(w.toBuffer()));
+  try {
+    for await (var ent of reader.extractEntries()) { void ent; }
+  } catch (e) { return e.code || e.message; }
+  return "ok";
+}
+
+async function testGuardArchiveDotSegmentEqualNames() {
+  var pairs = [
+    ["d/a.txt", "d/./a.txt"], ["d/a.txt", "d//a.txt"], ["d/a.txt", "./d/a.txt"],
+    ["./d/a.txt", "d/./a.txt"], ["d\\.\\a.txt", "d/a.txt"], ["d/a.txt", ".//d/.//a.txt"],
+  ];
+  for (var p = 0; p < pairs.length; p += 1) {
+    var rv = _validated(pairs[p], "balanced");
+    check("names equal once '.' segments and empty segments are dropped are a critical duplicate: " +
+          JSON.stringify(pairs[p]),
+          _ruleIds(rv).indexOf("critical:archive.duplicate-name") !== -1, JSON.stringify(_ruleIds(rv)));
+  }
+  var folded = _validated(["D/./A.txt", "d/a.txt"]);
+  check("names equal after dropping '.' segments and case folding draw a case collision",
+        _ruleIds(folded).indexOf("high:archive.case-collision") !== -1, JSON.stringify(_ruleIds(folded)));
+  var controls = [["a/b.txt", "a/c.txt"], ["d/", "d/a.txt"], ["d", "d/"], ["./", "./d/", "./d/a.txt"]];
+  for (var c = 0; c < controls.length; c += 1) {
+    var ok = _validated(controls[c], "balanced");
+    check("names that still differ after dropping '.' and empty segments draw no duplicate or collision: " +
+          JSON.stringify(controls[c]),
+          !ok.issues.some(function (issue) {
+            return issue.ruleId === "archive.duplicate-name" || issue.ruleId === "archive.case-collision";
+          }), JSON.stringify(_ruleIds(ok)));
+  }
+  var shapes = [["d/a.txt", "d/./a.txt"], ["d/a.txt", "d//a.txt"], ["d/a.txt", "./d/a.txt"]];
+  for (var s = 0; s < shapes.length; s += 1) {
+    var zipCode = await _extractEntriesCode("zip", shapes[s]);
+    check("zip extractEntries() refuses names equal once '.' and empty segments are dropped: " +
+          JSON.stringify(shapes[s]), zipCode === "archive-read/guard-refused", zipCode);
+    var tarCode = await _extractEntriesCode("tar", shapes[s]);
+    check("tar extractEntries() refuses names equal once '.' and empty segments are dropped: " +
+          JSON.stringify(shapes[s]), tarCode === "archive-tar/guard-refused", tarCode);
+  }
+  var ctlZip = await _extractEntriesCode("zip", ["a/b.txt", "a/c.txt"]);
+  check("zip extractEntries() yields two distinct names", ctlZip === "ok", ctlZip);
+  var ctlTar = await _extractEntriesCode("tar", ["a/b.txt", "a/c.txt"]);
+  check("tar extractEntries() yields two distinct names", ctlTar === "ok", ctlTar);
+}
+
+function _reservedIssues(name) {
+  return _validated([name], "balanced").issues.filter(function (issue) {
+    return issue.ruleId === "archive.filename.reserved-name";
+  });
+}
+
+// A deployment that only extracts on Linux opts out of the Windows device-name
+// check with reservedNamePolicy, as b.guardFilename does; the Linux kernel tree
+// carries drivers/.../i2c/aux.c.
+// Allowing exact duplicates must not switch off a case-collision rejection the
+// caller configured: a duplicate name hides the collision only when it is
+// reported itself.
+function testCaseCollisionPolicyIndependentOfDuplicatePolicy() {
+  var entries = [{ name: "readme.txt", size: 1 }, { name: "readme.txt", size: 1, altNames: ["README.txt"] }];
+  var rv = b.guardArchive.validateEntries(entries,
+    { duplicateNamePolicy: "allow", caseInsensitiveCollisionPolicy: "reject" });
+  var kinds = rv.issues.map(function (i) { return i.ruleId; });
+  check("duplicateNamePolicy allow does not hide a case collision rejected by caseInsensitiveCollisionPolicy",
+        kinds.indexOf("archive.case-collision") !== -1 && kinds.indexOf("archive.duplicate-name") === -1,
+        JSON.stringify(kinds));
+  var both = b.guardArchive.validateEntries(entries,
+    { duplicateNamePolicy: "reject", caseInsensitiveCollisionPolicy: "reject" }).issues
+    .map(function (i) { return i.ruleId; });
+  check("control: with both policies on, the duplicate is reported once and hides the case collision",
+        both.filter(function (k) { return k === "archive.duplicate-name"; }).length === 1 &&
+        both.indexOf("archive.case-collision") === -1, JSON.stringify(both));
+}
+
+function testGuardArchiveReservedNamePolicy() {
+  var entries = [{ name: "linux/drivers/i2c/aux.c", size: 1 }, { name: "linux/drivers/i2c/bus.c", size: 1 }];
+  function reservedKinds(opts) {
+    return b.guardArchive.validateEntries(entries, opts).issues
+      .filter(function (i) { return i.kind === "reserved-name"; })
+      .map(function (i) { return i.severity; });
+  }
+  check("reservedNamePolicy default: aux.c in a path draws a critical reserved-name issue",
+        reservedKinds({}).join(",") === "critical", reservedKinds({}).join(","));
+  check("reservedNamePolicy allow: aux.c draws no reserved-name issue",
+        reservedKinds({ reservedNamePolicy: "allow" }).length === 0, reservedKinds({ reservedNamePolicy: "allow" }).join(","));
+  check("reservedNamePolicy audit: aux.c draws a warn-level reserved-name issue",
+        reservedKinds({ reservedNamePolicy: "audit" }).join(",") === "warn", reservedKinds({ reservedNamePolicy: "audit" }).join(","));
+  var threw = null;
+  try { b.guardArchive.validateEntries(entries, { reservedNamePolicy: "nope" }); } catch (e) { threw = e.code; }
+  check("reservedNamePolicy: an unknown value is refused with archive/bad-opt", threw === "archive/bad-opt", threw);
+}
+
+async function testGuardArchiveSegmentReservedName() {
+  var hits = ["a/CON", "CON/a.txt", "a/aux.txt", "a/Lpt9.log/b.txt", "a\\nul\\b.txt", "COM1/",
+              "x/y/prn.tar.gz.txt", "a/com¹.txt", "CON"];
+  for (var h = 0; h < hits.length; h += 1) {
+    var issues = _reservedIssues(hits[h]);
+    check("a Windows reserved device name in any path segment draws one critical archive.filename.reserved-name: " +
+          JSON.stringify(hits[h]),
+          issues.length === 1 && issues[0].severity === "critical", JSON.stringify(issues));
+  }
+  var misses = ["a/CONX/b.txt", "a/console.txt", "a/xcon/b.txt", "docs/aux_data.txt", "a/com0.txt",
+                "a/lpt10.txt", "com/lpt/a.txt", "a/.con/b.txt"];
+  for (var m = 0; m < misses.length; m += 1) {
+    var none = _reservedIssues(misses[m]);
+    check("a path with no reserved device name segment draws no reserved-name issue: " + JSON.stringify(misses[m]),
+          none.length === 0, JSON.stringify(none));
+  }
+  var shapes = ["a/CON", "CON/a.txt", "a/aux.txt"];
+  for (var s = 0; s < shapes.length; s += 1) {
+    var guarded = await b.guardArchive.inspect(b.archive.adapters.buffer((function () {
+      var z = b.archive.zip();
+      z.addFile(shapes[s], "X\n");
+      return z.toBuffer();
+    })()), { profile: "strict" });
+    check("b.guardArchive.inspect reports a reserved device name segment: " + JSON.stringify(shapes[s]),
+          _ruleIds(guarded).indexOf("critical:archive.filename.reserved-name") !== -1,
+          JSON.stringify(_ruleIds(guarded)));
+    var zipCode = await _extractEntriesCode("zip", [shapes[s]]);
+    check("zip extractEntries() refuses a reserved device name segment, as b.safeArchive.extract does: " +
+          JSON.stringify(shapes[s]), zipCode === "archive-read/guard-refused", zipCode);
+  }
+}
+
+function _segmentPassEntries(unit, n) {
+  return [{ name: unit.repeat(n) + "f.txt", size: 1, compressedSize: 1 }];
+}
+
+function testGuardArchiveSegmentPassCost() {
+  var shapes = [["a/", "ab"], ["com0/", "comxy"], ["a\\", "ab"]];
+  var n = 20000;
+  for (var s = 0; s < shapes.length; s += 1) {
+    var unit = shapes[s][0];
+    var flat = _segmentPassEntries(shapes[s][1], n);
+    var segmented = _segmentPassEntries(unit, n);
+    var vsFlat = helpers.superlinearRatio(function (which) {
+      b.guardArchive.validateEntries(which === "segmented" ? segmented : flat, { profile: "strict" });
+    }, { small: "flat", large: "segmented", threshold: 4 });
+    check("a name of " + n + " segments " + JSON.stringify(unit) +
+          " costs about what a flat name of the same length costs", !vsFlat.superlinear, String(vsFlat.ratio));
+    var growth = helpers.superlinearRatio(function (count) {
+      b.guardArchive.validateEntries(_segmentPassEntries(unit, count), { profile: "strict" });
+    }, { small: n, large: n * 2 });
+    check("the per-segment pass grows linearly with segment count: " + JSON.stringify(unit),
+          !growth.superlinear, String(growth.ratio));
+  }
 }
 
 function testGuardArchiveEncryptionMismatch() {
@@ -412,6 +672,14 @@ async function run() {
   testGuardArchiveNestedArchive();
   testGuardArchiveDuplicateNames();
   testGuardArchiveCaseInsensitiveCollision();
+  await testGuardArchiveNfcEqualNames();
+  testGuardArchiveBackslashEqualNames();
+  testGuardArchiveSegmentLeadingTrailing();
+  await testGuardArchiveDotSegmentEqualNames();
+  await testGuardArchiveSegmentReservedName();
+  testGuardArchiveReservedNamePolicy();
+  testCaseCollisionPolicyIndependentOfDuplicatePolicy();
+  testGuardArchiveSegmentPassCost();
   testGuardArchiveEncryptionMismatch();
   testGuardArchiveSparseEntry();
   testGuardArchiveInspectMagic();

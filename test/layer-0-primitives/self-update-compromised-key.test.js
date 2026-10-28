@@ -105,15 +105,85 @@ async function testCompromisedKeyRefusedBeforeTheAssetIsRead() {
   }
 }
 
+// Every P-384 key whose scalar is d or n - d for d in 1..255 is refused. Each
+// key comes from setPrivateKey, so the verifier's table is checked against
+// node's own scalar multiplication. The scalars 256 and n - 256 are controls.
+function testEverySmallScalarReleaseKeyIsRefused() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-selfupdate-every-scalar-"));
+  try {
+    var asset = path.join(dir, "asset.bin");
+    var sig = path.join(dir, "asset.sig");
+    fs.writeFileSync(asset, Buffer.from("release bytes\n", "utf8"));
+    fs.writeFileSync(sig, Buffer.alloc(96, 1));
+    var sv = b.selfUpdate.standaloneVerifier;
+    function kindFor(d) {
+      var pem = ck.ecKeyPair("secp384r1", d).publicKey.export({ type: "spki", format: "pem" });
+      return _kind(function () { sv.verify(asset, sig, pem); });
+    }
+    var missed = [];
+    for (var d = 1n; d < 256n; d += 1n) {
+      if (kindFor(d) !== "compromised-key") missed.push(d.toString());
+      if (kindFor(N384 - d) !== "compromised-key") missed.push("n-" + d.toString());
+    }
+    check("self-update compromised key: the standalone verifier refuses every P-384 key with scalar d or n - d " +
+          "for d from 1 to 255", missed.length === 0, missed.join(","));
+    [["256", 256n], ["n - 256", N384 - 256n]].forEach(function (c) {
+      check("self-update compromised key control: the standalone verifier does not report scalar " + c[0] +
+            " as compromised", kindFor(c[1]) === "verify-failed");
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// Runs in a fresh process: loads the standalone verifier file on its own,
+// counts ECDH setPrivateKey calls, and verifies one release under a control
+// P-384 key, which is the first check of the process.
+var _WORK_CHILD = [
+  "var nodeCrypto = require('node:crypto');",
+  "var calls = 0;",
+  "var setPrivateKey = nodeCrypto.ECDH.prototype.setPrivateKey;",
+  "nodeCrypto.ECDH.prototype.setPrivateKey = function () { calls += 1; return setPrivateKey.apply(this, arguments); };",
+  "var verifier = require(process.argv[1]);",
+  "var r = verifier.verify(process.argv[2], process.argv[3], require('node:fs').readFileSync(process.argv[4], 'utf8'));",
+  "process.stdout.write(JSON.stringify({ work: calls, ok: r.ok === true }));",
+].join("\n");
+
+function testFirstCheckMakesAtMostOneScalarMultiplication() {
+  var cp = require("node:child_process");
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "blamejs-selfupdate-work-"));
+  try {
+    var control = _signedRelease(dir, "work",
+      ck.ecKeyPair("secp384r1", ck.labelScalar("secp384r1", "self-update work control")));
+    var pemPath = path.join(dir, "work.pem");
+    fs.writeFileSync(pemPath, control.pubkeyPem);
+    var r = cp.spawnSync(process.execPath,
+      ["-e", _WORK_CHILD, b.selfUpdate.standaloneVerifier.path, control.asset, control.sig, pemPath],
+      { encoding: "utf8", timeout: 120000 });
+    if (r.status !== 0) throw new Error("standalone verifier work child failed: " + (r.stderr || r.error));
+    var reading = JSON.parse(r.stdout);
+    check("self-update compromised key control: the standalone verifier child verified the control release",
+          reading.ok === true, JSON.stringify(reading));
+    check("self-update compromised key: the standalone verifier's first P-384 check makes at most one " +
+          "scalar multiplication", reading.work <= 1, JSON.stringify(reading));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function run() {
   await testCompromisedReleaseKeyRefused();
   await testCompromisedKeyRefusedBeforeTheAssetIsRead();
+  testEverySmallScalarReleaseKeyIsRefused();
+  testFirstCheckMakesAtMostOneScalarMultiplication();
 }
 
 module.exports = {
   run:                                            run,
   testCompromisedReleaseKeyRefused:               testCompromisedReleaseKeyRefused,
   testCompromisedKeyRefusedBeforeTheAssetIsRead:  testCompromisedKeyRefusedBeforeTheAssetIsRead,
+  testEverySmallScalarReleaseKeyIsRefused:        testEverySmallScalarReleaseKeyIsRefused,
+  testFirstCheckMakesAtMostOneScalarMultiplication: testFirstCheckMakesAtMostOneScalarMultiplication,
 };
 
 if (require.main === module) {
