@@ -220,6 +220,38 @@ async function testFollowsCnameChain() {
   check("followCnames: rr.decoded",       got.rrs[0].decoded === "192.0.2.5");
 }
 
+// A CNAME target whose single label is "real.example" followed by "com" is a
+// different wire name from real.example.com. The decoded target keeps the
+// label boundary, and followCnames refuses it instead of querying the
+// three-label name.
+async function testCnameTargetWithDottedLabelIsNotFollowed() {
+  var target = Buffer.concat([
+    Buffer.from([12]), Buffer.from("real.example", "latin1"),
+    Buffer.from([3]), Buffer.from("com", "latin1"), Buffer.from([0]),
+  ]);
+  var resp = Buffer.concat([
+    _hdr(0, 0x8180, 1, 1, 0, 0),
+    _q("alias.example.com", 1),
+    _rr("alias.example.com", 5, 300, target),
+  ]);
+  var transport = _fakeTransport({
+    "alias.example.com|1": resp,
+    "alias.example.com|5": resp,
+    "real.example.com|1":  _aRecordResponse("real.example.com", "192.0.2.5", 300, false),
+  });
+  var r = b.network.dns.resolver.create({ transport: transport });
+  var c = await r.queryCname("alias.example.com");
+  check("CNAME target keeps its label boundary (got " + JSON.stringify(c.rrs[0] && c.rrs[0].decoded) + ")",
+    c.rrs[0].decoded === "real\\.example.com");
+  var threw = null;
+  try { await r.followCnames("alias.example.com", "A"); }
+  catch (e) { threw = e; }
+  check("followCnames refuses an escaped target with resolver/bad-input",
+    threw && threw.code === "resolver/bad-input");
+  check("followCnames does not query the three-label name",
+    !transport._calls.some(function (cl) { return cl.name.toLowerCase() === "real.example.com"; }));
+}
+
 async function testCnameChainCap() {
   // Build a chain longer than the strict cap (8). Each hop CNAMEs to the next.
   var map = {};
@@ -512,6 +544,7 @@ async function run() {
   await testValidateOptInAcceptsAdOne();
   await testValidateOptInRefusesCachedAdZero();
   await testFollowsCnameChain();
+  await testCnameTargetWithDottedLabelIsNotFollowed();
   await testCnameChainCap();
   await testServeStaleOnUpstreamFailure();
   await testServeStaleDoesNotBypassValidate();

@@ -642,8 +642,107 @@ function testCheckCnameChainDepthBadInput() {
   check("cnameDepth string refused",   _codeOf(function () { b.safeDns.checkCnameChainDepth("5"); }) === "safe-dns/bad-input");
 }
 
+// Encode raw label bytes as given, so a label can hold a dot, a NUL, a CR/LF
+// or a high byte the way a hostile server can put them on the wire.
+function _encLabels(labels) {
+  var parts = [];
+  labels.forEach(function (l) {
+    var lb = Buffer.isBuffer(l) ? l : Buffer.from(l, "latin1");
+    parts.push(Buffer.from([lb.length]), lb);
+  });
+  parts.push(Buffer.from([0]));
+  return Buffer.concat(parts);
+}
+
+function _ptrDecoded(rdataLabels) {
+  var resp = Buffer.concat([
+    _hdr(0, 0x8180, 1, 1, 0, 0),
+    _q("4.3.2.1.in-addr.arpa", 12),
+    _rr("4.3.2.1.in-addr.arpa", 12, _encLabels(rdataLabels)),
+  ]);
+  return b.safeDns.parseResponse(resp).answer[0].decoded;
+}
+
+// RFC 2181 §11 lets a label carry any octet. A decoded name is the RFC 1035
+// §5.1 / RFC 4343 §2.1 presentation form, so a dot inside a label, a backslash
+// and every byte outside 0x21-0x7E are escaped and one string names one wire
+// name.
+function testDecodedNamesEscapeLabelBytes() {
+  var nul = _ptrDecoded(["mail.trusted.example\u0000", "attacker", "test"]);
+  check("label NUL + dot are escaped, not passed through (got " + JSON.stringify(nul) + ")",
+    nul === "mail\\.trusted\\.example\\000.attacker.test");
+  check("a dot inside a label decodes differently from a label boundary",
+    _ptrDecoded(["mail.victim", "com"]) === "mail\\.victim.com" &&
+    _ptrDecoded(["mail", "victim", "com"]) === "mail.victim.com");
+  var crlf = _ptrDecoded(["x\r\nX-Injected: 1", "test"]);
+  check("CR, LF and space in a label are escaped (got " + JSON.stringify(crlf) + ")",
+    crlf === "x\\013\\010X-Injected:\\0321.test");
+  check("a high byte is escaped rather than folded onto 7-bit ASCII",
+    _ptrDecoded([Buffer.from([0x63, 0x61, 0x66, 0xe9]), "test"]) === "caf\\233.test" &&
+    _ptrDecoded(["cafi", "test"]) === "cafi.test");
+  check("a backslash in a label is escaped",
+    _ptrDecoded(["back\\slash", "test"]) === "back\\\\slash.test");
+  check("DEL is escaped", _ptrDecoded(["a\u007fb", "test"]) === "a\\127b.test");
+  check("an ordinary name decodes unchanged, case and underscore kept",
+    _ptrDecoded(["_dmarc", "Example", "COM"]) === "_dmarc.Example.COM");
+  var mx = Buffer.concat([
+    _hdr(0, 0x8180, 1, 1, 0, 0),
+    _q("example.com", 15),
+    _rr("example.com", 15, Buffer.concat([Buffer.from([0, 10]), _encLabels(["mx\r\n", "example", "com"])])),
+  ]);
+  check("an MX exchange is escaped the same way",
+    b.safeDns.parseResponse(mx).answer[0].decoded.exchange === "mx\\013\\010.example.com");
+  var owner = Buffer.concat([
+    _hdr(0, 0x8180, 1, 1, 0, 0),
+    _q("example.com", 1),
+    Buffer.concat([_encLabels(["a.b", "example", "com"]), Buffer.from([0, 1, 0, 1, 0, 0, 1, 44, 0, 4, 192, 0, 2, 1])]),
+  ]);
+  check("an owner name is escaped the same way",
+    b.safeDns.parseResponse(owner).answer[0].name === "a\\.b.example.com");
+}
+
+// The presentation codec that b.network.dns.dnssec, b.network.dns.tsig and
+// the SVCB TargetName reader share: every label byte survives
+// wire -> presentation -> wire, and a name that is not presentation form is
+// refused rather than guessed at.
+function testPresentationCodecRoundTrips() {
+  var sd = b.safeDns;
+  var all = Buffer.alloc(256);
+  for (var i = 0; i < 256; i++) all[i] = i;
+  var bad = [];
+  for (var off = 0; off < 256; off += 63) {
+    var label = all.subarray(off, Math.min(off + 63, 256));
+    var text = sd._presentationLabel(label, 0, label.length);
+    var back = sd._presentationNameLabels(text + ".example.");
+    if (back === null || back.length !== 2 || !back[0].equals(label)) bad.push(off);
+    for (var ci = 0; ci < text.length; ci++) {
+      var cc = text.charCodeAt(ci);
+      if (cc <= 0x20 || cc >= 0x7f) { bad.push("raw byte in " + JSON.stringify(text)); break; }
+    }
+  }
+  check("every label byte 0-255 round-trips through presentation form (bad " + JSON.stringify(bad) + ")",
+    bad.length === 0);
+  check("a raw space and its \\032 escape name the same label",
+    sd._presentationNameLabels("my printer.example")[0].equals(sd._presentationNameLabels("my\\032printer.example")[0]));
+  check("\\. is a dot inside a label, not a separator",
+    sd._presentationNameLabels("a\\.b.example").length === 2);
+  check("the root is no labels", sd._presentationNameLabels(".").length === 0 &&
+    sd._presentationNameLabels("").length === 0 && sd._presentationName([]) === ".");
+  var refused = ["a..b", ".a", "a\\", "a\\9", "a\\99", "a\\256", "a\\9x9", "中.example",
+    new Array(65).join("a") + ".example", new Array(65).join("abc.") + "x"];
+  check("a 255-octet name is accepted", sd._presentationNameLabels(new Array(64).join("abc.") + "x") !== null);
+  refused.forEach(function (n) {
+    check("the codec refuses " + JSON.stringify(n.length > 40 ? n.slice(0, 40) + "..." : n),
+      sd._presentationNameLabels(n) === null);
+  });
+  check("_asciiLowerLabel lowers only A-Z",
+    sd._asciiLowerLabel(Buffer.from([0x41, 0x5a, 0xc9, 0x61])).equals(Buffer.from([0x61, 0x7a, 0xc9, 0x61])));
+}
+
 function run() {
+  testPresentationCodecRoundTrips();
   testSurface();
+  testDecodedNamesEscapeLabelBytes();
   testParsesARecord();
   testParsesAaaaRecordRfc5952();
   testAaaaLoopback();

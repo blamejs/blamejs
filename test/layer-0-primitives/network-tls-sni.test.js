@@ -43,6 +43,7 @@ var check    = helpers.check;
 var nodeTls  = require("node:tls");
 var net      = require("node:net");
 var https    = require("node:https");
+var nodeDns  = require("node:dns");
 
 var networkDns   = require("../../lib/network-dns");
 var networkProxy = require("../../lib/network-proxy");
@@ -238,6 +239,402 @@ function testCheckServerIdentity9525DottedHost() {
         other && other.code === "tls/pkix-hostname-mismatch", other ? other.code : "matched");
 }
 
+// A host that the OS resolver or the WHATWG URL parser reads as an IPv4
+// address is an address, whatever its spelling: octal or hex octets, fewer
+// than four parts, a single 32-bit number, a trailing dot, or digits written
+// in fullwidth. Such a host must never be matched against a dNSName SAN.
+var NON_CANONICAL_IPV4_HOSTS = [
+  "0177.0.0.1", "0127.0.0.1", "087.0.0.1", "0x7f.0.0.1", "0X7F.0.0.1",
+  "2130706433", "0x7f000001", "127.1", "127.0.1", "127.0.0.1.",
+  "１２７.0.0.1", "127．0．0．1", "127.0.0.１",
+  "foo.0x", "a.b.0X1F",
+].concat([0xad, 0x200b, 0x2060, 0x34f, 0xfe0f, 0x180b, 0xfeff].map(function (code) {
+  return "127.0.0.1" + String.fromCharCode(code);
+}), ["12" + String.fromCharCode(0xad) + "7.0.0.1", "0x7f.0.0.1" + String.fromCharCode(0x200b)]);
+
+// A host that is not a usable name: a control character or white space, an
+// empty label (two trailing dots, a leading dot, two dots in a row), or a
+// code point the WHATWG host parser refuses. Node's matcher strips one
+// trailing dot and then accepts "127.0.0.1.." against DNS:127.0.0.1 on
+// every release, and on 24.21.0 it accepts "127.0.0.1\t" as well.
+var MALFORMED_HOSTS = [
+  "127.0.0.1..", "example.com..", "a..b.com", ".example.com", "127.0.0.1\t", "127.0.0.1\n",
+  "127.0.0.1\r", "127.0.0.1 ", "exa mple.com", "127.0.0.1\u0000", "a|b.com", "a%41.com",
+  "127.0.0%2e1",
+].concat([0x85, 0xa0, 0x3000].map(function (code) { return "x" + String.fromCharCode(code) + "y.com"; }),
+  ["127.0.0.1" + String.fromCharCode(0x200c)]);
+
+// The dial-host classifier reads a host the way the resolver and the WHATWG
+// host parser read it, after full UTS46 mapping: an IP literal, an IPv4
+// address in another spelling, a name, or a host that is not a usable name.
+function testDialHostForm() {
+  var form = b.network.tls._dialHostForm;
+  check("network-tls exposes the dial-host classifier", typeof form === "function");
+  if (typeof form !== "function") return;
+  var ch = String.fromCharCode;
+  [["127.0.0.1", "ip"], ["::1", "ip"], ["fe80::1%eth0", "ip"], ["2001:db8::1", "ip"], ["[::1]", "ip"],
+   ["[2001:db8:0::1]", "ip"], ["[127.0.0.1]", "malformed"], ["[::1", "malformed"]]
+    .forEach(function (c) {
+      check("_dialHostForm(" + JSON.stringify(c[0]) + ") is " + c[1], form(c[0]) === c[1], form(c[0]));
+    });
+  ["127.1", "0x7f.0.0.1", "0177.0.0.1", "2130706433", "127.0.0.1.", "foo.0x", "a.b.0X1F", "999.1.1.1",
+   ch(0xff11, 0xff12, 0xff17) + ".0.0.1", ["127", "0", "0", "1"].join(ch(0xff0e)),
+   ["127", "0", "0", "1"].join(ch(0x3002)), "127.0.0.1" + ch(0xad) + ".", "12" + ch(0xad) + "7.0.0.1",
+   "127.0.0.1" + ch(0xad, 0x200b), "127.0.0.1" + ch(0x3002)]
+    .concat([0xad, 0x200b, 0x2060, 0x34f, 0xfe0f, 0x180b, 0xfeff].map(function (code) {
+      return "127.0.0.1" + ch(code);
+    }))
+    .forEach(function (h) {
+      check("_dialHostForm(" + JSON.stringify(h) + ") is ip-spelling", form(h) === "ip-spelling", form(h));
+    });
+  ["", ".", "..", "127.0.0.1..", "example.com..", "a..b.com", ".example.com", "127.0.0.1\t", "127.0.0.1\n",
+   "127.0.0.1\r", "127.0.0.1 ", " 127.0.0.1", "exa mple.com", ch(0), "127.0.0.1" + ch(0), "a" + ch(0x7f) + "b.com",
+   "a|b.com", "a%41.com", "127.0.0%2e1", "ex%61mple.com", "a<b.com", "a*b.com", "a".repeat(64) + ".com",
+   "127.0.0.1" + ch(0x200c), "127.0.0.1" + ch(0x200d)]
+    .concat([0x85, 0xa0, 0x3000, 0x2028, 0xd800].map(function (code) { return "x" + ch(code) + "y.com"; }))
+    .forEach(function (h) {
+      check("_dialHostForm(" + JSON.stringify(h) + ") is malformed", form(h) === "malformed", form(h));
+    });
+  ["example.com", "EXAMPLE.com", "example.com.", "localhost", "_dmarc.example.com", "xn--bcher-kva.de",
+   "b" + ch(0xfc) + "cher.de", "a.0xg", "0x7f.example.com", "127.0.0.1.example.com", "1.example", "123.com",
+   "-foo.example.com", "a".repeat(63) + ".com"]
+    .forEach(function (h) {
+      check("_dialHostForm(" + JSON.stringify(h) + ") is name", form(h) === "name", form(h));
+    });
+  [null, undefined, 1, {}].forEach(function (v) {
+    check("_dialHostForm is malformed for a non-string", form(v) === "malformed");
+  });
+}
+
+function testCheckServerIdentity9525NonCanonicalIpv4() {
+  var csi = b.network.tls.checkServerIdentity9525;
+  NON_CANONICAL_IPV4_HOSTS.forEach(function (host) {
+    var spellings = [host];
+    if (host.charAt(host.length - 1) !== ".") spellings.push(host + ".");
+    spellings.forEach(function (h) {
+      ["DNS:" + h, "DNS:127.0.0.1", "DNS:*.0.0.1", "IP Address:127.0.0.1",
+       "DNS:" + h + ", IP Address:127.0.0.1"].forEach(function (san) {
+        var err = csi(h, { subject: {}, subjectaltname: san });
+        check("checkServerIdentity9525 refuses the non-canonical IPv4 host " + JSON.stringify(h) +
+              " against " + san,
+              err instanceof Error && err.code === "tls/pkix-hostname-mismatch",
+              err ? err.code : "matched");
+      });
+    });
+  });
+  MALFORMED_HOSTS.forEach(function (h) {
+    ["DNS:127.0.0.1", "DNS:example.com", "DNS:a..b.com", "DNS:*.example.com", "IP Address:127.0.0.1"]
+      .forEach(function (san) {
+        var err = csi(h, { subject: {}, subjectaltname: san });
+        check("checkServerIdentity9525 refuses the malformed host " + JSON.stringify(h) + " against " + san,
+              err instanceof Error && err.code === "tls/pkix-hostname-mismatch",
+              err ? err.code : "matched");
+      });
+  });
+  var ok = csi("127.0.0.1", { subject: {}, subjectaltname: "IP Address:127.0.0.1" });
+  check("checkServerIdentity9525 still matches 127.0.0.1 against its iPAddress SAN", ok === undefined,
+        ok ? ok.code + " " + ok.message : "");
+  [["example.com", "DNS:example.com"], ["a.0xg", "DNS:a.0xg"], ["v1.example.com", "DNS:*.example.com"],
+   ["0x7f.example.com", "DNS:0x7f.example.com"], ["127.0.0.1.example.com", "DNS:127.0.0.1.example.com"]]
+    .forEach(function (c) {
+      var e = csi(c[0], { subject: {}, subjectaltname: c[1] });
+      check("checkServerIdentity9525 matches the DNS name " + c[0] + " against " + c[1], e === undefined,
+            e ? e.code + " " + e.message : "");
+    });
+}
+
+function testSniForNonCanonicalIpv4() {
+  NON_CANONICAL_IPV4_HOSTS.forEach(function (host) {
+    check("sniFor sends no SNI for the non-canonical IPv4 host " + JSON.stringify(host),
+          b.network.tls.sniFor(host) === undefined, String(b.network.tls.sniFor(host)));
+    var id = b.network.tls.identityFor(host);
+    check("identityFor gives no server name for " + JSON.stringify(host), JSON.stringify(id) === "{}",
+          JSON.stringify(id));
+  });
+  ["0x0a.0.0.5", "10.5", "012.0.0.5", "10.0.0.5" + String.fromCharCode(0xad),
+   "10.0.0.5" + String.fromCharCode(0x200b)].forEach(function (sn) {
+    var e = null;
+    try { b.network.tls.identityFor("10.0.0.5", sn); } catch (err) { e = err; }
+    check("identityFor refuses servername " + sn + " on host 10.0.0.5 as tls/bad-servername",
+          e && e.code === "tls/bad-servername", e ? e.code : "accepted");
+  });
+  MALFORMED_HOSTS.forEach(function (sn) {
+    var e = null;
+    try { b.network.tls.identityFor("example.com", sn); } catch (err) { e = err; }
+    check("identityFor refuses the malformed servername " + JSON.stringify(sn) + " as tls/bad-servername",
+          e && e.code === "tls/bad-servername", e ? e.code : "accepted");
+  });
+  check("sniFor returns a DNS name whose last label is not a number",
+        b.network.tls.sniFor("a.0xg") === "a.0xg" && b.network.tls.sniFor("0x7f.example.com") === "0x7f.example.com");
+}
+
+// Every framework dial checks the server through the compromised-chain
+// wrapper, which falls back to Node's tls.checkServerIdentity. On a Node
+// below 24.22.1 that matcher accepted a non-canonical IPv4 host against a
+// dNSName SAN, so the wrapper refuses the host before any matcher runs.
+async function testDialRefusesNonCanonicalIpv4Host(ca) {
+  var innerCalls = 0;
+  var wrapped = b.network.tls._withCompromisedChainCheck(function () { innerCalls += 1; return undefined; },
+    ca.caCertPem);
+  NON_CANONICAL_IPV4_HOSTS.forEach(function (host) {
+    var err = wrapped.call(null, host, {});
+    check("the dial identity check refuses " + JSON.stringify(host) + " as tls/non-canonical-ip-host",
+          err instanceof Error && err.code === "tls/non-canonical-ip-host",
+          err ? err.code + " " + err.message : "accepted");
+  });
+  check("the identity function a caller supplied is not consulted for a non-canonical IPv4 host",
+        innerCalls === 0, String(innerCalls));
+  MALFORMED_HOSTS.forEach(function (host) {
+    var err = wrapped.call(null, host, {});
+    check("the dial identity check refuses the malformed host " + JSON.stringify(host) + " as tls/bad-host",
+          err instanceof Error && err.code === "tls/bad-host",
+          err ? err.code + " " + err.message : "accepted");
+  });
+  check("the identity function a caller supplied is not consulted for a malformed host",
+        innerCalls === 0, String(innerCalls));
+  ["example.com", "example.com.", "b" + String.fromCharCode(0xfc) + "cher.de", "xn--bcher-kva.de", "_dmarc.example.com"].forEach(function (host) {
+    wrapped.call(null, host, {});
+  });
+  check("the identity function a caller supplied is consulted for a name", innerCalls === 5, String(innerCalls));
+
+  var leaf = await _leaf(ca, ["DNS:localhost", "DNS:127.0.0.1", "DNS:0177.0.0.1", "DNS:127.1",
+    "DNS:2130706433"]);
+  var srv = await _startTlsServer(leaf, "127.0.0.1", function (s) { s.end(); });
+  function lookup(_h, o, cb) {
+    if (o && o.all) cb(null, [{ address: "127.0.0.1", family: 4 }]);
+    else cb(null, "127.0.0.1", 4);
+  }
+  function dial(host) {
+    return new Promise(function (resolve) {
+      var opts = Object.assign(b.network.tls.buildOptions({ ca: ca.caCertPem }),
+        { host: host, port: srv.port, lookup: lookup });
+      var sock = nodeTls.connect(opts); // allow:outbound-tls-posture — buildOptions carries the posture
+      sock.once("secureConnect", function () { sock.destroy(); resolve(null); });
+      sock.once("error", function (e) { sock.destroy(); resolve(e); });
+    });
+  }
+  try {
+    var hosts = ["0177.0.0.1", "127.1", "2130706433"].concat([0xad, 0x200b, 0xfe0f].map(function (code) {
+      return "127.0.0.1" + String.fromCharCode(code);
+    }));
+    for (var i = 0; i < hosts.length; i++) {
+      var e = await dial(hosts[i]);
+      check("a dial to " + JSON.stringify(hosts[i]) + " is refused as tls/non-canonical-ip-host",
+            e && e.code === "tls/non-canonical-ip-host", e ? e.code + " " + e.message : "connected");
+    }
+    var badHosts = ["127.0.0.1..", "127.0.0.1\t", "127.0.0.1\n"];
+    for (var bi = 0; bi < badHosts.length; bi++) {
+      var be = await dial(badHosts[bi]);
+      check("a dial to " + JSON.stringify(badHosts[bi]) + " is refused as tls/bad-host",
+            be && be.code === "tls/bad-host", be ? be.code + " " + be.message : "connected");
+    }
+    var named = await dial("localhost");
+    check("a dial to the same server by name completes", named === null,
+          named ? named.code + " " + named.message : "");
+    var httpsLookups = 0;
+    var origQueryHttps = networkDns.queryHttps;
+    networkDns.queryHttps = function () { httpsLookups += 1; return Promise.reject(new Error("not consulted")); };
+    var echErr = null; var echSock = null;
+    try {
+      echSock = await b.network.tls.connectWithEch({ host: "127.1", port: srv.port, ca: ca.caCertPem,
+        timeoutMs: 4000 });
+    } catch (e) { echErr = e; } finally { networkDns.queryHttps = origQueryHttps; }
+    if (echSock) { try { echSock.destroy(); } catch (_e) { /* best-effort */ } }
+    check("connectWithEch to 127.1 does not look up an HTTPS record for an address",
+          httpsLookups === 0, String(httpsLookups));
+    check("connectWithEch to 127.1 rejects with tls/non-canonical-ip-host",
+          echErr && echErr.code === "tls/non-canonical-ip-host", echErr ? echErr.code : "connected");
+  } finally { _close(srv); }
+}
+
+// With an explicit servername, Node hands the certificate check the servername
+// and not the dial host, so the dial host is checked on its own. Each dial is
+// driven against a leaf for DNS:localhost and IP:127.0.0.1 with servername
+// "localhost"; a lookup stub maps every name to 127.0.0.1 so the dial reaches
+// the handshake on every platform.
+var SERVERNAME_DIAL_CASES = [
+  ["127.1", "tls/non-canonical-ip-host"], ["0x7f.0.0.1", "tls/non-canonical-ip-host"],
+  ["127.0.0.1.", "tls/non-canonical-ip-host"], ["2130706433", "tls/non-canonical-ip-host"],
+  ["127.0.0.1..", "tls/bad-host"], ["127.0.0.1\t", "tls/bad-host"], ["localhost..", "tls/bad-host"],
+];
+
+function _stubAddressLookup() {
+  var asked = [];
+  var origLookup = nodeDns.lookup;
+  var origNdLookup = networkDns.lookup;
+  nodeDns.lookup = function (h, o, cb) {
+    asked.push(h);
+    var done = typeof o === "function" ? o : cb;
+    if (o && typeof o === "object" && o.all) done(null, [{ address: "127.0.0.1", family: 4 }]);
+    else done(null, "127.0.0.1", 4);
+  };
+  networkDns.lookup = function (h) {
+    asked.push(h);
+    return Promise.resolve([{ address: "127.0.0.1", family: 4 }]);
+  };
+  return {
+    asked: asked,
+    restore: function () { nodeDns.lookup = origLookup; networkDns.lookup = origNdLookup; },
+  };
+}
+
+async function testDialHostCheckedWhenAServernameIsSet(ca) {
+  var leaf = await _leaf(ca, ["DNS:localhost", "IP:127.0.0.1"]);
+  var srv = await _startTlsServer(leaf, "127.0.0.1", function (s) {
+    s.on("data", function () {
+      try { s.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"); }
+      catch (_e) { /* client gone */ }
+    });
+  });
+  var stub = _stubAddressLookup();
+  function rawDial(host) {
+    return new Promise(function (resolve) {
+      var opts;
+      try {
+        opts = Object.assign({ host: host, port: srv.port }, b.network.tls.identityFor(host, "localhost"),
+          b.network.tls.buildOptions({ ca: ca.caCertPem }));
+      } catch (e) { resolve(e); return; }
+      var sock = nodeTls.connect(opts); // allow:outbound-tls-posture — buildOptions carries the posture
+      sock.once("secureConnect", function () { sock.destroy(); resolve(null); });
+      sock.once("error", function (e) { sock.destroy(); resolve(e); });
+    });
+  }
+  async function redisDial(host) {
+    var rc = null;
+    try {
+      rc = redisClient.create({ url: "rediss://localhost:" + srv.port + "/0", host: host, servername: "localhost",
+        ca: ca.caCertPem, connectTimeoutMs: 4000, maxReconnectAttempts: 0 });
+      await rc.connect();
+      return null;
+    } catch (e) { return e; }
+    finally { if (rc) await rc.close().catch(function () { /* best-effort */ }); }
+  }
+  async function httpClientDial(host) {
+    var agent = new https.Agent({ ca: [ca.caCertPem], servername: "localhost", keepAlive: false });
+    try {
+      await b.httpClient.request({ url: "https://" + host + ":" + srv.port + "/", allowInternal: true,
+        agent: agent, timeoutMs: 4000 });
+      return null;
+    } catch (e) { return e; }
+    finally { agent.destroy(); }
+  }
+  function socketDial(host) {
+    return new Promise(function (resolve) {
+      var plain = net.connect({ host: host, port: srv.port });
+      plain.once("error", function (e) { resolve(e); });
+      plain.once("connect", function () {
+        var opts = Object.assign(b.network.tls.buildOptions({ ca: ca.caCertPem }),
+          { socket: plain, servername: "localhost" });
+        var sock = nodeTls.connect(opts); // allow:outbound-tls-posture — buildOptions carries the posture
+        sock.once("secureConnect", function () { sock.destroy(); resolve(null); });
+        sock.once("error", function (e) { sock.destroy(); plain.destroy(); resolve(e); });
+      });
+    });
+  }
+  function codeOf(e) {
+    if (!e) return null;
+    if (typeof e.code === "string" && e.code.indexOf("tls/") === 0) return e.code;
+    return e.cause && typeof e.cause.code === "string" ? e.cause.code : e.code;
+  }
+  function seen(e) { return e ? codeOf(e) + " " + e.message : "connected"; }
+  try {
+    for (var i = 0; i < SERVERNAME_DIAL_CASES.length; i++) {
+      var host = SERVERNAME_DIAL_CASES[i][0];
+      var want = SERVERNAME_DIAL_CASES[i][1];
+      var raw = await rawDial(host);
+      check("a buildOptions dial to " + JSON.stringify(host) + " with servername localhost is refused as " + want,
+            codeOf(raw) === want, seen(raw));
+      if (host.indexOf("\t") === -1) {
+        var sd = await socketDial(host);
+        check("a buildOptions dial over a socket connected to " + JSON.stringify(host) +
+              " with servername localhost and no host is refused as " + want, codeOf(sd) === want, seen(sd));
+      }
+      var re = await redisDial(host);
+      var reason = want === "tls/bad-host" ? "is not a valid host name" : "non-canonical spelling";
+      check("b.redis to " + JSON.stringify(host) + " with servername localhost is refused as redis-client/connect " +
+            "carrying the " + want + " reason",
+            re !== null && re.code === "redis-client/connect" && String(re.message).indexOf(reason) !== -1, seen(re));
+      if (host === "localhost..") {
+        var he = await httpClientDial(host);
+        check("b.httpClient to " + JSON.stringify(host) + " through an agent with servername localhost is " +
+              "refused as " + want, codeOf(he) === want || String(he && he.message).indexOf(want) !== -1, seen(he));
+      }
+    }
+    var rawOk = await rawDial("127.0.0.1");
+    check("control: a buildOptions dial to 127.0.0.1 with servername localhost completes", rawOk === null, seen(rawOk));
+    var socketOk = await socketDial("127.0.0.1");
+    check("control: a buildOptions dial over a socket connected to 127.0.0.1 with servername localhost completes",
+          socketOk === null, seen(socketOk));
+    var redisOk = await redisDial("127.0.0.1");
+    check("control: b.redis to 127.0.0.1 with servername localhost completes", redisOk === null, seen(redisOk));
+    var httpOk = await httpClientDial("localhost");
+    check("control: b.httpClient to localhost through an agent with servername localhost completes",
+          httpOk === null, seen(httpOk));
+  } finally { stub.restore(); _close(srv); }
+}
+
+// connectWithEch refuses a malformed host before it asks DNS for an HTTPS
+// record, so no query leaves the process for a name the dial would refuse.
+async function testConnectWithEchRefusesAMalformedHostBeforeTheLookup() {
+  var hosts = ["127.0.0.1..", "a..b.com", ".example.com", "127.0.0.1\t", "exa mple.com", "a%41.com"];
+  var asked = [];
+  var origQueryHttps = networkDns.queryHttps;
+  networkDns.queryHttps = function (h) { asked.push(h); return Promise.reject(new Error("not consulted")); };
+  try {
+    for (var i = 0; i < hosts.length; i++) {
+      var err = null;
+      var sock = null;
+      try {
+        sock = await b.network.tls.connectWithEch({ host: hosts[i], port: 1, timeoutMs: 2000 });
+      } catch (e) { err = e; }
+      if (sock) { try { sock.destroy(); } catch (_e) { /* best-effort */ } }
+      check("connectWithEch rejects the malformed host " + JSON.stringify(hosts[i]) + " with tls/bad-host",
+            err && err.code === "tls/bad-host", err ? err.code + " " + err.message : "connected");
+    }
+  } finally { networkDns.queryHttps = origQueryHttps; }
+  check("connectWithEch asks for no HTTPS record for a malformed host", asked.length === 0, JSON.stringify(asked));
+}
+
+// connectWithEch refuses a host that the resolver reads as an IPv4 address in
+// a non-canonical spelling before any lookup: no HTTPS-record query and no
+// A/AAAA lookup leaves the process, with or without an echOverride.
+async function testConnectWithEchRefusesANonCanonicalIpv4HostBeforeAnyLookup() {
+  var httpsAsked = [];
+  var addrAsked = [];
+  var origQueryHttps = networkDns.queryHttps;
+  var origLookup = nodeDns.lookup;
+  networkDns.queryHttps = function (h) { httpsAsked.push(h); return Promise.reject(new Error("not consulted")); };
+  nodeDns.lookup = function (h, o, cb) {
+    addrAsked.push(h);
+    var done = typeof o === "function" ? o : cb;
+    var e = new Error("lookup refused in this test");
+    e.code = "ENOTFOUND";
+    process.nextTick(function () { done(e); });
+  };
+  var override = Buffer.from([0x00, 0x00]);
+  try {
+    for (var i = 0; i < NON_CANONICAL_IPV4_HOSTS.length; i++) {
+      var host = NON_CANONICAL_IPV4_HOSTS[i];
+      var variants = [{ host: host, port: 1, timeoutMs: 2000 },
+        { host: host, port: 1, timeoutMs: 2000, echOverride: override }];
+      for (var v = 0; v < variants.length; v++) {
+        var err = null;
+        var sock = null;
+        try { sock = await b.network.tls.connectWithEch(variants[v]); }
+        catch (e) { err = e; }
+        if (sock) { try { sock.destroy(); } catch (_e) { /* best-effort */ } }
+        check("connectWithEch" + (v === 1 ? " with an echOverride" : "") + " rejects " + JSON.stringify(host) +
+              " with tls/non-canonical-ip-host",
+              err && err.code === "tls/non-canonical-ip-host", err ? err.code + " " + err.message : "connected");
+      }
+    }
+  } finally { networkDns.queryHttps = origQueryHttps; nodeDns.lookup = origLookup; }
+  check("connectWithEch asks for no HTTPS record for a non-canonical IPv4 host", httpsAsked.length === 0,
+        JSON.stringify(httpsAsked));
+  check("connectWithEch looks up no address for a non-canonical IPv4 host", addrAsked.length === 0,
+        JSON.stringify(addrAsked));
+}
+
 // identityFor is configuration-time: its own options are checked whether or
 // not the servername would be refused.
 function testIdentityForValidatesItsOpts() {
@@ -278,6 +675,13 @@ function testBuildOptionsSni() {
     var err = null; var out = null;
     try { out = b.network.tls.buildOptions({ sni: addr }); } catch (e) { err = e; }
     check("buildOptions: an address in sni (" + addr + ") is refused",
+          err && err.code === "network-tls/bad-tls-options" && /sni/.test(err.message),
+          err ? err.code : "servername=" + JSON.stringify(out && out.servername));
+  });
+  ["127.0.0.1" + String.fromCharCode(0xad), "0x7f.0.0.1"].concat(MALFORMED_HOSTS).forEach(function (sni) {
+    var err = null; var out = null;
+    try { out = b.network.tls.buildOptions({ sni: sni }); } catch (e) { err = e; }
+    check("buildOptions: sni " + JSON.stringify(sni) + " is refused",
           err && err.code === "network-tls/bad-tls-options" && /sni/.test(err.message),
           err ? err.code : "servername=" + JSON.stringify(out && out.servername));
   });
@@ -947,12 +1351,19 @@ async function run() {
     testIdentityForHelper();
     testIdentityForEveryIpv6Spelling();
     testCheckServerIdentity9525DottedHost();
+    testDialHostForm();
+    testCheckServerIdentity9525NonCanonicalIpv4();
+    testSniForNonCanonicalIpv4();
     testIdentityForValidatesItsOpts();
     testBuildOptionsSni();
     testServernameMustBeAString();
+    await testConnectWithEchRefusesAMalformedHostBeforeTheLookup();
+    await testConnectWithEchRefusesANonCanonicalIpv4HostBeforeAnyLookup();
     await testProxyAgentServernameNamingAnotherAddress();
     var ca = await _makeCa();
     await testServernameNamingAnotherAddress(ca);
+    await testDialRefusesNonCanonicalIpv4Host(ca);
+    await testDialHostCheckedWhenAServernameIsSet(ca);
     await testOcspConnectIdentity(ca);
     await testConnectWithEchToAnIpLiteral(ca);
     await testDnsOverTlsToAnIpLiteral(ca);

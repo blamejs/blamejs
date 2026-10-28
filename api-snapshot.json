@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "frameworkVersion": "0.21.5",
-  "createdAt": "2026-10-27T19:24:26.195Z",
+  "frameworkVersion": "0.21.6",
+  "createdAt": "2026-10-28T01:08:59.651Z",
   "exports": {
     "a2a": {
       "type": "object",
@@ -55760,6 +55760,14 @@
               "arity": 0
             },
             "dbAtRest": {
+              "type": "function",
+              "arity": 0
+            },
+            "nodeVersion": {
+              "type": "function",
+              "arity": 0
+            },
+            "opensslVersion": {
               "type": "function",
               "arity": 0
             },

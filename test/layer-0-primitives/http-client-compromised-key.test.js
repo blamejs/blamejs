@@ -155,9 +155,9 @@ async function testOperatorAgentWithItsOwnIdentityCheck() {
 }
 
 // Five sequential requests through one keep-alive agent built from
-// applyToContext reuse one TLS connection to the server, and that agent's
-// check still refuses the chain hiding the compromised issuing CA.
-async function testOperatorAgentKeepsItsConnection() {
+// applyToContext each open their own TLS connection to the server, and that
+// agent's check still refuses the chain hiding the compromised issuing CA.
+async function testOperatorAgentOpensAConnectionPerRequest() {
   b.network.tls._resetForTest();
   var control = await _server("control", false);
   var evasion = await _server("path-evasion", false);
@@ -166,8 +166,8 @@ async function testOperatorAgentKeepsItsConnection() {
   try {
     var statuses = [];
     for (var i = 0; i < 5; i += 1) statuses.push((await _requestWithAgent(control.port, agent)).status);
-    check("httpClient opts.agent from applyToContext: five keep-alive requests answer 200 over one TLS connection",
-          statuses.every(function (s) { return s === 200; }) && control.counts.connections === 1,
+    check("httpClient opts.agent from applyToContext: five keep-alive requests answer 200, each over its own TLS connection",
+          statuses.every(function (s) { return s === 200; }) && control.counts.connections === 5,
           JSON.stringify({ statuses: statuses, connections: control.counts.connections }));
     var hidden = await _requestWithAgent(evasion.port, agent);
     check("httpClient opts.agent from applyToContext: a chain hiding the compromised issuing CA is refused",
@@ -221,9 +221,9 @@ async function testThroughProxy() {
     var before = { tunnels: tunnels, connections: control.counts.connections };
     var statuses = [];
     for (var i = 0; i < 4; i += 1) statuses.push((await _request(control.port)).status);
-    check("httpClient through the proxy: later requests to the control server reuse the first tunnel and connection",
-          statuses.every(function (s) { return s === 200; }) && control.counts.connections === 1 &&
-            tunnels === before.tunnels,
+    check("httpClient through the proxy: each later request to the control server opens its own tunnel and TLS connection",
+          statuses.every(function (s) { return s === 200; }) &&
+            control.counts.connections === before.connections + 4 && tunnels === before.tunnels + 4,
           JSON.stringify({ statuses: statuses, before: before, tunnels: tunnels, connections: control.counts.connections }));
   } finally {
     b.network.proxy._resetForTest();
@@ -275,7 +275,7 @@ async function testPqcAgentReloadedCa() {
   }
 }
 
-var TESTS = [testHttp2, testHttp1, testOperatorAgent, testOperatorAgentWithItsOwnIdentityCheck, testOperatorAgentKeepsItsConnection, testThroughProxy,
+var TESTS = [testHttp2, testHttp1, testOperatorAgent, testOperatorAgentWithItsOwnIdentityCheck, testOperatorAgentOpensAConnectionPerRequest, testThroughProxy,
   testPqcAgentReloadedCa];
 
 async function run() {

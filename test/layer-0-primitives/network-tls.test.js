@@ -405,9 +405,15 @@ function testPkixQuotedSanNoBypass() {
   check("legit IPv4 SAN still matches",
         b.network.tls.checkServerIdentity9525("198.51.100.1",
           _cert("IP Address:198.51.100.1")) === undefined);
-  // The genuine (whole-blob) dNSName is still matchable exactly.
-  var okErr = b.network.tls.checkServerIdentity9525("x, DNS:victim.com, y", cert);
-  check("the actual quoted dNSName value matches exactly", okErr === undefined);
+  // The whole-blob value is not a host name (it carries white space), so a
+  // host spelled that way is refused before any SAN is read. A quoted value
+  // that is a host name still matches that host exactly.
+  var blobErr = b.network.tls.checkServerIdentity9525("x, DNS:victim.com, y", cert);
+  check("a host carrying white space is refused, even against a quoted SAN spelled the same",
+        blobErr && blobErr.code === "tls/pkix-hostname-mismatch");
+  var okErr = b.network.tls.checkServerIdentity9525("victim.com", _cert('DNS:"victim.com"', "attacker"));
+  check("a quoted dNSName value matches the host it spells exactly", okErr === undefined,
+        okErr ? okErr.message : "");
   // Legitimate unquoted multi-SAN + wildcard + IP remain accepted (parity).
   check("legit multi-DNS still accepted",
         b.network.tls.checkServerIdentity9525("b.example.com",

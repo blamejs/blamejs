@@ -214,8 +214,72 @@ function testHmacMd5UsesTheRegisteredName() {
   check("a message naming the unregistered 'hmac-md5.' is not accepted", r4.valid === false);
 }
 
+// A key name is read off the wire in RFC 1035 presentation form, so a dot or a
+// byte outside 0x21-0x7E inside a label survives the round trip into the
+// digest, and a name label that runs past the end of the message is refused.
+function _wireLabels(labels) {
+  var parts = labels.map(function (l) {
+    var lb = Buffer.isBuffer(l) ? l : Buffer.from(l, "latin1");
+    return Buffer.concat([Buffer.from([lb.length]), lb]);
+  });
+  parts.push(Buffer.from([0]));
+  return Buffer.concat(parts);
+}
+function _handSignLabels(unsigned, keyLabels, time) {
+  var t48 = Buffer.alloc(6); t48.writeUIntBE(time, 0, 6);
+  var alg = _nameWire("hmac-sha256.");
+  var lowered = keyLabels.map(function (l) {
+    var lb = Buffer.from(Buffer.isBuffer(l) ? l : Buffer.from(l, "latin1"));
+    for (var i = 0; i < lb.length; i++) if (lb[i] >= 0x41 && lb[i] <= 0x5a) lb[i] += 0x20;
+    return lb;
+  });
+  var vars = Buffer.concat([_wireLabels(lowered), _u16(255), _u32(0), alg, t48, _u16(300), _u16(0), _u16(0)]);
+  var mac = require("node:crypto").createHmac("sha256", Buffer.from(SECRET, "base64"))
+    .update(Buffer.concat([unsigned, vars])).digest();
+  var rdata = Buffer.concat([alg, t48, _u16(300), _u16(mac.length), mac, unsigned.slice(0, 2), _u16(0), _u16(0)]);
+  var msg = Buffer.concat([unsigned, _wireLabels(keyLabels), _u16(250), _u16(255), _u32(0), _u16(rdata.length), rdata]);
+  msg.writeUInt16BE(msg.readUInt16BE(10) + 1, 10);
+  return msg;
+}
+
+function testKeyNamesAreReadInPresentationForm() {
+  var dotted = _handSignLabels(V1.unsigned, ["a.b", "example"], V1.time);
+  var r1 = tsig.verify(dotted, { keys: { "a\\.b.example.": { secret: SECRET } }, now: V1.time });
+  check("a key name whose first label is 'a.b' verifies under the key a\\.b.example. (got " + JSON.stringify(r1) + ")",
+    r1.valid === true && r1.keyName === "a\\.b.example.");
+  var r2 = tsig.verify(dotted, { keys: { "a.b.example.": { secret: SECRET } }, now: V1.time });
+  check("the one-label 'a.b' key name does not select the three-label key a.b.example.",
+    r2.valid === false && r2.error === tsig.ERROR.BADKEY);
+
+  var high = _handSignLabels(V1.unsigned, [Buffer.from([0xe9, 0x41]), "example"], V1.time);
+  var r3 = tsig.verify(high, { keys: { "\\233a.example.": { secret: SECRET } }, now: V1.time });
+  check("a key name byte 0xE9 is read as \\233 and its digest verifies (got " + JSON.stringify(r3) + ")",
+    r3.valid === true && r3.keyName === "\\233A.example.");
+  var r4 = tsig.verify(high, { keys: { "ia.example.": { secret: SECRET } }, now: V1.time });
+  check("a key name byte 0xE9 is not folded to 'i'", r4.valid === false && r4.error === tsig.ERROR.BADKEY);
+
+  var s = tsig.sign(V1.unsigned, { keyName: "a\\.b.example.", secret: SECRET, time: V1.time, fudge: 300 });
+  check("sign writes the escaped key name as the one label 'a.b'", s.wire.equals(dotted));
+  check("sign refuses a malformed escape in the key name",
+    code(function () { tsig.sign(V1.unsigned, { keyName: "a\\9.example.", secret: SECRET }); }) === "tsig/bad-name");
+
+  var cut = Buffer.from(V1.signed);
+  var algAt = cut.indexOf(_nameWire("hmac-sha256."));
+  cut[algAt] = 0x3f;
+  check("an algorithm-name label that runs past the message end is refused as tsig/truncated",
+    code(function () { tsig.verify(cut, { keys: { "test.key.": { secret: SECRET } }, now: V1.time }); }) === "tsig/truncated");
+
+  var algWire = _nameWire("hmac-sha256.");
+  var short = Buffer.concat([V1.unsigned, _nameWire(KEY), _u16(250), _u16(255), _u32(0), _u16(algWire.length + 4),
+    algWire, Buffer.from([0, 0, 0, 0])]);
+  short.writeUInt16BE(short.readUInt16BE(10) + 1, 10);
+  check("a TSIG RDATA that ends inside its fixed fields is refused as tsig/truncated",
+    code(function () { tsig.verify(short, { keys: { "test.key.": { secret: SECRET } }, now: V1.time }); }) === "tsig/truncated");
+}
+
 async function run() {
   testSurface();
+  testKeyNamesAreReadInPresentationForm();
   testHmacMd5UsesTheRegisteredName();
   testSignMatchesDnspython();
   testVerifyAcceptsDnspython();

@@ -839,6 +839,121 @@ function testVerifyChainCollidingAlgKey() {
   check("verifyChain: skips a same-tag different-algorithm key and validates with the real signer", out.ok === true);
 }
 
+// b.safeDns.parseResponse returns names in RFC 1035 presentation form, so a
+// label byte outside 0x21-0x7E comes back as \DDD and a dot inside a label as
+// \. . verifyRrset and verifyDenial take those names and must rebuild the
+// same wire labels the zone signed.
+function _wireOf(labels) {
+  var parts = [];
+  labels.forEach(function (l) {
+    var lb = Buffer.isBuffer(l) ? l : Buffer.from(l, "latin1");
+    parts.push(Buffer.from([lb.length]), lb);
+  });
+  parts.push(Buffer.from([0]));
+  return Buffer.concat(parts);
+}
+function _lowerWire(labels) {
+  return _wireOf(labels.map(function (l) {
+    var lb = Buffer.from(Buffer.isBuffer(l) ? l : Buffer.from(l, "latin1"));
+    for (var i = 0; i < lb.length; i++) if (lb[i] >= 0x41 && lb[i] <= 0x5a) lb[i] += 0x20;
+    return lb;
+  }));
+}
+function _respWith(qnameWire, qtype, answers) {
+  var hdr = Buffer.concat([_u16b(0x1234), _u16b(0x8180), _u16b(1), _u16b(answers.length), _u16b(0), _u16b(0)]);
+  return Buffer.concat([hdr, qnameWire, _u16b(qtype), _u16b(1)].concat(answers));
+}
+function _rrWire(ownerWire, type, ttl, rdata) {
+  return Buffer.concat([ownerWire, _u16b(type), _u16b(1), _u32b(ttl), _u16b(rdata.length), rdata]);
+}
+function testPresentationNamesFromSafeDnsVerify() {
+  function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+  var kp = nodeCrypto.generateKeyPairSync("ed25519");
+  var pubRaw = Buffer.from(kp.publicKey.export({ format: "jwk" }).x, "base64url");
+  var owners = [
+    ["my printer", "_ipp", "_tcp", "example"],
+    ["a.b", "example"],
+    [Buffer.from([0xe9, 0x61]), "example"],
+    ["Back\\Slash", "Example"],
+    ["plain", "example"],
+  ];
+  owners.forEach(function (labels) {
+    var ownerWire = _wireOf(labels);
+    var txt = Buffer.concat([Buffer.from([5]), Buffer.from("hello")]);
+    var now = Math.floor(Date.now() / 1000);
+    var prefix = Buffer.concat([_u16b(16), Buffer.from([15, labels.length]), _u32b(300),
+      _u32b(now + 3600), _u32b(now - 3600), _u16b(4242), _wireOf(["example"])]);
+    var signed = Buffer.concat([prefix, _lowerWire(labels), _u16b(16), _u16b(1), _u32b(300), _u16b(txt.length), txt]);
+    var sig = nodeCrypto.sign(null, signed, kp.privateKey);
+    var parsed = b.safeDns.parseResponse(_respWith(ownerWire, 16, [
+      _rrWire(ownerWire, 16, 300, txt), _rrWire(ownerWire, 46, 300, Buffer.concat([prefix, sig])),
+    ]));
+    var rs = parsed.answer[1].decoded;
+    var args = {
+      name: parsed.answer[0].name, type: "TXT", rdatas: [txt],
+      rrsig: { algorithm: rs.algorithm, labels: rs.labels, originalTtl: rs.originalTtl, expiration: rs.sigExpiry,
+               inception: rs.sigInception, keyTag: rs.keyTag, signerName: rs.signerName, signature: rs.signature },
+      dnskey: { algorithm: 15, publicKey: pubRaw },
+    };
+    var got;
+    try { got = b.network.dns.dnssec.verifyRrset(args).ok === true ? "ok" : "not-ok"; } catch (e) { got = e.code; }
+    check("verifyRrset accepts the parseResponse owner " + JSON.stringify(parsed.answer[0].name) + " (got " + got + ")",
+      got === "ok");
+  });
+
+  var now2 = Math.floor(Date.now() / 1000);
+  var txt2 = Buffer.concat([Buffer.from([1]), Buffer.from("x")]);
+  var prefix2 = Buffer.concat([_u16b(16), Buffer.from([15, 2]), _u32b(300),
+    _u32b(now2 + 3600), _u32b(now2 - 3600), _u16b(4242), _wireOf(["example"])]);
+  var sig2 = nodeCrypto.sign(null, Buffer.concat([prefix2, _lowerWire(["a.b", "example"]), _u16b(16), _u16b(1), _u32b(300), _u16b(txt2.length), txt2]), kp.privateKey);
+  var rrsig2 = { algorithm: 15, labels: 2, originalTtl: 300, expiration: now2 + 3600, inception: now2 - 3600,
+                 keyTag: 4242, signerName: "example.", signature: sig2 };
+  check("verifyRrset: the signature over the one-label 'a.b' does not verify for the three-label a.b.example",
+    code(function () {
+      b.network.dns.dnssec.verifyRrset({ name: "a.b.example.", type: "TXT", rdatas: [txt2], rrsig: rrsig2,
+        dnskey: { algorithm: 15, publicKey: pubRaw } });
+    }) !== "NO-THROW");
+  check("verifyRrset: the escaped name a\\.b.example verifies",
+    code(function () {
+      b.network.dns.dnssec.verifyRrset({ name: "a\\.b.example.", type: "TXT", rdatas: [txt2], rrsig: rrsig2,
+        dnskey: { algorithm: 15, publicKey: pubRaw } });
+    }) === "NO-THROW");
+  check("verifyRrset: a malformed escape in the owner name is refused as dnssec/bad-name",
+    code(function () {
+      b.network.dns.dnssec.verifyRrset({ name: "a\\9.example.", type: "TXT", rdatas: [txt2], rrsig: rrsig2,
+        dnskey: { algorithm: 15, publicKey: pubRaw } });
+    }) === "dnssec/bad-name");
+
+  var bitmapA = Buffer.from([0, 1, 0x40]);
+  var spOwner = _wireOf(["my printer", "example"]);
+  var nsecRd = Buffer.concat([_wireOf(["zzz", "example"]), bitmapA]);
+  var parsedNsec = b.safeDns.parseResponse(_respWith(spOwner, 47, [_rrWire(spOwner, 47, 60, nsecRd)]));
+  var nd;
+  try {
+    nd = b.network.dns.dnssec.verifyDenial({ qname: "my printer.example", qtype: "TXT", proof: "nodata", zone: "example",
+      nsec: [{ owner: parsedNsec.answer[0].name, rdata: nsecRd }] });
+  } catch (e) { nd = { code: e.code }; }
+  check("verifyDenial: an NSEC owner from parseResponse matches the queried name (got " + JSON.stringify(nd) + ")",
+    nd && nd.ok === true && nd.matched === true);
+  var nd2;
+  try {
+    nd2 = b.network.dns.dnssec.verifyDenial({ qname: "my\\032printer.example", qtype: "TXT", proof: "nodata", zone: "example",
+      nsec: [{ owner: parsedNsec.answer[0].name, rdata: nsecRd }] });
+  } catch (e) { nd2 = { code: e.code }; }
+  check("verifyDenial: a qname in presentation form matches the same NSEC owner", nd2 && nd2.ok === true);
+
+  var dottedNext = [
+    { owner: "example.", rdata: Buffer.concat([_wireOf(["a", "example"]), bitmapA]) },
+    { owner: "a.example.", rdata: Buffer.concat([_wireOf(["b.c", "example"]), bitmapA]) },
+  ];
+  check("verifyDenial: an NSEC whose next name is the one label 'b.c' does not cover c.example",
+    code(function () {
+      b.network.dns.dnssec.verifyDenial({ qname: "c.example", proof: "nxdomain", zone: "example", nsec: dottedNext });
+    }) === "dnssec/denial-not-proven");
+  var cover = b.network.dns.dnssec.verifyDenial({ qname: "b.example", proof: "nxdomain", zone: "example", nsec: dottedNext });
+  check("verifyDenial: the same NSEC still covers b.example", cover.ok === true && cover.closestEncloser === "example.");
+}
+
 // NXDOMAIN accepts an (optional) qtype alongside the real NSEC3 proof.
 function testDenialExtra() {
   var out = b.network.dns.dnssec.verifyDenial({ qname: "nonexistent-blamejs-test-xyz.iana.org", qtype: "A", proof: "nxdomain", zone: "iana.org", nsec3: ianaRecords() });
@@ -873,6 +988,7 @@ async function run() {
   testVerifyChainDelegationBranches();
   testVerifyChainCollidingAlgKey();
   testDenialExtra();
+  testPresentationNamesFromSafeDnsVerify();
 }
 
 module.exports = { run: run };

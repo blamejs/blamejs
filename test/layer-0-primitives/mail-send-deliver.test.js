@@ -1644,6 +1644,177 @@ async function testNodeDnsFallback() {
   });
 }
 
+// ---- A recipient domain that is not a DNS name is refused before any lookup ----
+//
+// node:dns resolve*() on Node before 24.22.1 passes the name to c-ares as a
+// NUL-terminated C string (CVE-2026-105482), so
+// "victim@attacker.example\0.trusted.example" was resolved, and delivered, as
+// attacker.example. On a patched runtime the same address failed as a
+// transient 4.4.4 and was retried for days.
+
+var _BAD_RECIPIENTS = [
+  "victim@attacker.example\u0000.trusted.example",
+  "victim@attacker.example\r\n.trusted.example",
+  "victim@attacker example.trusted.example",
+  "vic\u0000tim@trusted.example",
+  "vic\r\ntim@trusted.example",
+  "c1local\u0085x@trusted.example",
+  "c1local\u009bx@trusted.example",
+  "root@.",
+  "root@。",
+  "lit@[192.0.2.1]",
+  "lit@192.0.2.1",
+  "lit@192.0.2.1.",
+  "lit@::1",
+  "lit@fe80::1%.attacker.example",
+  "lit@[IPv6:2001:db8::1]",
+  "pct@evil%2Eexample.com",
+  "pct@blocked.exampl%65",
+  "pct@exa%41mple.com",
+  "pct@evil％2Eexample.com",
+  "pct@bad!char.example",
+];
+
+async function testBadRecipientDomainRefusedBeforeLookup() {
+  for (var mi = 0; mi < 2; mi += 1) {
+    var mode = mi === 0 ? "off" : "testing";
+    var systemAsked = [];
+    var transportCalls = 0;
+    await withNodeDnsResolveMx(async function (domain) {
+      systemAsked.push(domain);
+      return [{ exchange: "mx1.attacker.example", priority: 10 }];
+    }, async function () {
+      var deliver = b.mail.send.deliver.create({
+        hostname: "mta.example.com", audit: false,
+        policy:   { mtaSts: mode, dane: "off" },
+        retry:    { maxAttempts: 3, backoffMs: [1, 1] },
+        transportFactory: function () {
+          transportCalls += 1;
+          return { send: async function () { return { ok: true, code: 250 }; } };
+        },
+      });
+      for (var ri = 0; ri < _BAD_RECIPIENTS.length; ri += 1) {
+        var r = await deliver({ from: "ops@example.com", to: [_BAD_RECIPIENTS[ri]], rfc822: Buffer.from("hi") });
+        check("system DNS, mtaSts " + mode + ": " + JSON.stringify(_BAD_RECIPIENTS[ri]) +
+              " fails permanently as 5.1.3 (got " + JSON.stringify(r.failed[0] || r.deferred[0] || r.delivered[0]) + ")",
+          r.failed.length === 1 && r.deferred.length === 0 && r.delivered.length === 0 &&
+          r.failed[0].reasonCode === "5.1.3");
+      }
+    });
+    check("system DNS, mtaSts " + mode + ": no MX lookup is made (asked " + JSON.stringify(systemAsked) + ")",
+      systemAsked.length === 0);
+    check("system DNS, mtaSts " + mode + ": no transport is opened", transportCalls === 0);
+  }
+
+  var resolverAsked = [];
+  var deliverR = b.mail.send.deliver.create({
+    hostname: "mta.example.com", audit: false,
+    resolver: { queryMx: async function (d) { resolverAsked.push(d); return [{ exchange: "mx1.attacker.example", priority: 10 }]; } },
+    policy:   { mtaSts: "off", dane: "off" },
+    transportFactory: okTransport(),
+  });
+  var rr = await deliverR({ from: "ops@example.com", to: [_BAD_RECIPIENTS[0]], rfc822: Buffer.from("hi") });
+  check("pinned resolver: a NUL in the domain fails permanently as 5.1.3",
+    rr.failed.length === 1 && rr.failed[0].reasonCode === "5.1.3");
+  check("pinned resolver: queryMx is not asked", resolverAsked.length === 0);
+
+  var good = [];
+  await withNodeDnsResolveMx(async function (domain) {
+    good.push(domain);
+    return [{ exchange: "mx.node." + domain, priority: 5 }];
+  }, async function () {
+    var deliverG = b.mail.send.deliver.create({
+      hostname: "mta.example.com", audit: false,
+      policy:   { mtaSts: "off", dane: "off" },
+      transportFactory: okTransport(),
+    });
+    var rg = await deliverG({ from: "ops@example.com", to: [
+      "a@Recipient.Example.", "b@xn--bcher-kva.example", "c@Bücher.example",
+      "d@att​acker.example", "e@ex­ample.com", "f@attacker.example。trusted.example",
+    ], rfc822: Buffer.from("hi") });
+    check("an ordinary domain (case, trailing dot, A-label, U-label) still delivers",
+      rg.delivered.length === 6);
+  });
+  check("each domain is looked up in its UTS #46 canonical form (asked " + JSON.stringify(good) + ")",
+    JSON.stringify(good) === JSON.stringify([
+      "recipient.example.", "xn--bcher-kva.example", "xn--bcher-kva.example",
+      "attacker.example", "example.com", "attacker.example.trusted.example",
+    ]));
+}
+
+// ---- A legal domain whose policy name cannot exist has no policy ----
+//
+// A recipient domain of 245 to 253 octets is a legal DNS name, but
+// `_mta-sts.<domain>` is then longer than 253 octets, so no MTA-STS record
+// can be published for it. Under the default mtaSts "enforce" posture that
+// domain was failed as 5.7.10. The same holds for the `_25._tcp.<mx>` TLSA
+// name of a long MX host under dane "enforce".
+
+function _longDomain(n) {
+  var l63 = "a".repeat(63);
+  return [l63, l63, l63, "a".repeat(n - 3 * 64)].join(".");
+}
+
+async function testLongLegalDomainHasNoPolicyUnderEnforce() {
+  var domains = [_longDomain(245), _longDomain(253), _longDomain(253) + "."];
+  var asked = [];
+  var resolver = {
+    queryMx:   async function () { return [{ exchange: "mx1.example.net", priority: 10 }]; },
+    queryTxt:  async function (n) { asked.push("TXT:" + n); return { rrs: [] }; },
+    queryTlsa: async function (n) { asked.push("TLSA:" + n); return { rrs: [] }; },
+  };
+  var deliverR = b.mail.send.deliver.create({
+    hostname: "mta.example.com", audit: false, resolver: resolver,
+    policy:   { mtaSts: "enforce", dane: "off" },
+    transportFactory: okTransport(),
+  });
+  for (var i = 0; i < domains.length; i += 1) {
+    var r = await deliverR({ from: "ops@example.com", to: ["x@" + domains[i]], rfc822: Buffer.from("hi") });
+    check("pinned resolver, mtaSts enforce: a " + domains[i].length + "-character domain is delivered (got " +
+          JSON.stringify(r.failed[0] || r.deferred[0] || null) + ")",
+      r.delivered.length === 1 && r.failed.length === 0 && r.deferred.length === 0);
+  }
+  check("pinned resolver: no _mta-sts TXT query for a name that cannot exist (asked " + JSON.stringify(asked) + ")",
+    asked.length === 0);
+
+  await withNodeDnsResolveMx(async function () {
+    return [{ exchange: "mx1.example.net", priority: 10 }];
+  }, async function () {
+    var deliverS = b.mail.send.deliver.create({
+      hostname: "mta.example.com", audit: false,
+      policy:   { mtaSts: "enforce", dane: "off" },
+      transportFactory: okTransport(),
+    });
+    for (var j = 0; j < domains.length; j += 1) {
+      var rs = await deliverS({ from: "ops@example.com", to: ["x@" + domains[j]], rfc822: Buffer.from("hi") });
+      check("system DNS, mtaSts enforce: a " + domains[j].length + "-character domain is delivered (got " +
+            JSON.stringify(rs.failed[0] || rs.deferred[0] || null) + ")",
+        rs.delivered.length === 1);
+    }
+  });
+
+  var longMx = _longDomain(250);
+  var mxFor = { "long.example": longMx, "short.example": "mx1.example.net" };
+  var daneAsked = [];
+  var deliverD = b.mail.send.deliver.create({
+    hostname: "mta.example.com", audit: false,
+    resolver: {
+      queryMx:   async function (d) { return [{ exchange: mxFor[d], priority: 10 }]; },
+      queryTlsa: async function (n) { daneAsked.push(n); return { rrs: [] }; },
+    },
+    policy:   { mtaSts: "off", dane: "enforce", dnssecValidated: true },
+    transportFactory: okTransport(),
+  });
+  var rd = await deliverD({ from: "ops@example.com", to: ["x@long.example"], rfc822: Buffer.from("hi") });
+  check("dane enforce: an MX host whose TLSA name cannot exist is delivered to (got " +
+        JSON.stringify(rd.failed[0] || rd.deferred[0] || null) + ")",
+    rd.delivered.length === 1 && rd.deferred.length === 0 && rd.failed.length === 0);
+  var rc = await deliverD({ from: "ops@example.com", to: ["x@short.example"], rfc822: Buffer.from("hi") });
+  check("dane enforce control: an ordinary MX host is delivered to", rc.delivered.length === 1);
+  check("dane enforce: only the ordinary MX host's TLSA name is queried (asked " + JSON.stringify(daneAsked) + ")",
+    daneAsked.length === 1 && daneAsked[0] === "_25._tcp.mx1.example.net");
+}
+
 // ---- Recipient with no usable domain ----
 
 async function testRecipientNoDomain() {
@@ -2160,6 +2331,8 @@ async function run() {
   await testMxLookupTimeout();
   await testNodeDnsFallback();
   await testRecipientNoDomain();
+  await testBadRecipientDomainRefusedBeforeLookup();
+  await testLongLegalDomainHasNoPolicyUnderEnforce();
   await testAllHostsTransient();
   await testPermanentFailKeepsMxHost();
   await testMtaStsMatrix();
