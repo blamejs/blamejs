@@ -32,6 +32,7 @@ async function run() {
 
   // ---- baseline: lookup against system resolvers works ----
   if (typeof dns._resetForTest === "function") dns._resetForTest();
+  dns.useSystemResolver();
   dns.setLookupTimeoutMs(4000);
   var sys = await dns.lookup("example.com");
   check("baseline lookup: returns object",     typeof sys === "object" && sys !== null);
@@ -90,6 +91,8 @@ async function run() {
         Array.isArray(dohResults) && dohResults.length > 0);
   check("DoH: every address is dotted-quad IPv4",
         dohResults.every(function (a) { return /^\d+\.\d+\.\d+\.\d+$/.test(a); }));
+  check("DoH: the answer is the address in the stack's local zone (docker/coredns/Corefile)",
+        dohResults.length === 1 && dohResults[0] === "93.184.215.14", JSON.stringify(dohResults));
 
   // ---- DoH GET path (under URL length cap) ----
   if (typeof dns._resetForTest === "function") dns._resetForTest();
@@ -105,6 +108,7 @@ async function run() {
 
   // ---- cache: second lookup hits the cache ----
   if (typeof dns._resetForTest === "function") dns._resetForTest();
+  dns.useDnsOverHttps({ url: "https://localhost:8053/dns-query", method: "POST", ca: caPem });
   dns.setLookupTimeoutMs(4000);
   dns.setCacheTtlMs(60000);
   var first = await dns.lookup("example.com");

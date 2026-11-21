@@ -39,9 +39,22 @@ var nodeFs    = require("node:fs");
 var nodeOs    = require("node:os");
 var nodePath  = require("node:path");
 
-var helpers   = require("../helpers");
-var check     = helpers.check;
+// The parent and every spawned child load these modules directly. The
+// package root takes about 5 s to load in a container against the bind
+// mount, and these modules take about 0.6 s.
+var checkMod  = require("../helpers/check");
+var wait      = require("../helpers/wait");
 var ck        = require("../helpers/compromised-keys");
+var b = {
+  httpClient: require("../../lib/http-client"),
+  pqcAgent:   require("../../lib/pqc-agent"),
+  localHttp:  require("../../lib/local-http"),
+  testing:    require("../../lib/testing"),
+  safeUrl:    require("../../lib/safe-url"),
+  network:    { dns: require("../../lib/network-dns"), proxy: require("../../lib/network-proxy") },
+};
+var helpers   = { check: checkMod.check, getChecks: checkMod.getChecks, waitUntil: wait.waitUntil, b: b };
+var check     = helpers.check;
 
 var PENDING_READ = { tcp: null, tls: null };
 var FIRST_BODY_LEN = 65444;
@@ -322,7 +335,6 @@ async function _requester(scenario, b, srv, opts) {
 }
 
 async function _childSequential(scenario, mode, chain) {
-  var b = require("../../index.js");
   var useTls = scenario === "pqc-https";
   var handles = await _socketHandles();
   _capturePendingReadCheck(handles);
@@ -346,7 +358,6 @@ async function _childSequential(scenario, mode, chain) {
 }
 
 async function _childQueued(scenario, mode) {
-  var b = require("../../index.js");
   var handles = await _socketHandles();
   _capturePendingReadCheck(handles);
   var checked = PENDING_READ.tcp !== null;
@@ -418,7 +429,6 @@ async function _tlsRequester(scenario, b, port, rootPem, proxyState) {
 }
 
 async function _childTls(scenario, mode, chain) {
-  var b = require("../../index.js");
   var handles = await _socketHandles();
   _capturePendingReadCheck(handles);
   if (mode === "unchecked") _removePendingReadCheck(handles);
@@ -494,7 +504,6 @@ if (require.main === module && process.argv[2] === "child") {
 }
 
 async function _childDoh(mode, chainKey, chainCert, rootPem) {
-  var b = require("../../index.js");
   var handles = await _socketHandles();
   _capturePendingReadCheck(handles);
   var checked = PENDING_READ.tls !== null;
@@ -695,7 +704,6 @@ async function testQueuedRequestOnPqcAgentUsedDirectly() {
 }
 
 async function testAgentThatCannotBeGuardedIsRefused() {
-  var b = helpers.b;
   var srv = await _plainServer(null);
   var base = "http://127.0.0.1:" + srv.server.address().port;
   function get(agent) {

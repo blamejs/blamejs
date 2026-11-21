@@ -15,7 +15,7 @@ function _resolvers(vaultMode, dbAtRest, auditMode) {
     vault:          function () { return vaultMode; },
     dbAtRest:       function () { return dbAtRest; },
     auditSigning:   function () { return auditMode; },
-    nodeVersion:    function () { return "24.22.1"; },
+    nodeVersion:    function () { return "26.13.1"; },
     opensslVersion: function () { return "3.5.9"; },
   };
 }
@@ -380,7 +380,7 @@ async function _testMinNodeMajor() {
 
   var badRuns = 0;
   var badResolvers = _resolvers("wrapped", "encrypted", "wrapped");
-  badResolvers.nodeVersion = function () { badRuns += 1; return "24.22.1"; };
+  badResolvers.nodeVersion = function () { badRuns += 1; return "26.13.1"; };
   await _assertErr(_cleanBase({ minNodeMajor: "24", resolvers: badResolvers }));
   check("minNodeMajor given a bad value throws before any runtime version is read",
         badRuns === 0, "nodeVersion resolver ran " + badRuns + " time(s)");
@@ -399,7 +399,7 @@ async function _testMinNodeMajorReadsTheResolver() {
 
   var old = await _assertErr(_nodeOnly("22.0.0"));
   var oldMsg = _failureMessage(old, "security/node-version");
-  check("nodeVersion resolver 22.0.0 under the default floor 24: fails security/node-version " +
+  check("nodeVersion resolver 22.0.0 under the default floor 26: fails security/node-version " +
         "and the message names 22.0.0", oldMsg !== null && /^Node 22\.0\.0 /.test(oldMsg),
         old && old.message);
 
@@ -413,8 +413,8 @@ async function _testMinNodeMajorReadsTheResolver() {
         /^Node 22\.0\.0 /.test(_failureMessage(agree, "security/node-version") || ""),
         agree && agree.message);
 
-  var vPrefix = await _assertErr(_nodeOnly("v24.22.1"));
-  check("nodeVersion resolver \"v24.22.1\" parses and passes the default floor",
+  var vPrefix = await _assertErr(_nodeOnly("v26.13.1"));
+  check("nodeVersion resolver \"v26.13.1\" parses and passes the default floor",
         vPrefix === null, vPrefix && vPrefix.message);
 
   var threw = await _assertErr(_nodeOnly(function () { throw new Error("major-boom"); }));
@@ -497,23 +497,70 @@ async function _testRuntimePatchFloorDiagnostics() {
         m3s !== null && /could not be parsed/.test(m3s) && /"garbage-ssl"/.test(m3s) &&
         !/predates/.test(m3s), m3s);
 
-  var ok = await _assertErr(_withVersions("24.22.1", "OpenSSL 3.5.9"));
+  var ok = await _assertErr(_withVersions("26.13.1", "OpenSSL 3.5.9"));
   check("opensslVersion \"OpenSSL 3.5.9\" parses and passes", ok === null, ok && ok.message);
-  var e4 = await _assertErr(_withVersions("24.22.1", "OpenSSL 3.5.8"));
+  var e4 = await _assertErr(_withVersions("26.13.1", "OpenSSL 3.5.8"));
   var m4 = _failureMessage(e4, "security/openssl-version");
   check("opensslVersion \"OpenSSL 3.5.8\" fails and the message reads \"OpenSSL 3.5.8\" once",
         m4 !== null && /^OpenSSL 3\.5\.8 predates/.test(m4) && !/OpenSSL OpenSSL/.test(m4), m4);
 
-  var e5 = await _assertErr(_withVersions("24.22.1-pre", "3.5.9-dev"));
+  var e5 = await _assertErr(_withVersions("26.13.1-pre", "3.5.9-dev"));
   check("prerelease builds at the floor fail both checks",
         _hasCode(e5, "security/node-patch-level") && _hasCode(e5, "security/openssl-version"),
         e5 && e5.message);
 
   var e6 = await _assertErr(_withVersions("24.21.0", "3.5.9"));
   var m6 = _failureMessage(e6, "security/node-patch-level");
-  check("node-patch-level advice names only 24.22.1 and 26.12.1 as upgrade targets",
-        m6 !== null && /24\.22\.1/.test(m6) && /26\.12\.1/.test(m6) && !/22\.23\.4/.test(m6), m6);
+  check("node-patch-level advice names only 26.13.1 as the upgrade target",
+        m6 !== null && /26\.13\.1/.test(m6) && !/24\.22\.1/.test(m6) && !/26\.12\.1/.test(m6) &&
+        !/22\.23\.4/.test(m6), m6);
   check("node-patch-level message reads \"Node 24.21.0\"", m6 !== null && /^Node 24\.21\.0 /.test(m6), m6);
+}
+
+// ---- Node 26.13.1 floor: the November 2026 HTTP/2 and TLS fixes ----
+async function _testNode26Floor() {
+  var r24 = _resolvers("wrapped", "encrypted", "wrapped");
+  r24.nodeVersion = function () { return "24.22.3"; };
+  var major = await _assertErr(_cleanBase({ resolvers: r24, runtimePatchFloor: false }));
+  var majorMsg = _failureMessage(major, "security/node-version");
+  check("Node 24.22.3 under the default floor: fails security/node-version naming major 26",
+        majorMsg !== null && /minimum major 26\b/.test(majorMsg), major && major.message);
+
+  var e1 = await _assertErr(_withVersions("26.13.0", "3.5.9"));
+  var m1 = _failureMessage(e1, "security/node-patch-level");
+  check("Node 26.13.0: fails security/node-patch-level naming the HTTP/2 server fix and 26.13.1",
+        m1 !== null && /CVE-2026-123863/.test(m1) && /26\.13\.1/.test(m1), e1 && e1.message);
+  check("Node 26.13.0: the message does not claim the Brotli flaw it already has the fix for",
+        m1 !== null && !/CVE-2026-111497/.test(m1), m1);
+
+  var e2 = await _assertErr(_withVersions("26.12.0", "3.5.9"));
+  var m2 = _failureMessage(e2, "security/node-patch-level");
+  check("Node 26.12.0: one security/node-patch-level failure names both missing fixes",
+        m2 !== null && /CVE-2026-111497/.test(m2) && /CVE-2026-123863/.test(m2) &&
+        e2.failures.filter(function (f) { return f.code === "security/node-patch-level"; }).length === 1,
+        e2 && JSON.stringify(e2.failures));
+
+  var ok = await _assertErr(_withVersions("26.13.1", "3.5.9"));
+  check("Node 26.13.1 / OpenSSL 3.5.9: passes the default floor", ok === null, ok && ok.message);
+  var pre = await _assertErr(_withVersions("26.13.1-pre", "3.5.9"));
+  check("Node 26.13.1-pre: a prerelease at the fixed release fails security/node-patch-level",
+        _hasCode(pre, "security/node-patch-level"), pre && pre.message);
+
+  var line24 = await _assertErr(_withVersions("24.22.3", "3.5.9", { minNodeMajor: 24 }));
+  check("Node 24.22.3 with minNodeMajor 24: the patch check accepts the 24-line fix",
+        line24 === null, line24 && line24.message);
+  var line24old = await _assertErr(_withVersions("24.22.2", "3.5.9", { minNodeMajor: 24 }));
+  check("Node 24.22.2 with minNodeMajor 24: fails security/node-patch-level",
+        _hasCode(line24old, "security/node-patch-level"), line24old && line24old.message);
+  var line22 = await _assertErr(_withVersions("22.23.5", "3.5.9", { minNodeMajor: 22 }));
+  check("Node 22.23.5 with minNodeMajor 22: fails security/node-patch-level, since the 22 line " +
+        "lacks several of the HTTP/2 fixes", _hasCode(line22, "security/node-patch-level"),
+        line22 && line22.message);
+  var odd = await _assertErr(_withVersions("25.9.0", "3.5.9", { minNodeMajor: 22 }));
+  check("Node 25.9.0: an odd-numbered line fails security/node-patch-level",
+        _hasCode(odd, "security/node-patch-level"), odd && odd.message);
+  var next = await _assertErr(_withVersions("27.0.0", "4.0.3"));
+  check("Node 27.0.0: passes", next === null, next && next.message);
 }
 
 async function _testRuntimePatchFloor() {
@@ -533,23 +580,23 @@ async function _testRuntimePatchFloor() {
           !_hasCode(e1, "security/openssl-version"));
   }
   var e1m = await _assertErr(_withVersions("24.21.0", "3.5.9"));
-  check("node-patch-level message names the CVE and the fixed release",
-        e1m && /CVE-2026-111497/.test(e1m.message) && /24\.22\.1/.test(e1m.message));
+  check("node-patch-level message names the CVE and the release to upgrade to",
+        e1m && /CVE-2026-111497/.test(e1m.message) && /26\.13\.1/.test(e1m.message));
 
   var unfixedSsl = ["3.5.8", "3.6.4", "4.0.2", "3.0.15", "garbage"];
   for (var j = 0; j < unfixedSsl.length; j++) {
-    var e2 = await _assertErr(_withVersions("24.22.1", unfixedSsl[j]));
+    var e2 = await _assertErr(_withVersions("26.13.1", unfixedSsl[j]));
     check("OpenSSL " + unfixedSsl[j] + ": fails security/openssl-version",
           _hasCode(e2, "security/openssl-version"), e2 && e2.message);
-    check("OpenSSL " + unfixedSsl[j] + ": the Node check passes on 24.22.1",
+    check("OpenSSL " + unfixedSsl[j] + ": the Node check passes on 26.13.1",
           !_hasCode(e2, "security/node-patch-level"));
   }
-  var e2m = await _assertErr(_withVersions("24.22.1", "3.5.8"));
+  var e2m = await _assertErr(_withVersions("26.13.1", "3.5.8"));
   check("openssl-version message names the CVE and the fixed release",
         e2m && /CVE-2026-35189/.test(e2m.message) && /3\.5\.9/.test(e2m.message));
 
-  var fixedPairs = [["24.22.1", "3.5.9"], ["26.12.1", "3.5.9"], ["22.23.4", "3.6.5"],
-    ["27.0.0", "4.0.3"], ["24.22.1", "3.5.9+quic"]];
+  var fixedPairs = [["24.22.3", "3.5.9"], ["26.13.1", "3.5.9"], ["26.13.1", "3.6.5"],
+    ["27.0.0", "4.0.3"], ["26.13.1", "3.5.9+quic"]];
   for (var k = 0; k < fixedPairs.length; k++) {
     var e3 = await _assertErr(_withVersions(fixedPairs[k][0], fixedPairs[k][1], { minNodeMajor: 22 }));
     check("Node " + fixedPairs[k][0] + " / OpenSSL " + fixedPairs[k][1] + ": passes",
@@ -569,10 +616,10 @@ async function _testRuntimePatchFloor() {
 
   await _testRuntimePatchFloorDiagnostics();
 
-  var optOut = await _assertErr(_withVersions("24.21.0", "3.5.8", { runtimePatchFloor: false }));
+  var optOut = await _assertErr(_withVersions("26.12.0", "3.5.8", { runtimePatchFloor: false }));
   check("runtimePatchFloor:false skips both checks", optOut === null, optOut && optOut.message);
 
-  var badOpt = await _assertErr(_withVersions("24.22.1", "3.5.9", { runtimePatchFloor: "no" }));
+  var badOpt = await _assertErr(_withVersions("26.13.1", "3.5.9", { runtimePatchFloor: "no" }));
   check("runtimePatchFloor given a non-boolean raises security-assert/bad-opt",
         badOpt && badOpt.code === "security-assert/bad-opt");
 
@@ -987,6 +1034,7 @@ async function run() {
   await _testRequireMiddleware();
   await _testCorsAllowAll();
   await _testMinNodeMajor();
+  await _testNode26Floor();
   await _testRuntimePatchFloor();
   await _testMinTlsVersion();
   await _testRequireEnv();

@@ -6,7 +6,7 @@
 // the codebase has settled conventions documented in CLAUDE.md that
 // ESLint shouldn't second-guess.
 //
-// Target: Node 24 LTS, CommonJS modules, ES2024 syntax. Vendored
+// Target: Node 26 LTS, CommonJS modules, ES2024 syntax. Vendored
 // dependencies under lib/vendor/, examples/wiki/public/vendor/, and
 // any node_modules are excluded.
 //

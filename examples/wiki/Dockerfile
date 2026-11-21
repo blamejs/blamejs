@@ -12,9 +12,6 @@
 #     for the install-links resolve)
 #   - runtime uses cgr.dev/chainguard/node:latest (no shell, drops
 #     to the nonroot user, minimal attack surface)
-#
-# The vendored Argon2id native module ships glibc prebuilds; Wolfi is
-# glibc-based so the existing prebuilds load without rebuild.
 
 # Chainguard's :latest-dev runs as the `node` user by default with HOME
 # at /home/node. Anchor the build there with matching --chown=node:node
@@ -22,20 +19,19 @@
 # The :latest runtime image runs as `nonroot` (different user, lower
 # privilege); --chown=nonroot:nonroot on the COPY --from=deps rewrites
 # ownership at copy time into the runtime image.
-# Base images are digest-pinned in source (tag@sha256) for reproducible local
-# builds and supply-chain provenance. Dependabot's docker updater bumps these
-# digests weekly so they track Chainguard's continuous CVE rebuilds instead of
-# freezing — the historical objection to a committed pin (it goes stale and the
-# Trivy CRITICAL/HIGH gate rejects the build) does not apply here, because the
-# committed digest never reaches that gate: release-container.yml resolves the
-# rolling tag to a FRESH digest at build time and passes it via the BASE_DEPS /
-# BASE_RUNTIME build-args below, overriding these defaults, so the scanned image
-# always carries current patches and scan == publish. A local `docker build`
-# with no build-args uses the pinned (Dependabot-current) digest; the
-# human-readable tag is retained alongside the digest for readability and as the
-# rolling source the release workflow resolves.
-ARG BASE_DEPS=cgr.dev/chainguard/node:latest-dev@sha256:1ac2b87f6683faf0b4df19431bf73d0a40c5bcaa0da2073cad9f815571f593e4
-ARG BASE_RUNTIME=cgr.dev/chainguard/node:latest@sha256:efa14a42578e5931c351eb562ee2bed3e9c55e9abbfd683e218c88ab3889bcba
+# Base images are digest-pinned in source (tag@sha256). Dependabot does not
+# update these pins: its docker updater reads FROM lines, and these images are
+# named through ARG defaults. Update both digests by hand when the Node or
+# OpenSSL patch floor in lib/constants.js moves.
+#
+# release-container.yml does not use these defaults. It resolves the rolling
+# tags to current digests at build time and passes them as the BASE_DEPS and
+# BASE_RUNTIME build-args, so the image Trivy scans is the image it publishes.
+# It then runs the framework's Node and OpenSSL patch-floor check inside the
+# built image and fails the release when either is too old. A local
+# `docker build` with no build-args uses the pinned digests below.
+ARG BASE_DEPS=cgr.dev/chainguard/node:latest-dev@sha256:cd993dc8ec644f8f35e8356f6b442e807cdc5e42f303da5ce19a55d7cf660b51
+ARG BASE_RUNTIME=cgr.dev/chainguard/node:latest@sha256:3fb5318a58807dec0f2ece547efbe8d62c67b7b2fd91a16795b98651d6385dbe
 
 FROM ${BASE_DEPS} AS deps
 WORKDIR /home/node

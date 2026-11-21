@@ -59,10 +59,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up Node 24.22.1 LTS
+      - name: Set up Node 26.13.1 LTS
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: '24.22.1'
+          node-version: '26.13.1'
       - name: Run ESLint (max-warnings 0)
         # Pinned to a known-good eslint version; matches ci.yml /
         # npm-publish.yml so the three pre-tag gates run identical
@@ -135,7 +135,7 @@ jobs:
 
       - name: Log in to GHCR
         if: ${{ !inputs.dry_run }}
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -201,6 +201,29 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Runs b.security.assertProduction's Node and OpenSSL checks inside the
+      # built image, against the framework copy installed in it. Fails the
+      # release when the base image's Node or OpenSSL is older than the
+      # framework's patch floor (CVE-2026-111497, CVE-2026-35189).
+      - name: Check the image's Node and OpenSSL against the framework floor
+        env:
+          SCAN_IMAGE: ${{ env.IMAGE }}:${{ steps.tags.outputs.scan_tag }}
+        run: |
+          set -euo pipefail
+          docker run --rm -i "$SCAN_IMAGE" - <<'EOF'
+          var b = require("@blamejs/core");
+          b.security.assertProduction({
+            vault: false, dbAtRest: false, auditSigning: false, ntpStrict: false,
+            forbidNodeEnv: false, allowDpiTrust: true, audit: false,
+          }).then(function () {
+            console.log("Node " + process.versions.node + ", OpenSSL " + process.versions.openssl +
+              ": at or above the framework floor");
+          }, function (e) {
+            (e.failures || [e]).forEach(function (f) { console.error((f.code || "") + ": " + f.message); });
+            process.exit(1);
+          });
+          EOF
+
       # ---- Trivy step 1 — visibility (no fail) ----
       # Logs every finding from UNKNOWN to CRITICAL plus secrets and
       # Dockerfile misconfiguration. ignore-unfixed: false so unpatched
@@ -229,7 +252,7 @@ jobs:
 
       - name: Install cosign
         if: ${{ !inputs.dry_run && steps.tags.outputs.is_tag == 'true' }}
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532  # v4.1.3
 
       # Reached only when both Trivy steps pass. Multi-arch build is
       # done here (rather than reusing the load:true single-arch build)
@@ -340,7 +363,7 @@ jobs:
       # against a public package, so this is the right shape regardless
       # of visibility.
       - name: Log in to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

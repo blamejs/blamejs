@@ -2,59 +2,50 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * PQC PKCS8 forward-compat capture.
+ * PQC PKCS8 cross-version compatibility.
  *
- * Node 24 LTS exports ML-KEM / ML-DSA private keys as a full PKCS8
- * encoding that carries the entire expanded key material. Node 26
- * switched the default to a seed-only PKCS8 — same AlgorithmIdentifier
- * OID, structurally different OCTET STRING contents, much shorter blob.
- * Node 26's PKCS8 importer accepts BOTH shapes.
+ * Measured PKCS8 DER lengths (type=pkcs8, format=der):
  *
- * Observed lengths (PKCS8 DER, type=pkcs8, format=der):
+ *   alg                   Node <= 24.21 (seed + expanded)   Node >= 24.22.0 and 26 (seed-only)
+ *   ml-kem-768            2498 bytes                        86 bytes
+ *   ml-kem-1024           3266 bytes                        86 bytes
+ *   ml-dsa-44             2626 bytes                        54 bytes
+ *   ml-dsa-65             4098 bytes                        54 bytes
+ *   ml-dsa-87             4962 bytes                        54 bytes
+ *   slh-dsa-shake-256f    unchanged across versions (the private key is the seed)
+ *   ed25519               48 bytes on every version
  *
- *   alg                   Node 24 (full)   Node 26 (seed-only)
- *   ml-kem-1024           ~3168 bytes      ~86  bytes
- *   ml-dsa-65             ~4032 bytes      ~54  bytes
- *   ml-dsa-87             ~4896 bytes      ~54  bytes
- *   slh-dsa-shake-256f    ~150  bytes      ~150 bytes   (no shift —
- *                                                       SLH-DSA private
- *                                                       key IS the seed)
- *   ed25519               48    bytes      48    bytes  (classical,
- *                                                       unaffected)
- *
- * The framework writes PQC private keys (sealed) from lib/crypto.js,
- * lib/audit-sign.js, lib/content-credentials.js, lib/ai-model-manifest.js,
- * lib/a2a.js, lib/acme.js. After the Node 26 floor-bump those writes
- * emit seed-only PKCS8 blobs by default; clients still on Node 24 LTS
- * during the compatibility window would NOT be able to import them
- * (Node 24's importer pre-dates the seed-only shape). The Node 26
- * floor-bump landing PR carries the explicit-encoding switch in the
- * primitives that write material destined for cross-version consumers.
+ * Node 24.20 and later and Node 26 import the seed-only form, the
+ * seed + expanded form and the expanded-only form. They refuse a
+ * seed + expanded blob whose two halves disagree.
  *
  * This test:
- *   1. Captures the PKCS8 shape per alg on the current Node version
- *      (one check per alg covering length + AlgorithmIdentifier prefix).
- *   2. Roundtrips export → import → sign-verify (or KEM encap/decap)
- *      to prove the freshly-exported blob is self-importable.
- *   3. Re-imports a hardcoded fixture (captured offline) every run as
- *      a regression guard against importer drift.
- *
- * TODO: When Node 28 / a Node 26 patch ships a future re-encoding
- * shift, add a second fixture capturing THAT release's default shape
- * and verify both round-trip cleanly. The fixture below was captured
- * on Node v26.1.0 (seed-only shape); when a Node 24-captured fixture
- * is generated on a 24 LTS machine, embed it as FIXTURE_NODE24_*
- * alongside FIXTURE_NODE26_* and assert both import paths succeed.
+ *   1. Exports a fresh key per algorithm on the running Node, checks the
+ *      seed-only shape, and round-trips it through sign/verify or
+ *      encapsulate/decapsulate.
+ *   2. Re-imports a seed-only ML-DSA-65 key captured on Node 26.1.0.
+ *   3. Re-imports the seed + expanded keys captured on Node 24.21.0 for
+ *      ML-KEM-768/1024 and ML-DSA-44/65/87
+ *      (test/fixtures/pqc-pkcs8-node24/fixture-raw.json).
+ *   4. Loads a vault key, a sealed value and audit-sign keys that
+ *      blamejs wrote on Node 24.21.0
+ *      (test/fixtures/pqc-pkcs8-node24/fixture-consumer.json) through
+ *      b.vault and b.auditSign.
  */
 
+var fs         = require("node:fs");
+var os         = require("node:os");
+var path       = require("node:path");
 var nodeCrypto = require("node:crypto");
 var helpers    = require("../helpers");
 var check      = helpers.check;
+var b          = helpers.b;
 
-// Hardcoded fixtures — captured on Node v26.1.0 (seed-only shape).
-// Format: PKCS8 DER private key + SPKI DER public key, both base64.
-// Used as a regression guard: every run re-imports the same blob and
-// signs+verifies a payload against the matching pubkey.
+var FIXTURE_DIR      = path.join(__dirname, "..", "fixtures", "pqc-pkcs8-node24");
+var NODE24_RAW       = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, "fixture-raw.json"), "utf8"));
+var NODE24_CONSUMER  = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, "fixture-consumer.json"), "utf8"));
+
+// Captured on Node v26.1.0 (seed-only shape): PKCS8 DER private key + SPKI DER public key.
 var FIXTURE_NODE26_MLDSA65_PRIV_B64 =
   "MDQCAQAwCwYJYIZIAWUDBAMSBCKAIHA2Y+VRD6S2jl3dfX0H5KVTQk4NjoacmIB6V8W8EkkC";
 var FIXTURE_NODE26_MLDSA65_PUB_B64 =
@@ -92,182 +83,279 @@ var FIXTURE_NODE26_MLDSA65_PUB_B64 =
   "qvzay9uoWG543JP03vFRW0JiXXCrWFvyFugd3g0ap8R29g8c+Y/Y3Kf2u4/NPQStd9c3WWZKmiiwpKXc" +
   "foku/fHKWprzMJliCUhXlgkC09zO994n4/Kv3CemhSMM/oBqYTSMUzDGCA/FwUXaejpwqyN";
 
-// Per-alg expected behavior on the running Node version.
-// Threshold model: if the export blob is shorter than seedCeiling it's
-// a seed-only encoding; if longer than fullFloor it's the full
-// encoding. SLH-DSA's private key is already a small seed, so it has
-// the same length on both Node versions — we mark it shape-stable.
+// seedCeiling: a seed-only export is at most this long. shapeStable: the
+// export has the same length on every Node version.
 var ALG_TABLE = [
-  {
-    name:           "ml-kem-1024",
-    seedCeiling:    256,     // Node 26 ~86
-    fullFloor:      2048,    // Node 24 ~3168
-    shapeStable:    false,
-    kind:           "kem",
-    expectedAkt:    "ml-kem-1024",
-  },
-  {
-    name:           "ml-dsa-65",
-    seedCeiling:    256,     // Node 26 ~54
-    fullFloor:      3000,    // Node 24 ~4032
-    shapeStable:    false,
-    kind:           "sig",
-    expectedAkt:    "ml-dsa-65",
-  },
-  {
-    name:           "ml-dsa-87",
-    seedCeiling:    256,     // Node 26 ~54
-    fullFloor:      3500,    // Node 24 ~4896
-    shapeStable:    false,
-    kind:           "sig",
-    expectedAkt:    "ml-dsa-87",
-  },
-  {
-    name:           "slh-dsa-shake-256f",
-    // SLH-DSA private key is itself the seed (~128 + ASN.1 header).
-    // Same length both directions — the seed-only shift doesn't apply.
-    seedCeiling:    256,
-    fullFloor:      256,
-    shapeStable:    true,
-    kind:           "sig",
-    expectedAkt:    "slh-dsa-shake-256f",
-  },
-  {
-    name:           "ed25519",
-    // Classical EdDSA — never affected by the PQC seed-only shift.
-    seedCeiling:    64,
-    fullFloor:      64,
-    shapeStable:    true,
-    kind:           "sig",
-    expectedAkt:    "ed25519",
-  },
+  { name: "ml-kem-768",         seedCeiling: 256, shapeStable: false, kind: "kem" },
+  { name: "ml-kem-1024",        seedCeiling: 256, shapeStable: false, kind: "kem" },
+  { name: "ml-dsa-44",          seedCeiling: 256, shapeStable: false, kind: "sig" },
+  { name: "ml-dsa-65",          seedCeiling: 256, shapeStable: false, kind: "sig" },
+  { name: "ml-dsa-87",          seedCeiling: 256, shapeStable: false, kind: "sig" },
+  { name: "slh-dsa-shake-256f", seedCeiling: 256, shapeStable: true,  kind: "sig" },
+  { name: "ed25519",            seedCeiling: 64,  shapeStable: true,  kind: "sig" },
 ];
 
-function _classifyShape(spec, derLen) {
-  if (spec.shapeStable) return "stable";
-  if (derLen <= spec.seedCeiling) return "seed-only";
-  if (derLen >= spec.fullFloor)   return "full";
-  return "unknown";
-}
+// Node 24.21 seed + expanded encodings: total DER length, seed length,
+// expanded-key length and the seed-only re-export length on this Node.
+var NODE24_SHAPES = {
+  "ml-kem-768":  { der: 2498, seed: 64, expanded: 2400, reexport: 86, kind: "kem" },
+  "ml-kem-1024": { der: 3266, seed: 64, expanded: 3168, reexport: 86, kind: "kem" },
+  "ml-dsa-44":   { der: 2626, seed: 32, expanded: 2560, reexport: 54, kind: "sig" },
+  "ml-dsa-65":   { der: 4098, seed: 32, expanded: 4032, reexport: 54, kind: "sig" },
+  "ml-dsa-87":   { der: 4962, seed: 32, expanded: 4896, reexport: 54, kind: "sig" },
+};
 
 function _hexPrefix(buf, n) {
   return buf.subarray(0, n).toString("hex");
 }
 
-function run() {
-  var nodeMajor = parseInt(process.versions.node.split(".")[0], 10);
-  check("running on a Node version known to this test",
-    nodeMajor >= 24 && nodeMajor < 30);
+// Reads one DER TLV at `at`: { tag, len, start (content offset), end }.
+function _tlv(buf, at) {
+  var tag = buf[at];
+  var lenByte = buf[at + 1];
+  var len, start;
+  if (lenByte < 0x80) { len = lenByte; start = at + 2; }
+  else {
+    var n = lenByte & 0x7f;
+    len = 0;
+    for (var i = 0; i < n; i += 1) len = (len * 256) + buf[at + 2 + i];
+    start = at + 2 + n;
+  }
+  return { tag: tag, len: len, start: start, end: start + len };
+}
 
+function _derLength(n) {
+  if (n < 0x80) return Buffer.from([n]);
+  var bytes = [];
+  while (n > 0) { bytes.unshift(n & 0xff); n = Math.floor(n / 256); }
+  return Buffer.from([0x80 | bytes.length].concat(bytes));
+}
+
+function _derTlv(tag, content) {
+  return Buffer.concat([Buffer.from([tag]), _derLength(content.length), content]);
+}
+
+// Splits a PKCS8 PrivateKeyInfo into its algorithm identifier bytes and
+// the inner private-key CHOICE.
+function _pkcs8Parts(der) {
+  var outer = _tlv(der, 0);
+  var version = _tlv(der, outer.start);
+  var alg = _tlv(der, version.end);
+  var octet = _tlv(der, alg.end);
+  return {
+    head:  der.subarray(outer.start, alg.end),
+    inner: der.subarray(octet.start, octet.end),
+  };
+}
+
+function _pkcs8WithInner(head, inner) {
+  return _derTlv(0x30, Buffer.concat([head, _derTlv(0x04, inner)]));
+}
+
+// For a seed + expanded CHOICE (SEQUENCE { OCTET seed, OCTET expanded })
+// returns the two halves.
+function _bothHalves(inner) {
+  var seq = _tlv(inner, 0);
+  var seed = _tlv(inner, seq.start);
+  var expanded = _tlv(inner, seed.end);
+  return {
+    seqTag:   seq.tag,
+    seed:     inner.subarray(seed.start, seed.end),
+    expanded: inner.subarray(expanded.start, expanded.end),
+  };
+}
+
+function _importPkcs8(der) {
+  return nodeCrypto.createPrivateKey({ key: der, format: "der", type: "pkcs8" });
+}
+
+function _threw(fn) {
+  try { fn(); return null; } catch (e) { return e; }
+}
+
+function _proveKeyPair(label, kind, priv, pub) {
+  if (kind === "kem") {
+    var enc = nodeCrypto.encapsulate(pub);
+    var dec = nodeCrypto.decapsulate(priv, enc.ciphertext);
+    check(label + ": decapsulate recovers the shared key encapsulated to the public key",
+      Buffer.isBuffer(dec) && dec.equals(enc.sharedKey));
+    return;
+  }
+  var payload = Buffer.from(label + " payload");
+  var sig = nodeCrypto.sign(null, payload, priv);
+  check(label + ": a signature verifies with the public key",
+    nodeCrypto.verify(null, payload, pub, sig) === true);
+  check(label + ": a tampered payload does not verify",
+    nodeCrypto.verify(null, Buffer.concat([payload, Buffer.from("x")]), pub, sig) === false);
+}
+
+function testCurrentNodeExport() {
   ALG_TABLE.forEach(function (spec) {
-    // -- (1) capture the export shape on the current Node version.
     var kp = nodeCrypto.generateKeyPairSync(spec.name);
     var der = kp.privateKey.export({ type: "pkcs8", format: "der" });
-    check(spec.name + ": pkcs8 export returns non-empty Buffer",
-      Buffer.isBuffer(der) && der.length > 0);
-
-    var shape = _classifyShape(spec, der.length);
-    check(spec.name + ": pkcs8 shape classifiable (len=" + der.length +
-          " shape=" + shape + " prefix=" + _hexPrefix(der, 20) + ")",
-      shape !== "unknown");
-
-    // Node 26-specific assertion for PQC algs whose shape DID shift.
-    if (!spec.shapeStable && nodeMajor >= 26) {
-      check(spec.name + ": Node 26 default is seed-only encoding",
-        shape === "seed-only");
+    check(spec.name + ": pkcs8 export returns a non-empty Buffer", Buffer.isBuffer(der) && der.length > 0);
+    if (!spec.shapeStable) {
+      check(spec.name + ": the export is seed-only (len=" + der.length + " prefix=" + _hexPrefix(der, 20) + ")",
+        der.length <= spec.seedCeiling);
     }
-    if (!spec.shapeStable && nodeMajor < 26) {
-      check(spec.name + ": Node 24 default is full encoding",
-        shape === "full");
-    }
-
-    // AlgorithmIdentifier OID prefix sanity. Every PKCS8 begins with
-    // SEQUENCE { INTEGER 0, AlgorithmIdentifier { OID ... } ... }; the
-    // first few bytes encode the SEQUENCE tag + length + version. The
-    // exact prefix differs per alg but bytes [0]=0x30 (SEQUENCE) and
-    // a small INTEGER 0x02 0x01 0x00 must be present.
-    check(spec.name + ": pkcs8 starts with SEQUENCE tag",
-      der[0] === 0x30);
-    check(spec.name + ": pkcs8 carries INTEGER version=0",
-      der.indexOf(Buffer.from([0x02, 0x01, 0x00])) !== -1);
-
-    // -- (2) roundtrip: import, then sign+verify (or encap/decap for KEM).
-    var reimported = nodeCrypto.createPrivateKey({
-      key:    der,
-      format: "der",
-      type:   "pkcs8",
-    });
-    check(spec.name + ": reimport KeyObject.asymmetricKeyType matches",
-      reimported.asymmetricKeyType === spec.expectedAkt);
-
-    if (spec.kind === "sig") {
-      var payload = Buffer.from(spec.name + " roundtrip payload");
-      var sig = nodeCrypto.sign(null, payload, reimported);
-      check(spec.name + ": sign with reimported key produces non-empty sig",
-        Buffer.isBuffer(sig) && sig.length > 0);
-      var ok = nodeCrypto.verify(null, payload, kp.publicKey, sig);
-      check(spec.name + ": verify against original public key succeeds", ok === true);
-    } else if (spec.kind === "kem") {
-      // ML-KEM encap/decap roundtrip. encapsulate() uses the public
-      // key and emits { sharedKey, ciphertext }; decapsulate() uses
-      // the private key + ciphertext and yields the same sharedKey.
-      var enc = nodeCrypto.encapsulate(kp.publicKey);
-      check(spec.name + ": encapsulate returns sharedKey + ciphertext",
-        Buffer.isBuffer(enc.sharedKey) && Buffer.isBuffer(enc.ciphertext));
-      var dec = nodeCrypto.decapsulate(reimported, enc.ciphertext);
-      check(spec.name + ": decapsulate with reimported key recovers sharedKey",
-        Buffer.isBuffer(dec) && dec.equals(enc.sharedKey));
-    }
+    check(spec.name + ": pkcs8 starts with SEQUENCE tag", der[0] === 0x30);
+    check(spec.name + ": pkcs8 carries INTEGER version=0", der.indexOf(Buffer.from([0x02, 0x01, 0x00])) !== -1);
+    var reimported = _importPkcs8(der);
+    check(spec.name + ": reimport KeyObject.asymmetricKeyType matches", reimported.asymmetricKeyType === spec.name);
+    _proveKeyPair(spec.name + " (current-Node export)", spec.kind, reimported, kp.publicKey);
   });
+}
 
-  // -- (3) fixture roundtrip: re-import a captured PKCS8 every run.
-  // Regression guard against importer drift.
+function testNode26SeedOnlyFixture() {
   var fixturePriv = Buffer.from(FIXTURE_NODE26_MLDSA65_PRIV_B64, "base64");
   var fixturePub  = Buffer.from(FIXTURE_NODE26_MLDSA65_PUB_B64,  "base64");
+  check("node26 fixture: ml-dsa-65 private key is the seed-only length", fixturePriv.length === 54);
+  check("node26 fixture: ml-dsa-65 public key is the SPKI length", fixturePub.length === 1974);
+  var priv = _importPkcs8(fixturePriv);
+  var pub = nodeCrypto.createPublicKey({ key: fixturePub, format: "der", type: "spki" });
+  check("node26 fixture: imports as ml-dsa-65",
+    priv.asymmetricKeyType === "ml-dsa-65" && pub.asymmetricKeyType === "ml-dsa-65");
+  _proveKeyPair("node26 fixture ml-dsa-65", "sig", priv, pub);
+}
 
-  check("fixture: ml-dsa-65 priv blob is the expected seed-only length",
-    fixturePriv.length === 54);
-  check("fixture: ml-dsa-65 pub  blob is the expected spki length",
-    fixturePub.length === 1974);
+function testNode24RawFixturesImport() {
+  check("node24 fixtures were captured on Node 24.21.0", NODE24_RAW.node === "v24.21.0");
+  Object.keys(NODE24_SHAPES).forEach(function (alg) {
+    var shape = NODE24_SHAPES[alg];
+    var f = NODE24_RAW.fixtures[alg];
+    check("node24 " + alg + ": the fixture is present", !!(f && f.priv && f.pub));
+    if (!f) return;
+    var der = Buffer.from(f.priv, "base64");
+    var spki = Buffer.from(f.pub, "base64");
+    var halves = _bothHalves(_pkcs8Parts(der).inner);
+    check("node24 " + alg + ": the fixture is the " + shape.der + "-byte seed + expanded encoding",
+      der.length === shape.der && halves.seqTag === 0x30 &&
+      halves.seed.length === shape.seed && halves.expanded.length === shape.expanded);
 
-  var importedFixture = nodeCrypto.createPrivateKey({
-    key:    fixturePriv,
-    format: "der",
-    type:   "pkcs8",
+    var priv = _importPkcs8(der);
+    var pub = nodeCrypto.createPublicKey({ key: spki, format: "der", type: "spki" });
+    check("node24 " + alg + ": imports with asymmetricKeyType " + alg, priv.asymmetricKeyType === alg);
+    var derivedSpki = nodeCrypto.createPublicKey(priv).export({ type: "spki", format: "der" });
+    check("node24 " + alg + ": the public key derived from the private key equals the captured one",
+      derivedSpki.equals(spki));
+    _proveKeyPair("node24 " + alg, shape.kind, priv, pub);
+
+    var reexport = priv.export({ type: "pkcs8", format: "der" });
+    check("node24 " + alg + ": re-export is the " + shape.reexport + "-byte seed-only form carrying the same seed",
+      reexport.length === shape.reexport && reexport.subarray(reexport.length - shape.seed).equals(halves.seed));
   });
-  check("fixture: re-imports as ml-dsa-65",
-    importedFixture.asymmetricKeyType === "ml-dsa-65");
+}
 
-  var fixturePubKey = nodeCrypto.createPublicKey({
-    key:    fixturePub,
-    format: "der",
-    type:   "spki",
+function testNode24InconsistentHalvesRefused() {
+  Object.keys(NODE24_SHAPES).forEach(function (alg) {
+    var der = Buffer.from(NODE24_RAW.fixtures[alg].priv, "base64");
+    var parts = _pkcs8Parts(der);
+    var halves = _bothHalves(parts.inner);
+    var seed = Buffer.from(halves.seed);
+    seed[0] ^= 1;
+    var forged = _pkcs8WithInner(parts.head,
+      _derTlv(0x30, Buffer.concat([_derTlv(0x04, seed), _derTlv(0x04, halves.expanded)])));
+    check("node24 " + alg + ": the rebuilt blob differs from the fixture only in the seed",
+      forged.length === der.length && !forged.equals(der));
+    var err = _threw(function () { _importPkcs8(forged); });
+    check("node24 " + alg + ": a seed that disagrees with the expanded key is refused with ERR_OSSL_INVALID_KEY",
+      err !== null && err.code === "ERR_OSSL_INVALID_KEY", err && (err.code + " " + err.message));
+
+    var unflipped = _pkcs8WithInner(parts.head,
+      _derTlv(0x30, Buffer.concat([_derTlv(0x04, halves.seed), _derTlv(0x04, halves.expanded)])));
+    check("node24 " + alg + ": the same rebuild with the original seed reproduces the fixture",
+      unflipped.equals(der));
   });
-  check("fixture: spki re-imports as ml-dsa-65",
-    fixturePubKey.asymmetricKeyType === "ml-dsa-65");
+}
 
-  var fixturePayload = Buffer.from("Node 26 seed-only PKCS8 fixture roundtrip");
-  var fixtureSig = nodeCrypto.sign(null, fixturePayload, importedFixture);
-  check("fixture: sign produces non-empty signature",
-    Buffer.isBuffer(fixtureSig) && fixtureSig.length > 0);
-  check("fixture: verify against captured public key succeeds",
-    nodeCrypto.verify(null, fixturePayload, fixturePubKey, fixtureSig) === true);
+function testNode24ExpandedOnlyImports() {
+  Object.keys(NODE24_SHAPES).forEach(function (alg) {
+    var f = NODE24_RAW.fixtures[alg];
+    var parts = _pkcs8Parts(Buffer.from(f.priv, "base64"));
+    var halves = _bothHalves(parts.inner);
+    var expandedOnly = _pkcs8WithInner(parts.head, _derTlv(0x04, halves.expanded));
+    var priv = _importPkcs8(expandedOnly);
+    var derived = nodeCrypto.createPublicKey(priv).export({ type: "spki", format: "der" });
+    check("node24 " + alg + ": the expanded-key-only encoding imports and derives the captured public key",
+      priv.asymmetricKeyType === alg && derived.equals(Buffer.from(f.pub, "base64")));
+  });
+}
 
-  // TODO: When a Node 24 LTS machine is available, capture a parallel
-  //   FIXTURE_NODE24_MLDSA65_PRIV_B64 (full-shape PKCS8, ~4032 bytes)
-  //   + matching public key, and assert it ALSO re-imports cleanly here
-  //   — that nails down "Node-24-sealed material remains importable on
-  //   Node 26" as a permanent regression guard. The reverse direction
-  //   (Node 26 seed-only → Node 24 importer) cannot be tested in the
-  //   same process, but a Node 24 container leg can be added to the
-  //   release runbook to consume this fixture.
+function _tmpDir(prefix) {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
 
+async function testVaultUnsealsNode24Key() {
+  var v = NODE24_CONSUMER.vault;
+  check("consumer fixture was written by blamejs on Node 24.21.0", NODE24_CONSUMER.node === "v24.21.0");
+  check("consumer vault: the key file holds a " + v.privDerLen + "-byte seed + expanded ML-KEM-1024 key",
+    v.privDerLen === 3266);
+  var dir = _tmpDir("pkcs8-vault-");
+  try {
+    fs.writeFileSync(path.join(dir, "vault.key"), v.keyJson, { mode: 0o600 });
+    b.vault._resetForTest();
+    await b.vault.init({ dataDir: dir, mode: "plaintext" });
+    check("consumer vault: b.vault.unseal reads a value sealed on Node 24.21.0",
+      b.vault.unseal(v.sealed) === "node24-sealed-secret");
+    var fresh = b.vault.seal("sealed-on-this-node");
+    check("consumer vault: the Node 24.21.0 key seals and unseals a new value",
+      b.vault.unseal(fresh) === "sealed-on-this-node");
+    var tampered = v.sealed.slice(0, -4) + (v.sealed.slice(-4) === "AAAA" ? "BBBB" : "AAAA");
+    check("consumer vault: a tampered sealed value is refused",
+      _threw(function () { b.vault.unseal(tampered); }) !== null);
+  } finally {
+    b.vault._resetForTest();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testAuditSignLoadsNode24Keys() {
+  var algs = Object.keys(NODE24_CONSUMER.auditSign);
+  check("consumer audit-sign: fixtures cover ml-dsa-65 and ml-dsa-87", algs.sort().join(",") === "ml-dsa-65,ml-dsa-87");
+  for (var i = 0; i < algs.length; i += 1) {
+    var alg = algs[i];
+    var f = NODE24_CONSUMER.auditSign[alg];
+    var dir = _tmpDir("pkcs8-auditsign-");
+    try {
+      fs.writeFileSync(path.join(dir, "audit-sign.key"), f.keyJson, { mode: 0o600 });
+      b.auditSign._resetForTest();
+      await b.auditSign.init({ dataDir: dir, mode: "plaintext", algorithm: alg });
+      var sig24 = Buffer.from(f.sigB64, "base64");
+      check("consumer audit-sign " + alg + ": loads the key written on Node 24.21.0",
+        b.auditSign.getAlgorithm() === alg && b.auditSign.getPublicKeyFingerprint() === f.fingerprint);
+      check("consumer audit-sign " + alg + ": a signature made on Node 24.21.0 verifies",
+        b.auditSign.verify(f.payload, sig24) === true);
+      check("consumer audit-sign " + alg + ": that signature does not verify over a changed payload",
+        b.auditSign.verify(f.payload + "x", sig24) === false);
+      var payload = "signed-on-this-node " + alg;
+      var sigNow = b.auditSign.sign(payload);
+      check("consumer audit-sign " + alg + ": a new signature verifies against the Node 24.21.0 public key",
+        b.auditSign.verify(payload, sigNow, JSON.parse(f.keyJson).publicKey) === true);
+    } finally {
+      b.auditSign._resetForTest();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+}
+
+async function run() {
+  var nodeMajor = parseInt(process.versions.node.split(".")[0], 10);
+  check("running on a Node version known to this test", nodeMajor >= 26 && nodeMajor < 30);
+  testCurrentNodeExport();
+  testNode26SeedOnlyFixture();
+  testNode24RawFixturesImport();
+  testNode24InconsistentHalvesRefused();
+  testNode24ExpandedOnlyImports();
+  await testVaultUnsealsNode24Key();
+  await testAuditSignLoadsNode24Keys();
   console.log("OK — " + helpers.getChecks() + " checks passed");
 }
 
-try {
-  run();
-} catch (e) {
-  console.error(e && (e.stack || e.message || String(e)));
-  process.exit(1);
+module.exports = { run: run };
+
+if (require.main === module) {
+  run().catch(function (e) {
+    console.error(e && (e.stack || e.message || String(e)));
+    process.exit(1);
+  });
 }

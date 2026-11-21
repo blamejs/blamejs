@@ -2132,7 +2132,7 @@ async function testH2PreAbortAndTeardown() {
         b.httpClient._getCachedTransportCount() === 0);
     });
 
-  // Scope 2 (fresh origin): warm h2, then configurePool tears down the live
+  // Scope 2 (fresh origin): warm h2, then configurePool retires the live
   // h2 session + clears the cache.
   await _withH2cServer(function (stream) { stream.on("error", function () {}); stream.respond({ ":status": 200 }); stream.end("ok"); },
     async function (base) {
@@ -3153,8 +3153,8 @@ async function testPostureChangeDoesNotAbortInFlightRequests() {
       await second;
       // Guard against a vacuous pass: if the retirement never ran, or the
       // second request never went out, "the first one survived" proves
-      // nothing. That the SAME teardown does abort an in-flight request is
-      // demonstrable through configurePool(), which runs it directly.
+      // nothing. That a destroying teardown does abort an in-flight request
+      // is demonstrable through _resetForTest(), which destroys every agent.
       check("the posture change retired the pool while the first response " +
             "was still open",
         secondArrived === true);
@@ -3163,8 +3163,8 @@ async function testPostureChangeDoesNotAbortInFlightRequests() {
         res1 && res1.statusCode === 200 &&
         String(res1.body) === "first-half-second-half");
 
-      // The force-destroy teardown, driven directly, DOES reset a live
-      // response — which is why the posture path must not use it.
+      // A destroying teardown, driven directly, DOES reset a live response,
+      // which is why neither the posture path nor configurePool uses one.
       var aborted = null;
       var slow2 = b.httpClient.request({
         url: base + "/slow2", allowedProtocols: ALLOW, allowInternal: true,
@@ -3173,11 +3173,11 @@ async function testPostureChangeDoesNotAbortInFlightRequests() {
       await helpers.waitUntil(function () {
         return b.httpClient._getCachedTransportCount() > 0;
       }, { timeoutMs: 5000, label: "http-client: second slow request pooled" });
-      b.httpClient.configurePool({ maxSockets: 17 });
+      b.httpClient._resetForTest();
       gate2Ref.release();
       await slow2;
-      check("for contrast, the force-destroy teardown does abort a live " +
-            "response — so the posture path must not reach for it",
+      check("for contrast, a destroying teardown does abort a live " +
+            "response, so the posture path must not reach for it",
         aborted === "ECONNRESET");
     } finally {
       release();
