@@ -30,20 +30,35 @@
  */
 
 var nodeHttps = require("node:https");
+var nodeHttp2 = require("node:http2");
 var nodeCp    = require("node:child_process");
 var nodeFs    = require("node:fs");
 var nodeOs    = require("node:os");
 var nodePath  = require("node:path");
 
-var helpers = require("../helpers");
+// The parent and every spawned child load these modules directly. The
+// package root takes about 5 s to load in a container against the bind
+// mount, and these modules take a fraction of that.
+var checkMod = require("../helpers/check");
+var wait     = require("../helpers/wait");
+var ck       = require("../helpers/compromised-keys");
+var b = {
+  httpClient: require("../../lib/http-client"),
+  pqcAgent:   require("../../lib/pqc-agent"),
+};
+var helpers = { check: checkMod.check, getChecks: checkMod.getChecks, waitUntil: wait.waitUntil, b: b };
 var check   = helpers.check;
-var ck      = require("../helpers/compromised-keys");
 
 var REQUESTS = 6;
 
 function _tlsServer(chain, host) {
-  var state = { connections: 0, resumed: 0, server: null };
+  var state = { connections: 0, resumed: 0, server: null, held: [] };
   var server = nodeHttps.createServer({ key: chain.key, cert: chain.cert }, function (req, res) {
+    if (req.url === "/held") {
+      res.write("first-");
+      state.held.push(res);
+      return;
+    }
     res.end("ok:" + req.url);
   });
   server.on("secureConnection", function (s) {
@@ -113,12 +128,208 @@ async function _operatorAgentChild(b, chain) {
   return out;
 }
 
+function _h2Server(chain, host) {
+  var state = { connections: 0, server: null, held: [] };
+  var server = nodeHttp2.createSecureServer({ key: chain.key, cert: chain.cert }, function (req, res) {
+    if (req.url === "/dropped") {
+      res.write("first-", function () { req.stream.session.destroy(); });
+      return;
+    }
+    if (req.url === "/silent") {
+      state.held.push(res);
+      return;
+    }
+    if (req.url === "/held") {
+      res.write("first-");
+      state.held.push(res);
+      return;
+    }
+    res.end("ok:" + req.url);
+  });
+  server.on("secureConnection", function () { state.connections += 1; });
+  server.on("tlsClientError", function () { /* a probe the client abandoned */ });
+  return new Promise(function (resolve) {
+    server.listen(0, host, function () { state.server = server; resolve(state); });
+  });
+}
+
+async function _callerAgentChild(b, scenario, srv, base) {
+  var agent = b.pqcAgent.create({ keepAlive: true, maxSockets: 6 });
+  var out = { scenario: scenario };
+  try {
+    if (scenario === "caller-agent-trusted" || scenario === "caller-agent-untrust") {
+      b.httpClient.configurePool({ trustedKeepAliveOrigins: [base] });
+    }
+    var bodies = [];
+    for (var i = 0; i < REQUESTS; i += 1) {
+      var r = await b.httpClient.request({ url: base + "/r" + i, allowInternal: true, timeoutMs: 10000, agent: agent });
+      bodies.push(r.body.toString("latin1"));
+    }
+    out.bodies = bodies;
+    out.connections = srv.connections;
+    if (scenario === "caller-agent-untrust") {
+      b.httpClient.configurePool({ trustedKeepAliveOrigins: [] });
+      for (var j = 0; j < 2; j += 1) {
+        await b.httpClient.request({ url: base + "/after" + j, allowInternal: true, timeoutMs: 10000, agent: agent });
+      }
+      out.connectionsAfterUntrust = srv.connections;
+    }
+    if (scenario === "caller-agent-trusted") {
+      var before = srv.connections;
+      await _keepAliveGet(agent, srv.server.address().port, "/plain0");
+      await _keepAliveGet(agent, srv.server.address().port, "/plain1");
+      out.plainConnections = srv.connections - before;
+      await b.httpClient.request({ url: base + "/refill", allowInternal: true, timeoutMs: 10000, agent: agent });
+      out.freeBeforeSameHost = _freeSocketCount(agent);
+      var beforeSameHost = srv.connections;
+      await _keepAliveGet(agent, srv.server.address().port, "/same0", "localhost");
+      await _keepAliveGet(agent, srv.server.address().port, "/same1", "localhost");
+      out.sameHostConnections = srv.connections - beforeSameHost;
+      var beforeTrusted = srv.connections;
+      await b.httpClient.request({ url: base + "/again", allowInternal: true, timeoutMs: 10000, agent: agent });
+      out.trustedAfterSameHost = srv.connections - beforeTrusted;
+    }
+  } finally {
+    agent.destroy();
+    srv.server.close();
+  }
+  return out;
+}
+
+function _freeSocketCount(agent) {
+  var free = agent.freeSockets || {};
+  return Object.keys(free).reduce(function (n, name) { return n + (free[name] || []).length; }, 0);
+}
+
+function _loopbackV4Lookup(_host, opts, cb) {
+  if (opts && opts.all) cb(null, [{ address: "127.0.0.1", family: 4 }]);
+  else cb(null, "127.0.0.1", 4);
+}
+
+// host "localhost" with a v4-only lookup gives the request the same agent
+// pool name as b.httpClient's requests to https://localhost:<port>.
+function _keepAliveGet(agent, port, path, host) {
+  var reqOpts = { host: host || "127.0.0.1", port: port, path: path, agent: agent, servername: "localhost" };
+  if (host === "localhost") reqOpts.lookup = _loopbackV4Lookup;
+  return new Promise(function (resolve, reject) {
+    nodeHttps.get(reqOpts, function (res) {
+      res.resume();
+      res.on("end", resolve);
+    }).on("error", reject);
+  });
+}
+
+async function _inflightChild(b, scenario, chain) {
+  var srv = scenario === "inflight-h2-pool-opts" ? await _h2Server(chain, "127.0.0.1") : await _tlsServer(chain, "127.0.0.1");
+  var base = "https://localhost:" + srv.server.address().port;
+  var out = { scenario: scenario };
+  try {
+    var r = await b.httpClient.request({ url: base + "/held", responseMode: "stream", allowInternal: true,
+      timeoutMs: 10000 });
+    var chunks = [];
+    var ended = new Promise(function (resolve, reject) {
+      r.body.on("data", function (c) { chunks.push(c); });
+      r.body.on("end", resolve);
+      r.body.on("error", reject);
+    });
+    ended.catch(function () { /* read below */ });
+    await helpers.waitUntil(function () { return chunks.length > 0 && srv.held.length === 1; },
+      { timeoutMs: 10000, label: scenario + ": first chunk of the held response arrives" });
+    if (scenario === "inflight-trust-change") {
+      b.httpClient.configurePool({ trustedKeepAliveOrigins: [base] });
+    } else {
+      b.httpClient.configurePool({ maxSockets: 32 });
+    }
+    srv.held[0].end("last");
+    try { await ended; out.body = Buffer.concat(chunks).toString("latin1"); }
+    catch (e) { out.error = (e && (e.code || e.message)) || String(e); }
+    var after = await b.httpClient.request({ url: base + "/after", allowInternal: true, timeoutMs: 10000 });
+    out.after = after.body.toString("latin1");
+  } finally {
+    srv.server.close();
+  }
+  return out;
+}
+
+async function _droppedChild(b, scenario, chain) {
+  var srv = await _h2Server(chain, "127.0.0.1");
+  var base = "https://localhost:" + srv.server.address().port;
+  var out = { scenario: scenario };
+  var local = scenario.indexOf("h2-dropped-local-") === 0;
+  var silent = scenario.indexOf("h2-dropped-local-silent-") === 0;
+  var path = silent ? "/silent" : (local ? "/held" : "/dropped");
+  var chunkArrived = false;
+  function _onChunk() { chunkArrived = true; }
+  function _tearDownWhenHeld() {
+    if (!local) return Promise.resolve();
+    return helpers.waitUntil(function () { return srv.held.length === 1 && (silent || chunkArrived); },
+      { timeoutMs: 10000, label: scenario + ": the server holds the response at the point under test" })
+      .then(function () { b.httpClient._resetForTest(); });
+  }
+  try {
+    if (silent && scenario === "h2-dropped-local-silent-stream") {
+      var pendingS = b.httpClient.request({ url: base + path, responseMode: "stream", allowInternal: true,
+        timeoutMs: 10000 });
+      pendingS.catch(function () { /* read below */ });
+      await _tearDownWhenHeld();
+      try { await pendingS; out.body = "resolved"; }
+      catch (eS) { out.error = eS.code || eS.message; }
+    } else if (scenario === "h2-dropped-stream" || scenario === "h2-dropped-local-stream") {
+      var r = await b.httpClient.request({ url: base + path, responseMode: "stream", allowInternal: true,
+        timeoutMs: 10000, onChunk: _onChunk });
+      var torn = _tearDownWhenHeld();
+      var chunks = [];
+      await new Promise(function (resolve) {
+        r.body.on("data", function (c) { chunks.push(c); });
+        r.body.on("end", function () { out.body = Buffer.concat(chunks).toString("latin1"); resolve(); });
+        r.body.on("error", function (e) { out.error = e.code || e.message; resolve(); });
+      });
+      await torn;
+    } else {
+      var pending = b.httpClient.request({ url: base + path, allowInternal: true, timeoutMs: 10000,
+        onChunk: _onChunk });
+      pending.catch(function () { /* read below */ });
+      await _tearDownWhenHeld();
+      try {
+        var rb = await pending;
+        out.body = rb.body.toString("latin1");
+      } catch (e) { out.error = e.code || e.message; }
+    }
+  } finally {
+    srv.server.close();
+  }
+  return out;
+}
+
+async function _untrustChild(b, srv, base) {
+  var out = { scenario: "untrust-closes-pooled" };
+  try {
+    b.httpClient.configurePool({ trustedKeepAliveOrigins: [base] });
+    await _sequential(b, base, 3);
+    out.connectionsTrusted = srv.connections;
+    b.httpClient.configurePool({ trustedKeepAliveOrigins: [] });
+    await _sequential(b, base, 3);
+    out.connectionsAfterUntrust = srv.connections;
+  } finally {
+    srv.server.close();
+  }
+  return out;
+}
+
 async function _child(scenario) {
   var chain = ck.tlsChain("control");
   var dual = [{ address: "::1", family: 6 }, { address: "127.0.0.1", family: 4 }];
-  _pinLocalhost(scenario === "v4-only" || scenario === "operator-agent" ? [dual[1]] : dual);
-  var b = require("../../index.js");
+  _pinLocalhost(scenario === "dual-stack" || scenario === "trusted" || scenario === "untrusted-beside-trusted"
+    ? dual : [dual[1]]);
   if (scenario === "operator-agent") return _operatorAgentChild(b, chain);
+  if (scenario.indexOf("inflight-") === 0) return _inflightChild(b, scenario, chain);
+  if (scenario.indexOf("h2-dropped-") === 0) return _droppedChild(b, scenario, chain);
+  if (scenario.indexOf("caller-agent-") === 0 || scenario === "untrust-closes-pooled") {
+    var cSrv = await _tlsServer(chain, "127.0.0.1");
+    var cBase = "https://localhost:" + cSrv.server.address().port;
+    if (scenario === "untrust-closes-pooled") return _untrustChild(b, cSrv, cBase);
+    return _callerAgentChild(b, scenario, cSrv, cBase);
+  }
   var srv = await _tlsServer(chain, "127.0.0.1");
   var base = "https://localhost:" + srv.server.address().port;
   var out = { scenario: scenario };
@@ -228,8 +439,123 @@ async function testOperatorAgentSessionCacheKeepsOtherSessions() {
         r.otherResumedAfter === 2, JSON.stringify(r));
 }
 
+async function testCallerAgentPoolsTrustedOrigin() {
+  var run = await _runChild("caller-agent-trusted");
+  var r = run.result;
+  check("caller-agent trusted: the child reports a result", r !== null, run.stderr);
+  if (r === null) return;
+  check("caller-agent trusted: every request is answered", _answered(r), JSON.stringify(r));
+  check("caller-agent trusted: requests through a b.pqcAgent.create agent to an origin in " +
+        "trustedKeepAliveOrigins share a pooled connection", r.connections <= 2, JSON.stringify(r));
+  check("caller-agent trusted: a request on the same agent made outside b.httpClient still opens " +
+        "one connection per request", r.plainConnections === 2, JSON.stringify(r));
+  check("caller-agent trusted control: a b.httpClient connection to the trusted origin is idle in the agent's pool",
+        r.freeBeforeSameHost >= 1, JSON.stringify(r));
+  check("caller-agent trusted: a request outside b.httpClient to the same host name does not take the " +
+        "pooled trusted connection", r.sameHostConnections === 2, JSON.stringify(r));
+  check("caller-agent trusted: b.httpClient still reuses its pooled connection afterwards",
+        r.trustedAfterSameHost === 0, JSON.stringify(r));
+}
+
+async function testCallerAgentUntrustedOriginKeepsOneConnectionPerRequest() {
+  var run = await _runChild("caller-agent-unlisted");
+  var r = run.result;
+  check("caller-agent unlisted: the child reports a result", r !== null, run.stderr);
+  if (r === null) return;
+  check("caller-agent unlisted: every request is answered", _answered(r), JSON.stringify(r));
+  check("caller-agent unlisted: an origin not in trustedKeepAliveOrigins opens one connection per request " +
+        "through a caller's agent", r.connections >= REQUESTS, JSON.stringify(r));
+}
+
+async function testCallerAgentStopsPoolingWhenOriginRemoved() {
+  var run = await _runChild("caller-agent-untrust");
+  var r = run.result;
+  check("caller-agent untrust: the child reports a result", r !== null, run.stderr);
+  if (r === null) return;
+  check("caller-agent untrust: every request is answered", _answered(r), JSON.stringify(r));
+  check("caller-agent untrust: the trusted requests share a pooled connection", r.connections <= 2,
+        JSON.stringify(r));
+  check("caller-agent untrust: after the origin leaves the list, each request opens its own connection " +
+        "and the pooled one is not reused", r.connectionsAfterUntrust - r.connections === 2, JSON.stringify(r));
+}
+
+async function testUntrustClosesPooledConnection() {
+  var run = await _runChild("untrust-closes-pooled");
+  var r = run.result;
+  check("untrust: the child reports a result", r !== null, run.stderr);
+  if (r === null) return;
+  check("untrust: the trusted requests share a pooled connection", r.connectionsTrusted <= 2, JSON.stringify(r));
+  check("untrust: after the origin leaves the list, each request opens its own connection",
+        r.connectionsAfterUntrust - r.connectionsTrusted === 3, JSON.stringify(r));
+}
+
+async function _checkInflight(scenario, label) {
+  var run = await _runChild(scenario);
+  var r = run.result;
+  check(label + ": the child reports a result", r !== null, run.stderr);
+  if (r === null) return;
+  check(label + ": a streamed response in flight when configurePool runs arrives whole",
+        r.body === "first-last" && r.error === undefined, JSON.stringify(r));
+  check(label + ": a request after configurePool is answered", r.after === "ok:/after", JSON.stringify(r));
+}
+
+async function testInflightSurvivesTrustChange() {
+  await _checkInflight("inflight-trust-change", "inflight trust change");
+}
+
+async function testInflightSurvivesPoolOptionChange() {
+  await _checkInflight("inflight-pool-opts", "inflight pool option change");
+}
+
+async function testInflightH2SurvivesPoolOptionChange() {
+  await _checkInflight("inflight-h2-pool-opts", "inflight h2 pool option change");
+}
+
+async function _checkDropped(scenario, label) {
+  var run = await _runChild(scenario);
+  var r = run.result;
+  check(label + ": the child reports a result", r !== null, run.stderr);
+  if (r === null) return;
+  check(label + ": an HTTP/2 response whose session closes before the stream ends fails with " +
+        "http-client/truncated-body instead of ending short", r.error === "http-client/truncated-body",
+        JSON.stringify(r));
+}
+
+async function testH2SessionDroppedMidStreamIsTruncation() {
+  await _checkDropped("h2-dropped-stream", "h2 dropped (stream mode)");
+}
+
+async function testH2SessionDroppedMidBufferIsTruncation() {
+  await _checkDropped("h2-dropped-buffer", "h2 dropped (buffer mode)");
+}
+
+async function testH2SessionTornDownLocallyMidStreamIsTruncation() {
+  await _checkDropped("h2-dropped-local-stream", "h2 torn down locally (stream mode)");
+}
+
+async function testH2SessionTornDownLocallyMidBufferIsTruncation() {
+  await _checkDropped("h2-dropped-local-buffer", "h2 torn down locally (buffer mode)");
+}
+
+async function _checkClosedBeforeResponse(scenario, label) {
+  var run = await _runChild(scenario);
+  var r = run.result;
+  check(label + ": the child reports a result", r !== null, run.stderr);
+  if (r === null) return;
+  check(label + ": a request whose HTTP/2 stream closes before the response arrives rejects with " +
+        "http-client/h2-stream-error instead of waiting for timeoutMs", r.error === "http-client/h2-stream-error",
+        JSON.stringify(r));
+}
+
+async function testH2SessionTornDownBeforeResponseRejectsBuffer() {
+  await _checkClosedBeforeResponse("h2-dropped-local-silent-buffer", "h2 torn down before response (buffer mode)");
+}
+
+async function testH2SessionTornDownBeforeResponseRejectsStream() {
+  await _checkClosedBeforeResponse("h2-dropped-local-silent-stream", "h2 torn down before response (stream mode)");
+}
+
 function _refuses(label, value, codeExpected) {
-  var b = helpers.b;
   var err = null;
   try { b.httpClient.configurePool({ trustedKeepAliveOrigins: value }); } catch (e) { err = e; }
   check("configurePool refuses " + label, err !== null && err.code === codeExpected,
@@ -237,7 +563,6 @@ function _refuses(label, value, codeExpected) {
 }
 
 function testTrustedOriginsValidatedAtConfigTime() {
-  var b = helpers.b;
   _refuses("a trustedKeepAliveOrigins that is not an array", "https://a.example", "http-client/bad-opts");
   _refuses("a non-string origin", [42], "http-client/bad-opts");
   _refuses("an origin that is not a URL", ["not a url"], "http-client/bad-opts");
@@ -266,7 +591,14 @@ if (require.main === module && process.argv[2] === "child") {
 
 var TESTS = [testTrustedOriginsValidatedAtConfigTime, testSingleFamilyResumesSessions,
              testDualStackFallbackResumesSessions, testTrustedOriginPoolsConnections,
-             testUntrustedOriginKeepsOneConnectionPerRequest, testOperatorAgentSessionCacheKeepsOtherSessions];
+             testUntrustedOriginKeepsOneConnectionPerRequest, testOperatorAgentSessionCacheKeepsOtherSessions,
+             testCallerAgentPoolsTrustedOrigin, testCallerAgentUntrustedOriginKeepsOneConnectionPerRequest,
+             testCallerAgentStopsPoolingWhenOriginRemoved, testUntrustClosesPooledConnection,
+             testInflightSurvivesTrustChange, testInflightSurvivesPoolOptionChange,
+             testInflightH2SurvivesPoolOptionChange, testH2SessionDroppedMidStreamIsTruncation,
+             testH2SessionDroppedMidBufferIsTruncation, testH2SessionTornDownLocallyMidStreamIsTruncation,
+             testH2SessionTornDownLocallyMidBufferIsTruncation, testH2SessionTornDownBeforeResponseRejectsBuffer,
+             testH2SessionTornDownBeforeResponseRejectsStream];
 
 async function run() {
   for (var i = 0; i < TESTS.length; i += 1) await TESTS[i]();

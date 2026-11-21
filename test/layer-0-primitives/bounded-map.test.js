@@ -114,6 +114,48 @@ function testGetOrInsert() {
   check("getOrInsert: non-function onFull throws bad-on-full",
     (_threw(function () { getOrInsert(new Map(), "k", function () { return 1; }, { maxSize: 1, onFull: 7 }); }) || {}).code
       === "bounded-map/bad-on-full");
+
+  testGetOrInsertNative();
+}
+
+function testGetOrInsertNative() {
+  var native = new Map();
+  var nativeCalls = 0;
+  native.getOrInsertComputed = function (k, f) {
+    nativeCalls++;
+    return Map.prototype.getOrInsertComputed.call(this, k, f);
+  };
+  var nv = getOrInsert(native, "a", function (k) { return "v-" + k; });
+  check("getOrInsert: a native Map is served by Map.prototype.getOrInsertComputed",
+    nativeCalls === 1 && nv === "v-a" && native.get("a") === "v-a");
+
+  var falsy = new Map([["zero", 0], ["empty", ""], ["nil", null], ["undef", undefined]]);
+  var ran = 0;
+  ["zero", "empty", "nil", "undef"].forEach(function (k) {
+    var got = getOrInsert(falsy, k, function () { ran++; return "fresh"; });
+    check("getOrInsert: a stored falsy value under " + k + " is returned as stored",
+      got === falsy.get(k) && got !== "fresh");
+  });
+  check("getOrInsert: no factory runs for a key that holds a falsy value", ran === 0);
+
+  var throwing = new Map();
+  var err = _threw(function () { getOrInsert(throwing, "t", function () { throw new Error("factory-boom"); }); });
+  check("getOrInsert: a throwing factory propagates its error and stores nothing",
+    err && err.message === "factory-boom" && !throwing.has("t"));
+
+  var evicted = [];
+  var facade = boundedMap({ maxEntries: 2, onEvict: function (k) { evicted.push(k); } });
+  getOrInsert(facade, "a", function () { return 1; });
+  getOrInsert(facade, "b", function () { return 2; });
+  var c = getOrInsert(facade, "c", function () { return 3; });
+  check("getOrInsert: a boundedMap facade still evicts its oldest entry at capacity",
+    c === 3 && facade.size === 2 && !facade.has("a") && evicted.join(",") === "a");
+
+  var capped = new Map([["x", 1]]);
+  capped.getOrInsertComputed = function () { throw new Error("native path must not serve a capped call"); };
+  var capHit = getOrInsert(capped, "y", function () { return 2; }, { maxSize: 1, onFull: function () { return "FULL"; } });
+  check("getOrInsert: maxSize at the cap fires onFull without reaching the native insert",
+    capHit === "FULL" && !capped.has("y"));
 }
 
 var requireAbsent  = require("../../lib/bounded-map").requireAbsent;
