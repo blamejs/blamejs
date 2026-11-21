@@ -9,6 +9,7 @@
  * trips the guard when an internal target is requested without
  * allowInternal.
  */
+var fs = require("node:fs");
 var helpers = require("../helpers");
 var check = helpers.check;
 var services = require("../helpers/services");
@@ -48,10 +49,20 @@ async function run() {
         b.ssrfGuard.cidrContains("10.0.0.0/8", "11.0.0.5") === false);
 
   // ---- checkUrl: end-to-end DNS lookup + classification ----
-  // Public target should pass.
-  var pub = await b.ssrfGuard.checkUrl("https://example.com/").catch(function (e) { return { _err: e }; });
+  // The lookup goes through b.network.dns, pointed at the stack's CoreDNS DoH.
+  var dnsSvc = await services.requireService("dns");
+  if (!dnsSvc.ok) throw new Error("coredns unreachable: " + dnsSvc.reason);
+  var caPem = fs.readFileSync(await services.exportCaCert(), "utf8");
+  b.network.dns._resetForTest();
+  b.network.dns.useDnsOverHttps({ url: "https://localhost:8053/dns-query", method: "POST", ca: caPem });
+  var pub;
+  try {
+    pub = await b.ssrfGuard.checkUrl("https://example.com/").catch(function (e) { return { _err: e }; });
+  } finally {
+    b.network.dns._resetForTest();
+  }
   check("checkUrl: public hostname does NOT throw",
-        !pub._err);
+        !pub._err, pub._err && (pub._err.code + " " + pub._err.message));
 
   // Internal target should throw without allowInternal.
   var threwInternal = null;

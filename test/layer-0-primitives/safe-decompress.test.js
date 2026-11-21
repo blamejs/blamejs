@@ -166,9 +166,9 @@ function testUnsafeRuntimeRefusalIsAudited() {
     check("Node " + v + ": the refusal names the CVE and the reported version",
           threw && /CVE-2026-111497/.test(threw.message) &&
           threw.message.indexOf(v) !== -1, threw && threw.message);
-    check("Node " + v + ": the upgrade advice names 24.22.1 and 26.12.1 only",
-          threw && /24\.22\.1/.test(threw.message) && /26\.12\.1/.test(threw.message) &&
-          !/22\.23\.4/.test(threw.message), threw && threw.message);
+    check("Node " + v + ": the upgrade advice names 26.13.1 only",
+          threw && /upgrade to Node 26\.13\.1 or later/.test(threw.message) &&
+          !/26\.12\.1/.test(threw.message) && !/22\.23\.4/.test(threw.message), threw && threw.message);
   });
   var gz = zlib.gzipSync(Buffer.from("hello world ".repeat(50), "utf8"));
   var gzOut = _asNodeVersion("24.21.0", function () {

@@ -44,6 +44,26 @@ function testBrotliDecoderTable() {
   });
 }
 
+// The November 2026 Node releases (24.22.3, 26.13.1) fix HTTP/2 and TLS
+// server flaws. 22.23.5 carries only part of that set, so no 22.x release
+// counts as fixed.
+function testNodeHttp2TlsTable() {
+  check("C._nodeHttp2TlsPatched is a function", typeof C._nodeHttp2TlsPatched === "function");
+  if (typeof C._nodeHttp2TlsPatched !== "function") return;
+  ["26.13.0", "26.12.1", "26.0.0", "24.22.2", "24.22.1", "22.23.5", "22.99.0", "25.9.0",
+   "23.11.1", "26.13.1-pre", "v26.13.0", "garbage", "", "26.13"].forEach(function (v) {
+    check("node http2/tls: " + JSON.stringify(v) + " is not fixed", C._nodeHttp2TlsPatched(v) === false);
+  });
+  [undefined, null, 26, {}].forEach(function (v) {
+    check("node http2/tls: non-string " + String(v) + " is not fixed", C._nodeHttp2TlsPatched(v) === false);
+  });
+  ["26.13.1", "26.13.2", "26.14.0", "24.22.3", "24.23.0", "27.0.0", "28.1.0", "v26.13.1",
+   "26.13.1+build.7", "26.13.2-pre"].forEach(function (v) {
+    check("node http2/tls: " + JSON.stringify(v) + " is fixed", C._nodeHttp2TlsPatched(v) === true);
+  });
+  check("C._nodeFloorRemedy names 26.13.1", C._nodeFloorRemedy === "upgrade to Node 26.13.1 or later");
+}
+
 // A prerelease build carries the version it is heading toward, so a build
 // reporting 24.22.1-pre can predate the fix that 24.22.1 ships. At or below
 // a floor any "-" suffix is unfixed; above the floor the release it leads up
@@ -232,14 +252,14 @@ function testBrotliRefusalWording() {
       must: ["shared Brotli library", "Brotli library to 1.2.1 or later"],
       mustNot: ["upgrade to Node", "22.23.4"] },
     { node: "24.21.0", build: { sharedBrotli: true, brotliVersion: "1.1.1" },
-      must: ["Node 24.21.0", "shared Brotli library 1.1.1", "24.22.1", "26.12.1", "Brotli 1.2.1 or later"],
-      mustNot: ["22.23.4"] },
+      must: ["Node 24.21.0", "shared Brotli library 1.1.1", "upgrade to Node 26.13.1 or later", "Brotli 1.2.1 or later"],
+      mustNot: ["22.23.4", "24.22.1", "26.12.1"] },
     { node: "24.21.0", build: { sharedBrotli: false, brotliVersion: "1.1.0" },
-      must: ["Node 24.21.0", "24.22.1", "26.12.1"],
-      mustNot: ["22.23.4", "shared"] },
+      must: ["Node 24.21.0", "upgrade to Node 26.13.1 or later"],
+      mustNot: ["22.23.4", "24.22.1", "26.12.1", "shared"] },
     { node: "25.9.0", build: { sharedBrotli: false, brotliVersion: "1.1.0" },
-      must: ["Node 25.9.0", "24.22.1", "26.12.1"],
-      mustNot: ["22.23.4", "shared"] },
+      must: ["Node 25.9.0", "upgrade to Node 26.13.1 or later"],
+      mustNot: ["22.23.4", "24.22.1", "26.12.1", "shared"] },
   ];
   cases.forEach(function (c) {
     var tag = "Node " + c.node + (c.build.sharedBrotli ? " on shared Brotli " + c.build.brotliVersion : " bundled");
@@ -361,6 +381,7 @@ async function testOutboundPostureBrotliOfferOnTheWire() {
 
 async function run() {
   testBrotliDecoderTable();
+  testNodeHttp2TlsTable();
   testOpensslCrldpTable();
   testPrereleaseAtTheFloorIsUnfixed();
   testOpensslPrefixedVersion();

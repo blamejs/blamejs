@@ -1,17 +1,23 @@
-# CoreDNS config — exposes plain DNS (53/udp+tcp), DoT (853/tcp),
-# and DoH (8053/tcp) so blamejs's lib/network-dns.js can be exercised
-# against all three modes with the framework's PQC-first TLS posture.
+# CoreDNS config: plain DNS (53/udp+tcp), DoT (853/tcp) and DoH
+# (443/tcp, published on 8053) for the lib/network-dns.js integration
+# tests.
 #
-# Upstream: 1.1.1.1 + 9.9.9.9 over DoT, so the test resolver itself
-# never leaks plain DNS.
+# CoreDNS answers from the local zone below and forwards nothing, so the
+# test stack resolves without outbound DNS, DoT (853) or DoH. Every name
+# outside the zone gets NXDOMAIN. The addresses are the IANA-held
+# example.com addresses, which b.ssrfGuard classifies as public.
+
+(testzone) {
+    hosts {
+        93.184.215.14 example.com
+        2606:2800:21f:cb07:6820:80da:af6b:8b2c example.com
+    }
+    errors
+}
 
 . {
     bind 0.0.0.0 ::
-    forward . tls://1.1.1.1 tls://9.9.9.9 {
-        tls_servername cloudflare-dns.com
-    }
-    cache 300
-    errors
+    import testzone
     health :8054
     ready :8055
 }
@@ -19,19 +25,11 @@
 tls://. {
     bind 0.0.0.0 ::
     tls /certs/coredns.crt /certs/coredns.key
-    forward . tls://1.1.1.1 tls://9.9.9.9 {
-        tls_servername cloudflare-dns.com
-    }
-    cache 300
-    errors
+    import testzone
 }
 
 https://. {
     bind 0.0.0.0 ::
     tls /certs/coredns.crt /certs/coredns.key
-    forward . tls://1.1.1.1 tls://9.9.9.9 {
-        tls_servername cloudflare-dns.com
-    }
-    cache 300
-    errors
+    import testzone
 }

@@ -125,9 +125,9 @@ function fixLockfile(entry) {
   var dirAbs = path.join(ROOT, entry.dir);
   if (!fs.existsSync(path.join(dirAbs, "package.json"))) return;
   var args = ["install", "--package-lock-only", "--no-audit", "--no-fund"].concat(entry.args);
-  var r = cp.spawnSync("npm", args, {
-    cwd: dirAbs, encoding: "utf8", shell: process.platform === "win32",
-  });
+  var r = process.platform === "win32"
+    ? cp.spawnSync(["npm"].concat(args).join(" "), { cwd: dirAbs, encoding: "utf8", shell: true })
+    : cp.spawnSync("npm", args, { cwd: dirAbs, encoding: "utf8" });
   if (r.status !== 0) {
     problems.push(entry.dir + ": `npm install --package-lock-only` failed: " + ((r.stderr || r.stdout || "").trim().slice(-300)));
     return;

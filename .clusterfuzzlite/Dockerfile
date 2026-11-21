@@ -15,11 +15,11 @@
 #
 # NOTE — the upstream path is currently LATENT and cannot execute targets: the
 # base-builder-javascript image ships Node 20 + GLIBC 2.31, but blamejs needs
-# Node 22+ (node:sqlite; engine floor 24.22.1) and @jazzer.js/core needs GLIBC 2.38.
+# Node 22+ (node:sqlite; engine floor 26.13.1) and @jazzer.js/core needs GLIBC 2.38.
 # build.sh is correct and forward-compatible — it re-engages unchanged once
-# OSS-Fuzz ships a Node 24 / Ubuntu 24.04 base-builder-javascript. Do NOT downgrade
+# OSS-Fuzz ships a Node 26 / Ubuntu 24.04 base-builder-javascript. Do NOT downgrade
 # @jazzer.js/core to "fix" this: the Node-20 floor blocks blamejs regardless, and a
-# downgrade only risks the working CI (which runs Node 24 on ubuntu-latest).
+# downgrade only risks the working CI (which runs Node 26 on ubuntu-latest).
 #
 # The base is digest-pinned for a reproducible CI fuzz toolchain. Dependabot
 # bumps it via the docker ecosystem entry for /.clusterfuzzlite, and that bump
