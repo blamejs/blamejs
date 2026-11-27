@@ -26,7 +26,7 @@
 # touches this file alone, so `node scripts/pin-all.js --fix` mirrors the digest
 # into oss-fuzz/projects/blamejs/Dockerfile. Both builds must run the same base;
 # codebase-patterns fails when the two files disagree.
-FROM gcr.io/oss-fuzz-base/base-builder-javascript@sha256:fff2fe5f532ffcd3fcea7c54cc1db18951b364b64aa37c415348ce8ba17cde34
+FROM gcr.io/oss-fuzz-base/base-builder-javascript@sha256:310d9bb5bcdba9a01786539da301af72be5927eb03e1aee4bdc92d8a8f6081ee
 
 # Copy the framework source. ClusterFuzzLite mounts the repo at
 # $SRC/blamejs, so we COPY everything (including fuzz/) into one
